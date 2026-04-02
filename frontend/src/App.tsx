@@ -1,6 +1,7 @@
-import { Alert, Button, Col, ConfigProvider, Layout, Row, Space, Statistic, Typography, message } from "antd";
+import { Alert, Button, Col, ConfigProvider, Layout, Row, Statistic, Typography, message } from "antd";
 import { RadarChartOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import zhCN from "antd/locale/zh_CN";
 
 import {
   getHealth,
@@ -15,9 +16,17 @@ import { CreateAgentCard } from "./components/CreateAgentCard";
 import { InstanceTableCard } from "./components/InstanceTableCard";
 import type { InstanceStatus, PendingApproval } from "./types";
 
-import "./styles.css";
-
 const REFRESH_INTERVAL_MS = 8000;
+
+function formatHealth(status: string): string {
+  if (status === "ok") {
+    return "正常";
+  }
+  if (status === "unknown") {
+    return "未知";
+  }
+  return "异常";
+}
 
 function usePlatformData() {
   const [instances, setInstances] = useState<InstanceStatus[]>([]);
@@ -52,7 +61,7 @@ function usePlatformData() {
         return;
       }
       const content = error instanceof Error ? error.message : String(error);
-      message.error(`Failed to load platform data: ${content}`);
+      message.error(`加载平台数据失败：${content}`);
     });
 
     const timer = window.setInterval(() => {
@@ -92,6 +101,7 @@ export default function App() {
 
   return (
     <ConfigProvider
+      locale={zhCN}
       theme={{
         token: {
           colorPrimary: "#c98536",
@@ -101,58 +111,68 @@ export default function App() {
         },
       }}
     >
-      <Layout className="app-root">
-        <Layout.Header className="app-header">
-          <Space align="center" size={10}>
-            <RadarChartOutlined style={{ color: "#c98536", fontSize: 18 }} />
-            <Typography.Title level={4} className="header-title">
-              Tradeclaw Control Room
-            </Typography.Title>
-          </Space>
-          <Space>
-            <Button
-              onClick={async () => {
-                const state = await setKillSwitch(!killSwitchEnabled);
-                setKillSwitchEnabled(state.kill_switch_enabled);
-                await refresh();
-              }}
-              danger={!killSwitchEnabled}
-              type={killSwitchEnabled ? "default" : "primary"}
-            >
-              {killSwitchEnabled ? "Disable Kill" : "Enable Kill"}
-            </Button>
-            <Button
-              onClick={async () => {
-                await tickOnce();
-                await refresh();
-              }}
-            >
-              Tick
-            </Button>
-            <Button icon={<ReloadOutlined />} onClick={() => void refresh()}>
-              Refresh
-            </Button>
-          </Space>
+      <Layout className="min-h-screen bg-transparent">
+        <Layout.Header className="!h-auto !bg-transparent !px-0 !py-0 !leading-normal">
+          <div className="sticky top-0 z-40 flex flex-wrap items-center justify-between gap-3 border-b border-shell-line bg-[rgba(250,245,236,0.88)] px-3.5 py-3 backdrop-blur md:h-[68px] md:flex-nowrap md:px-5 md:py-0">
+            <div className="flex items-center gap-2.5">
+              <RadarChartOutlined className="text-lg text-shell-accent" />
+              <Typography.Title level={4} className="!m-0 !font-display !tracking-[0.02em] !text-shell-ink">
+                Tradeclaw 控制台
+              </Typography.Title>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button
+                className="rounded-xl"
+                onClick={async () => {
+                  const state = await setKillSwitch(!killSwitchEnabled);
+                  setKillSwitchEnabled(state.kill_switch_enabled);
+                  await refresh();
+                }}
+                danger={!killSwitchEnabled}
+                type={killSwitchEnabled ? "default" : "primary"}
+              >
+                {killSwitchEnabled ? "关闭熔断开关" : "开启熔断开关"}
+              </Button>
+              <Button
+                className="rounded-xl"
+                onClick={async () => {
+                  await tickOnce();
+                  await refresh();
+                }}
+              >
+                执行一轮
+              </Button>
+              <Button className="rounded-xl" icon={<ReloadOutlined />} onClick={() => void refresh()}>
+                刷新
+              </Button>
+            </div>
+          </div>
         </Layout.Header>
 
-        <Layout.Content className="app-content">
+        <Layout.Content className="px-3.5 py-4 md:px-5 md:py-5">
           <Row gutter={[16, 16]}>
             <Col xs={24} md={8}>
-              <Statistic title="Platform Health" value={health} />
+              <div className="rounded-2xl border border-shell-line bg-card-bg px-5 py-4 shadow-shell-card">
+                <Statistic title="平台健康状态" value={formatHealth(health)} />
+              </div>
             </Col>
             <Col xs={24} md={8}>
-              <Statistic title="Running Agents" value={runningCount} />
+              <div className="rounded-2xl border border-shell-line bg-card-bg px-5 py-4 shadow-shell-card">
+                <Statistic title="运行中实例" value={runningCount} />
+              </div>
             </Col>
             <Col xs={24} md={8}>
-              <Statistic title="Error Agents" value={errorCount} />
+              <div className="rounded-2xl border border-shell-line bg-card-bg px-5 py-4 shadow-shell-card">
+                <Statistic title="异常实例" value={errorCount} />
+              </div>
             </Col>
           </Row>
 
           {killSwitchEnabled && (
             <Alert
-              className="status-alert"
-              message="Kill switch is currently enabled"
-              description="All start operations are blocked and running instances are stopped."
+              className="my-4 rounded-2xl border border-shell-line"
+              message="熔断开关已开启"
+              description="所有启动操作已被阻止，运行中的实例会被停止。"
               type="error"
               showIcon
             />
@@ -160,9 +180,9 @@ export default function App() {
 
           {health !== "ok" && (
             <Alert
-              className="status-alert"
-              message="Backend unreachable or unhealthy"
-              description="Check Tradeclaw API service and API base URL"
+              className="my-4 rounded-2xl border border-shell-line"
+              message="后端不可达或健康检查异常"
+              description="请检查 Tradeclaw API 服务和 API Base URL 配置。"
               type="warning"
               showIcon
             />
@@ -173,10 +193,10 @@ export default function App() {
               <InstanceTableCard instances={instances} loading={loading} onMutated={() => void refresh()} />
             </Col>
             <Col xs={24} xl={8}>
-              <Space direction="vertical" size={16} style={{ width: "100%" }}>
+              <div className="flex w-full flex-col gap-4">
                 <CreateAgentCard onCreated={() => void refresh()} />
                 <ApprovalQueueCard items={approvals} loading={loading} onMutated={() => void refresh()} />
-              </Space>
+              </div>
             </Col>
           </Row>
         </Layout.Content>

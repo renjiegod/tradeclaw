@@ -1,4 +1,4 @@
-import { Button, Card, Form, Input, Select, Space, Typography } from "antd";
+import { Button, Card, Form, Input, Select, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
 import { createInstance, listTemplates } from "../api";
@@ -7,6 +7,18 @@ import type { AgentTemplate, CreateInstancePayload } from "../types";
 type Props = {
   onCreated: () => void;
 };
+
+const TEMPLATE_NAME_MAP: Record<string, string> = {
+  "single-agent-trend": "单智能体 / 趋势跟踪",
+  "single-agent-event": "单智能体 / 事件驱动",
+  "multi-role-rtr": "多角色 / 研究 + 交易 + 风控",
+};
+
+const PANEL_CARD_CLASSNAME = "!overflow-hidden !border !border-shell-line !bg-card-bg shadow-shell-card";
+
+function formatTemplateName(template: AgentTemplate): string {
+  return TEMPLATE_NAME_MAP[template.template_id] ?? template.name;
+}
 
 export function CreateAgentCard({ onCreated }: Props) {
   const [form] = Form.useForm<CreateInstancePayload>();
@@ -43,12 +55,12 @@ export function CreateAgentCard({ onCreated }: Props) {
   }, [form]);
 
   const templateOptions = useMemo(
-    () => templates.map((item) => ({ label: item.name, value: item.template_id })),
+    () => templates.map((item) => ({ label: formatTemplateName(item), value: item.template_id })),
     [templates],
   );
 
   return (
-    <Card className="panel-card" title="Create Agent" loading={fetchingTemplate}>
+    <Card className={PANEL_CARD_CLASSNAME} title="创建实例" loading={fetchingTemplate}>
       <Form
         layout="vertical"
         form={form}
@@ -65,46 +77,48 @@ export function CreateAgentCard({ onCreated }: Props) {
       >
         <Form.Item
           name="name"
-          label="Name"
-          rules={[{ required: true, message: "Please input instance name" }]}
+          label="名称"
+          rules={[{ required: true, message: "请输入实例名称" }]}
         >
           <Input placeholder="alpha-growth-paper" />
         </Form.Item>
 
-        <Form.Item name="template_id" label="Template" rules={[{ required: true }]}>
+        <Form.Item name="template_id" label="模板" rules={[{ required: true }]}>
           <Select options={templateOptions} />
         </Form.Item>
 
-        <Space size={12} style={{ width: "100%" }}>
-          <Form.Item name="mode" label="Run Mode" style={{ flex: 1 }}>
+        <div className="grid gap-1 md:grid-cols-2 md:gap-3">
+          <Form.Item name="mode" label="运行模式">
             <Select
               options={[
-                { label: "Paper", value: "paper" },
-                { label: "Live", value: "live" },
-                { label: "Backtest", value: "backtest" },
+                { label: "模拟盘", value: "paper" },
+                { label: "实盘", value: "live" },
+                { label: "回测", value: "backtest" },
               ]}
             />
           </Form.Item>
-          <Form.Item name="orchestrator_mode" label="Orchestrator" style={{ flex: 1 }}>
+          <Form.Item name="orchestrator_mode" label="编排模式">
             <Select
               options={[
-                { label: "Single Agent", value: "single-agent" },
-                { label: "Multi Role", value: "multi-role" },
+                { label: "单智能体", value: "single-agent" },
+                { label: "多角色", value: "multi-role" },
               ]}
             />
           </Form.Item>
-        </Space>
+        </div>
 
-        <Form.Item name="description" label="Description">
-          <Input.TextArea rows={3} placeholder="brief goal / risk preference" />
+        <Form.Item name="description" label="描述">
+          <Input.TextArea rows={3} placeholder="填写策略目标、风控偏好等信息" />
         </Form.Item>
 
-        <Space style={{ width: "100%", justifyContent: "space-between" }}>
-          <Typography.Text type="secondary">Template-driven creation with safe defaults.</Typography.Text>
-          <Button type="primary" htmlType="submit" loading={loading}>
-            Create
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <Typography.Text className="text-sm" type="secondary">
+            基于模板快速创建，默认使用安全配置。
+          </Typography.Text>
+          <Button className="rounded-xl" type="primary" htmlType="submit" loading={loading}>
+            创建
           </Button>
-        </Space>
+        </div>
       </Form>
     </Card>
   );

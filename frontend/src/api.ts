@@ -66,19 +66,19 @@ export async function listTemplates(): Promise<AgentTemplate[]> {
     return [
       {
         template_id: "single-agent-trend",
-        name: "Single Agent / Trend Following",
+        name: "单智能体 / 趋势跟踪",
         default_mode: "paper",
         default_orchestrator_mode: "single-agent",
       },
       {
         template_id: "single-agent-event",
-        name: "Single Agent / Event Driven",
+        name: "单智能体 / 事件驱动",
         default_mode: "paper",
         default_orchestrator_mode: "single-agent",
       },
       {
         template_id: "multi-role-rtr",
-        name: "Multi Role / Research + Trader + Risk",
+        name: "多角色 / 研究 + 交易 + 风控",
         default_mode: "paper",
         default_orchestrator_mode: "multi-role",
       },

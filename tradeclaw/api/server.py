@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import os
-
 from tradeclaw.api.app import create_app
 from tradeclaw.api.runtime_loop import RuntimeTickLoop
 from tradeclaw.bootstrap import build_platform_runtime
+from tradeclaw.config import get_config
 
 
 def build_api_with_runtime(tick_interval_seconds: float | None = None):
@@ -13,9 +12,8 @@ def build_api_with_runtime(tick_interval_seconds: float | None = None):
     approval_gate = runtime["approval_gate"]
     app = create_app(service, approval_gate)
 
-    interval = tick_interval_seconds
-    if interval is None:
-        interval = float(os.getenv("TRADECLAW_TICK_SECONDS", "5"))
+    cfg = get_config()
+    interval = tick_interval_seconds if tick_interval_seconds is not None else cfg.server.tick_seconds
 
     loop = RuntimeTickLoop(service=service, approval_gate=approval_gate, interval_seconds=interval)
     app.state.runtime_loop = loop
@@ -37,11 +35,10 @@ def main():
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("uvicorn is not installed. Install fastapi and uvicorn first.") from exc
 
-    host = os.getenv("TRADECLAW_HOST", "0.0.0.0")
-    port = int(os.getenv("TRADECLAW_PORT", "8000"))
+    cfg = get_config()
 
     app = build_api_with_runtime()
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=cfg.server.host, port=cfg.server.port)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1,0 +1,23 @@
+# TradeClaw defaults (also used when no repo-root config.yaml is found).
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  tick_seconds: 5.0
+
+data:
+  symbols:
+    - "600000.SH"
+    - "601318.SH"
+  qmt:
+    base_url: null
+    token: null
+    timeout_seconds: 5.0
+
+risk:
+  max_single_order_amount: 20000.0
+  max_position_ratio: 0.30
+
+approval:
+  min_notional_for_approval: 1000.0
+  timeout_seconds: 300

@@ -9,16 +9,18 @@ type Props = {
   onMutated: () => void;
 };
 
+const PANEL_CARD_CLASSNAME = "!overflow-hidden !border !border-shell-line !bg-card-bg shadow-shell-card";
+
 function formatTs(raw: string): string {
   const date = new Date(raw);
-  return Number.isNaN(date.getTime()) ? raw : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? raw : date.toLocaleString("zh-CN");
 }
 
 export function ApprovalQueueCard({ items, loading, onMutated }: Props) {
   return (
-    <Card className="panel-card" title="Pending Approvals" loading={loading}>
+    <Card className={PANEL_CARD_CLASSNAME} title="待处理审批" loading={loading}>
       {items.length === 0 ? (
-        <Empty description="No pending approvals" />
+        <Empty description="暂无待审批请求" />
       ) : (
         <List
           itemLayout="vertical"
@@ -29,6 +31,7 @@ export function ApprovalQueueCard({ items, loading, onMutated }: Props) {
               actions={[
                 <Button
                   key="approve"
+                  className="rounded-xl"
                   type="primary"
                   size="small"
                   onClick={async () => {
@@ -36,10 +39,11 @@ export function ApprovalQueueCard({ items, loading, onMutated }: Props) {
                     onMutated();
                   }}
                 >
-                  Approve
+                  同意
                 </Button>,
                 <Button
                   key="reject"
+                  className="rounded-xl"
                   danger
                   size="small"
                   onClick={async () => {
@@ -47,17 +51,17 @@ export function ApprovalQueueCard({ items, loading, onMutated }: Props) {
                     onMutated();
                   }}
                 >
-                  Reject
+                  拒绝
                 </Button>,
               ]}
             >
               <Space direction="vertical" size={3}>
-                <Typography.Text strong>Intent: {item.intent_id}</Typography.Text>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  Request: {item.approval_id}
+                <Typography.Text strong>意图: {item.intent_id}</Typography.Text>
+                <Typography.Text className="text-xs" type="secondary">
+                  请求ID: {item.approval_id}
                 </Typography.Text>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  Created: {formatTs(item.created_at)} | Expires: {formatTs(item.expires_at)}
+                <Typography.Text className="text-xs" type="secondary">
+                  创建时间: {formatTs(item.created_at)} | 过期时间: {formatTs(item.expires_at)}
                 </Typography.Text>
               </Space>
             </List.Item>

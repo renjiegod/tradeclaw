@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
-
 from tradeclaw.channels.manager import ChannelManager
+from tradeclaw.config import AppConfig, get_config
 from tradeclaw.core.worker import TradingWorker
 from tradeclaw.data.qmt_proxy import QmtLiveDataProvider, QmtUniverseProvider
 from tradeclaw.data.qmt_proxy_client import QmtProxyRestClient
@@ -62,19 +61,14 @@ class _DemoAgentStrategy:
         return reviews
 
 
-def _resolve_symbols():
-    raw = os.getenv("TRADECLAW_SYMBOLS", "600000.SH,601318.SH")
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
-def _build_data_context():
-    base_url = os.getenv("TRADECLAW_QMT_BASE_URL")
-    symbols = _resolve_symbols()
+def _build_data_context(data_cfg):
+    base_url = data_cfg.qmt.base_url
+    symbols = data_cfg.symbols
     if not base_url:
         return _DemoDataProvider(), _DemoUniverseProvider()
 
-    token = os.getenv("TRADECLAW_QMT_TOKEN")
-    timeout_seconds = float(os.getenv("TRADECLAW_QMT_TIMEOUT", "5"))
+    token = data_cfg.qmt.token
+    timeout_seconds = data_cfg.qmt.timeout_seconds
     client = QmtProxyRestClient(
         base_url=base_url,
         token=token,
@@ -85,19 +79,19 @@ def _build_data_context():
     return data_provider, universe_provider
 
 
-def _build_worker_from_config(config, shared_approval_gate):
+def _build_worker_from_config(instance_config, shared_approval_gate, app_cfg: AppConfig):
     risk_engine = BasicRiskEngine(
         RiskConfig(
-            max_single_order_amount=20000.0,
-            max_position_ratio=0.30,
+            max_single_order_amount=app_cfg.risk.max_single_order_amount,
+            max_position_ratio=app_cfg.risk.max_position_ratio,
         )
     )
-    data_provider, universe_provider = _build_data_context()
+    data_provider, universe_provider = _build_data_context(app_cfg.data)
 
-    if config.mode == "backtest":
+    if instance_config.mode == "backtest":
         execution = SimulatedBrokerAdapter()
         approval_gate = AutoApprovalGate()
-    elif config.mode == "live":
+    elif instance_config.mode == "live":
         execution = PaperExecutionAdapter()
         approval_gate = shared_approval_gate
     else:
@@ -114,17 +108,23 @@ def _build_worker_from_config(config, shared_approval_gate):
         risk_engine=risk_engine,
         approval_gate=approval_gate,
         execution_adapter=execution,
-        run_mode=config.mode,
+        run_mode=instance_config.mode,
         trace_store=InMemoryTraceStore(),
     )
 
 
-def build_platform_runtime():
-    approval_gate = QueuedApprovalGate(min_notional_for_approval=1000.0, timeout_seconds=300)
+def build_platform_runtime(app_cfg: AppConfig | None = None):
+    cfg = app_cfg or get_config()
+    approval_gate = QueuedApprovalGate(
+        min_notional_for_approval=cfg.approval.min_notional_for_approval,
+        timeout_seconds=cfg.approval.timeout_seconds,
+    )
     scheduler = RuntimeScheduler()
     service = TradingPlatformService(
         scheduler=scheduler,
-        worker_factory=lambda config: _build_worker_from_config(config, approval_gate),
+        worker_factory=lambda instance_config: _build_worker_from_config(
+            instance_config, approval_gate, cfg
+        ),
     )
     channel_manager = ChannelManager(service=service, approval_gate=approval_gate)
     return {
