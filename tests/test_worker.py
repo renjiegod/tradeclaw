@@ -14,18 +14,18 @@ from tradeclaw.execution.approval import ApprovalResult
 
 
 class _StaticDataProvider:
-    def get_market_context(self):
+    async def get_market_context(self):
         return MarketContext(symbol_to_price={"600000.SH": 10.0})
 
-    def get_account_snapshot(self):
+    async def get_account_snapshot(self):
         return AccountSnapshot(cash=100000.0, equity=100000.0)
 
-    def get_positions(self):
+    async def get_positions(self):
         return [PositionSnapshot(symbol="600000.SH", quantity=0, cost_price=0.0)]
 
 
 class _StaticUniverseProvider:
-    def build_universe(self, *_):
+    async def build_universe(self, *_):
         return ["600000.SH"]
 
 
@@ -78,11 +78,11 @@ class _ExecutionRecorder:
     def __init__(self):
         self.submitted = []
 
-    def submit_intent(self, intent):
+    async def submit_intent(self, intent):
         self.submitted.append(intent)
 
 
-class TradingWorkerTests(unittest.TestCase):
+class TradingWorkerTests(unittest.IsolatedAsyncioTestCase):
     def _build_worker(self, risk_engine, approval_gate):
         execution = _ExecutionRecorder()
         worker = TradingWorker(
@@ -98,28 +98,28 @@ class TradingWorkerTests(unittest.TestCase):
         )
         return worker, execution
 
-    def test_dispatches_order_after_risk_and_approval(self):
+    async def test_dispatches_order_after_risk_and_approval(self):
         worker, execution = self._build_worker(_PassRisk(), _ApprovalPass())
 
-        report = worker.run_cycle()
+        report = await worker.run_cycle()
 
         self.assertEqual(len(execution.submitted), 1)
         self.assertEqual(execution.submitted[0].symbol, "600000.SH")
         self.assertEqual(report.submitted_count, 1)
         self.assertIn("dispatch_orders", report.completed_phases)
 
-    def test_blocks_order_when_risk_vetoes(self):
+    async def test_blocks_order_when_risk_vetoes(self):
         worker, execution = self._build_worker(_VetoRisk(), _ApprovalPass())
 
-        report = worker.run_cycle()
+        report = await worker.run_cycle()
 
         self.assertEqual(len(execution.submitted), 0)
         self.assertEqual(report.vetoed_count, 1)
 
-    def test_holds_order_when_approval_pending(self):
+    async def test_holds_order_when_approval_pending(self):
         worker, execution = self._build_worker(_PassRisk(), _ApprovalPending())
 
-        report = worker.run_cycle()
+        report = await worker.run_cycle()
 
         self.assertEqual(len(execution.submitted), 0)
         self.assertEqual(report.pending_approval_count, 1)

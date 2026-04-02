@@ -2,12 +2,15 @@
 name = "tradeclaw"
 version = "0.1.0"
 description = "Multi-agent trading platform"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
+    "httpx>=0.28.1",
+    "pydantic>=2.12.5",
     "pyyaml>=6.0.0",
     "uvicorn>=0.30.0",
     "websocket-client>=1.8.0",
+    "websockets>=16.0",
 ]
 
 [project.scripts]
@@ -18,4 +21,4 @@ requires = ["hatchling>=1.26.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["tradeclaw"]
+packages = ["tradeclaw", "qmt_proxy_sdk"]

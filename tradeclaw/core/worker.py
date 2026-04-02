@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import uuid
 from dataclasses import dataclass
 from typing import List
@@ -46,17 +47,19 @@ class TradingWorker:
     trace_store: object = None
     last_run_id: str = ""
 
-    def run_cycle(self) -> CycleReport:
+    async def run_cycle(self) -> CycleReport:
         run_id = f"run-{uuid.uuid4()}"
         self.last_run_id = run_id
         self._append_trace(run_id, "load_context", {"status": "start"})
 
-        market_context = self.data_provider.get_market_context()
+        market_context = await _maybe_await(self.data_provider.get_market_context())
         self._append_trace(run_id, "refresh_market_state", {"symbol_count": len(market_context.symbol_to_price)})
-        account_snapshot = self.data_provider.get_account_snapshot()
+        account_snapshot = await _maybe_await(self.data_provider.get_account_snapshot())
         self._append_trace(run_id, "refresh_portfolio_state", {"equity": account_snapshot.equity})
-        positions = self.data_provider.get_positions()
-        universe = self.universe_provider.build_universe(market_context, account_snapshot, positions)
+        positions = await _maybe_await(self.data_provider.get_positions())
+        universe = await _maybe_await(
+            self.universe_provider.build_universe(market_context, account_snapshot, positions)
+        )
         self._append_trace(run_id, "build_universe", {"size": len(universe)})
 
         proposals = self.signal_strategy.generate(market_context, account_snapshot, positions, universe)
@@ -87,7 +90,7 @@ class TradingWorker:
                 vetoed_count += 1
                 continue
 
-            approval = self._request_approval(intent, account_snapshot, market_context)
+            approval = await _maybe_await(self._request_approval(intent, account_snapshot, market_context))
             self._append_trace(
                 run_id,
                 "await_approval_if_needed",
@@ -100,7 +103,7 @@ class TradingWorker:
                 vetoed_count += 1
                 continue
 
-            self.execution_adapter.submit_intent(intent)
+            await _maybe_await(self.execution_adapter.submit_intent(intent))
             submitted_count += 1
             self._append_trace(
                 run_id,
@@ -178,3 +181,15 @@ class TradingWorker:
         if self.trace_store is None:
             return
         self.trace_store.append(run_id=run_id, phase=phase, payload=payload)
+
+    async def aclose(self):
+        for candidate in (self.data_provider, self.execution_adapter):
+            close = getattr(candidate, "aclose", None)
+            if close is not None:
+                await _maybe_await(close())
+
+
+async def _maybe_await(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value

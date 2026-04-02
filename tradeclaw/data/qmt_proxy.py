@@ -11,8 +11,12 @@ class QmtProxyHistoricalProvider:
     def __init__(self, client):
         self.client = client
 
-    def get_bars(self, symbol: str, start_time: str, end_time: str) -> List[Bar]:
-        rows = self.client.fetch_history(symbol=symbol, start_time=start_time, end_time=end_time)
+    async def get_bars(self, symbol: str, start_time: str, end_time: str) -> List[Bar]:
+        rows = await self.client.fetch_history(
+            symbol=symbol,
+            start_time=start_time,
+            end_time=end_time,
+        )
         bars: List[Bar] = []
         for row in rows:
             bars.append(
@@ -35,12 +39,12 @@ class QmtProxyPortfolioProvider:
     def __init__(self, client):
         self.client = client
 
-    def get_account_snapshot(self) -> AccountSnapshot:
-        account = self.client.fetch_account()
+    async def get_account_snapshot(self) -> AccountSnapshot:
+        account = await self.client.fetch_account()
         return AccountSnapshot(cash=float(account["cash"]), equity=float(account["equity"]))
 
-    def get_positions(self) -> List[PositionSnapshot]:
-        rows = self.client.fetch_positions()
+    async def get_positions(self) -> List[PositionSnapshot]:
+        rows = await self.client.fetch_positions()
         positions: List[PositionSnapshot] = []
         for row in rows:
             positions.append(
@@ -61,8 +65,8 @@ class QmtLiveDataProvider:
         self.symbols = list(symbols)
         self.portfolio_provider = QmtProxyPortfolioProvider(client=client)
 
-    def get_market_context(self) -> MarketContext:
-        quotes = self.client.fetch_latest_quotes(self.symbols)
+    async def get_market_context(self) -> MarketContext:
+        quotes = await self.client.fetch_latest_quotes(self.symbols)
         symbol_to_price = {}
         for quote in quotes:
             symbol = quote["symbol"]
@@ -72,16 +76,21 @@ class QmtLiveDataProvider:
             symbol_to_price[symbol] = float(price)
         return MarketContext(symbol_to_price=symbol_to_price)
 
-    def get_account_snapshot(self) -> AccountSnapshot:
-        return self.portfolio_provider.get_account_snapshot()
+    async def get_account_snapshot(self) -> AccountSnapshot:
+        return await self.portfolio_provider.get_account_snapshot()
 
-    def get_positions(self) -> List[PositionSnapshot]:
-        return self.portfolio_provider.get_positions()
+    async def get_positions(self) -> List[PositionSnapshot]:
+        return await self.portfolio_provider.get_positions()
+
+    async def aclose(self):
+        close = getattr(self.client, "aclose", None)
+        if close is not None:
+            await close()
 
 
 class QmtUniverseProvider:
     def __init__(self, symbols):
         self.symbols = list(symbols)
 
-    def build_universe(self, *_):
+    async def build_universe(self, *_):
         return list(self.symbols)

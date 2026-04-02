@@ -1,0 +1,37 @@
+[project]
+name = "qmt-proxy-sdk"
+version = "0.1.0"
+description = "Async-first Python SDK for the qmt-proxy REST API."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "zhzhl0", email = "zhzhl0@163.com" }]
+dependencies = [
+    "httpx>=0.28.1,<0.29.0",
+    "pydantic>=2.12.4,<3.0.0",
+    "websockets>=15.0",
+]
+keywords = ["qmt", "quant", "sdk", "rest", "trading"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2.2",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=1.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["qmt_proxy_sdk", "qmt_proxy_sdk.models"]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+"qmt_proxy_sdk" = "."
+"qmt_proxy_sdk.models" = "models"

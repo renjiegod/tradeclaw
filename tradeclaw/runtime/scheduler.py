@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Dict
 
 
@@ -19,13 +20,15 @@ class RuntimeScheduler:
     def stop(self, instance_id: str):
         self.instances[instance_id].status = "stopped"
 
-    def tick_once(self):
+    async def tick_once(self):
         executed = 0
         for instance in self.instances.values():
             if instance.status != "running":
                 continue
             try:
-                instance.worker.run_cycle()
+                result = instance.worker.run_cycle()
+                if inspect.isawaitable(result):
+                    await result
                 executed += 1
             except Exception as exc:  # pragma: no cover - best effort safety branch
                 instance.status = "error"

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-import threading
-import time
+import asyncio
+import contextlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeTickLoop:
@@ -11,24 +14,30 @@ class RuntimeTickLoop:
         self.service = service
         self.approval_gate = approval_gate
         self.interval_seconds = max(0.1, float(interval_seconds))
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._task: asyncio.Task | None = None
 
     def start(self):
-        if self._thread is not None and self._thread.is_alive():
+        if self._task is not None and not self._task.done():
             return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="tradeclaw-runtime-loop", daemon=True)
-        self._thread.start()
+        self._task = asyncio.create_task(self._run(), name="tradeclaw-runtime-loop")
 
-    def stop(self):
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=self.interval_seconds * 2)
+    async def stop(self):
+        if self._task is None:
+            return
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+        self._task = None
 
-    def _run(self):
-        while not self._stop.is_set():
-            self.service.tick_once()
-            if hasattr(self.approval_gate, "expire_pending"):
-                self.approval_gate.expire_pending()
-            self._stop.wait(self.interval_seconds)
+    async def _run(self):
+        while True:
+            try:
+                await self.service.tick_once()
+                if hasattr(self.approval_gate, "expire_pending"):
+                    self.approval_gate.expire_pending()
+                await asyncio.sleep(self.interval_seconds)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # pragma: no cover - defensive loop logging
+                logger.exception("runtime tick failed")
+                await asyncio.sleep(self.interval_seconds)

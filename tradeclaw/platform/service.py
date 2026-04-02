@@ -114,10 +114,10 @@ class TradingPlatformService:
         self.scheduler.stop(instance_id)
         return self.instances[instance_id]
 
-    def tick_once(self):
+    async def tick_once(self):
         if self.kill_switch_enabled:
             return 0
-        return self.scheduler.tick_once()
+        return await self.scheduler.tick_once()
 
     def set_kill_switch(self, enabled: bool):
         self.kill_switch_enabled = enabled
@@ -145,3 +145,9 @@ class TradingPlatformService:
             "cycles": cycles,
             "last_error": instance.last_error,
         }
+
+    async def aclose(self):
+        for instance in self.instances.values():
+            close = getattr(instance.worker, "aclose", None)
+            if close is not None:
+                await close()

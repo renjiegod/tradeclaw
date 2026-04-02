@@ -15,18 +15,18 @@ from tradeclaw.runtime.scheduler import RuntimeScheduler
 
 
 class _DemoDataProvider:
-    def get_market_context(self):
+    async def get_market_context(self):
         return MarketContext(symbol_to_price={"600000.SH": 10.0, "601318.SH": 50.0})
 
-    def get_account_snapshot(self):
+    async def get_account_snapshot(self):
         return AccountSnapshot(cash=100000.0, equity=100000.0)
 
-    def get_positions(self):
+    async def get_positions(self):
         return [PositionSnapshot(symbol="600000.SH", quantity=0, cost_price=0.0)]
 
 
 class _DemoUniverseProvider:
-    def build_universe(self, *_):
+    async def build_universe(self, *_):
         return ["600000.SH", "601318.SH"]
 
 
@@ -68,10 +68,12 @@ def _build_data_context(data_cfg):
         return _DemoDataProvider(), _DemoUniverseProvider()
 
     token = data_cfg.qmt.token
+    session_id = data_cfg.qmt.session_id
     timeout_seconds = data_cfg.qmt.timeout_seconds
     client = QmtProxyRestClient(
         base_url=base_url,
         token=token,
+        session_id=session_id,
         timeout_seconds=timeout_seconds,
     )
     data_provider = QmtLiveDataProvider(client=client, symbols=symbols)

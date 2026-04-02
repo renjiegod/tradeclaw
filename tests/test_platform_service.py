@@ -8,12 +8,12 @@ class _CountingWorker:
     def __init__(self):
         self.cycles = 0
 
-    def run_cycle(self):
+    async def run_cycle(self):
         self.cycles += 1
 
 
-class PlatformServiceTests(unittest.TestCase):
-    def test_create_start_and_stop_instance(self):
+class PlatformServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_create_start_and_stop_instance(self):
         scheduler = RuntimeScheduler()
         service = TradingPlatformService(
             scheduler=scheduler,
@@ -22,7 +22,7 @@ class PlatformServiceTests(unittest.TestCase):
 
         instance = service.create_instance(name="alpha", template_id="single-agent-trend")
         service.start_instance(instance.instance_id)
-        service.tick_once()
+        await service.tick_once()
 
         status = service.get_instance_status(instance.instance_id)
         self.assertEqual(status["status"], "running")
@@ -32,7 +32,7 @@ class PlatformServiceTests(unittest.TestCase):
         status_after_stop = service.get_instance_status(instance.instance_id)
         self.assertEqual(status_after_stop["status"], "stopped")
 
-    def test_kill_switch_blocks_start(self):
+    async def test_kill_switch_blocks_start(self):
         scheduler = RuntimeScheduler()
         service = TradingPlatformService(
             scheduler=scheduler,

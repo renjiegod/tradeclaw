@@ -29,7 +29,9 @@ class BacktestTests(unittest.TestCase):
             rationale="backtest",
         )
 
-        broker.submit_intent(intent)
+        import asyncio
+
+        asyncio.run(broker.submit_intent(intent))
 
         self.assertEqual(len(broker.fills), 1)
         self.assertEqual(broker.fills[0].intent_id, "intent-3")

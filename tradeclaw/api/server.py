@@ -19,12 +19,15 @@ def build_api_with_runtime(tick_interval_seconds: float | None = None):
     app.state.runtime_loop = loop
 
     @app.on_event("startup")
-    def _on_startup():
+    async def _on_startup():
         loop.start()
 
     @app.on_event("shutdown")
-    def _on_shutdown():
-        loop.stop()
+    async def _on_shutdown():
+        await loop.stop()
+        close = getattr(service, "aclose", None)
+        if close is not None:
+            await close()
 
     return app
 

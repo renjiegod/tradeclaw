@@ -12,6 +12,7 @@ data:
   qmt:
     base_url: null
     token: null
+    session_id: null
     timeout_seconds: 5.0
 
 risk:

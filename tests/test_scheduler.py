@@ -8,12 +8,12 @@ class _CountingWorker:
     def __init__(self):
         self.cycles = 0
 
-    def run_cycle(self):
+    async def run_cycle(self):
         self.cycles += 1
 
 
-class SchedulerTests(unittest.TestCase):
-    def test_scheduler_runs_only_running_instances(self):
+class SchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_scheduler_runs_only_running_instances(self):
         scheduler = RuntimeScheduler()
         worker_a = _CountingWorker()
         worker_b = _CountingWorker()
@@ -25,13 +25,13 @@ class SchedulerTests(unittest.TestCase):
         scheduler.register(inst_b)
 
         scheduler.start(inst_a.instance_id)
-        scheduler.tick_once()
+        await scheduler.tick_once()
 
         self.assertEqual(worker_a.cycles, 1)
         self.assertEqual(worker_b.cycles, 0)
 
         scheduler.start(inst_b.instance_id)
-        scheduler.tick_once()
+        await scheduler.tick_once()
 
         self.assertEqual(worker_a.cycles, 2)
         self.assertEqual(worker_b.cycles, 1)

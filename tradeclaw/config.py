@@ -19,6 +19,7 @@ class ServerSettings:
 class QmtSettings:
     base_url: Optional[str]
     token: Optional[str]
+    session_id: Optional[str]
     timeout_seconds: float
 
 
@@ -81,6 +82,7 @@ def _parse(data: dict[str, Any]) -> AppConfig:
             qmt=QmtSettings(
                 base_url=qmt.get("base_url"),
                 token=qmt.get("token"),
+                session_id=qmt.get("session_id"),
                 timeout_seconds=float(qmt["timeout_seconds"]),
             ),
         ),

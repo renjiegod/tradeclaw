@@ -8,7 +8,7 @@ class PaperExecutionAdapter:
         self.submitted = []
         self.fills = []
 
-    def submit_intent(self, intent):
+    async def submit_intent(self, intent):
         self.submitted.append(intent)
         fill = FillRecord(
             intent_id=intent.intent_id,

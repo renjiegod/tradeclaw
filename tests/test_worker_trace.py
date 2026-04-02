@@ -7,18 +7,18 @@ from tradeclaw.persistence.trace_store import InMemoryTraceStore
 
 
 class _StaticDataProvider:
-    def get_market_context(self):
+    async def get_market_context(self):
         return MarketContext(symbol_to_price={"600000.SH": 10.0})
 
-    def get_account_snapshot(self):
+    async def get_account_snapshot(self):
         return AccountSnapshot(cash=100000.0, equity=100000.0)
 
-    def get_positions(self):
+    async def get_positions(self):
         return [PositionSnapshot(symbol="600000.SH", quantity=0, cost_price=0.0)]
 
 
 class _UniverseProvider:
-    def build_universe(self, *_):
+    async def build_universe(self, *_):
         return ["600000.SH"]
 
 
@@ -51,12 +51,12 @@ class _Approval:
 
 
 class _Execution:
-    def submit_intent(self, intent):
+    async def submit_intent(self, intent):
         return intent
 
 
-class WorkerTraceTests(unittest.TestCase):
-    def test_worker_persists_run_phases_to_trace_store(self):
+class WorkerTraceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_persists_run_phases_to_trace_store(self):
         store = InMemoryTraceStore()
         worker = TradingWorker(
             data_provider=_StaticDataProvider(),
@@ -71,7 +71,7 @@ class WorkerTraceTests(unittest.TestCase):
             trace_store=store,
         )
 
-        worker.run_cycle()
+        await worker.run_cycle()
 
         events = store.get_run_events(worker.last_run_id)
         self.assertGreaterEqual(len(events), 1)
