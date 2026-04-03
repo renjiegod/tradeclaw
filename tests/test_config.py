@@ -35,3 +35,7 @@ class ConfigTests(unittest.TestCase):
         a = get_config()
         b = get_config()
         self.assertIs(a, b)
+
+    def test_model_defaults_available(self):
+        cfg = load_config(resolve_config_path())
+        self.assertIn(cfg.model.provider, {"demo", "anthropic", "openai_compatible"})

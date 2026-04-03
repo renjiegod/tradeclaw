@@ -22,3 +22,16 @@ risk:
 approval:
   min_notional_for_approval: 1000.0
   timeout_seconds: 300
+
+model:
+  provider: "demo" # demo | anthropic | openai_compatible
+  model: "gpt-4o-mini"
+  temperature: 0.1
+  max_tokens: 1000
+  timeout_seconds: 30.0
+  anthropic:
+    api_key: null
+    base_url: null
+  openai_compatible:
+    api_key: null
+    base_url: null

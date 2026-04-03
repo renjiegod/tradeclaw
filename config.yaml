@@ -22,3 +22,17 @@ risk:
 approval:
   min_notional_for_approval: 1000.0
   timeout_seconds: 300
+
+model:
+  # Local gateway: POST /v1/messages + x-api-key → use anthropic (not openai_compatible).
+  provider: "anthropic" # demo | anthropic | openai_compatible
+  model: "qwen/qwen3-coder-30b"
+  temperature: 0.1
+  max_tokens: 100000
+  timeout_seconds: 30.0
+  anthropic:
+    api_key: "${LM_API_TOKEN}"
+    base_url: "http://localhost:1234"
+  openai_compatible:
+    api_key: null
+    base_url: null

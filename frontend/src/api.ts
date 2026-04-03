@@ -1,4 +1,10 @@
-import type { AgentTemplate, CreateInstancePayload, InstanceStatus, PendingApproval } from "./types";
+import type {
+  AgentTemplate,
+  CreateInstancePayload,
+  InstanceStatus,
+  PendingApproval,
+  SystemState,
+} from "./types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:8000";
 
@@ -60,45 +66,14 @@ export async function reject(approvalId: string): Promise<{ status: string }> {
 }
 
 export async function listTemplates(): Promise<AgentTemplate[]> {
-  try {
-    return await request("/templates");
-  } catch {
-    return [
-      {
-        template_id: "single-agent-trend",
-        name: "单智能体 / 趋势跟踪",
-        default_mode: "paper",
-        default_orchestrator_mode: "single-agent",
-      },
-      {
-        template_id: "single-agent-event",
-        name: "单智能体 / 事件驱动",
-        default_mode: "paper",
-        default_orchestrator_mode: "single-agent",
-      },
-      {
-        template_id: "multi-role-rtr",
-        name: "多角色 / 研究 + 交易 + 风控",
-        default_mode: "paper",
-        default_orchestrator_mode: "multi-role",
-      },
-    ];
-  }
+  return request("/templates");
 }
 
-export async function getSystemState(): Promise<{
-  kill_switch_enabled: boolean;
-  instance_count: number;
-  running_count: number;
-}> {
+export async function getSystemState(): Promise<SystemState> {
   return request("/system/state");
 }
 
-export async function setKillSwitch(enabled: boolean): Promise<{
-  kill_switch_enabled: boolean;
-  instance_count: number;
-  running_count: number;
-}> {
+export async function setKillSwitch(enabled: boolean): Promise<SystemState> {
   return request("/system/kill-switch", {
     method: "POST",
     body: JSON.stringify({ enabled }),

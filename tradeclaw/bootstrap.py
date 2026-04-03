@@ -9,9 +9,11 @@ from tradeclaw.domain.models import AccountSnapshot, AgentReview, MarketContext,
 from tradeclaw.execution.adapters import PaperExecutionAdapter, SimulatedBrokerAdapter
 from tradeclaw.execution.approval import AutoApprovalGate, QueuedApprovalGate
 from tradeclaw.execution.risk import BasicRiskEngine, RiskConfig
+from tradeclaw.models.factory import build_model_adapter
 from tradeclaw.persistence.trace_store import InMemoryTraceStore
 from tradeclaw.platform.service import TradingPlatformService
 from tradeclaw.runtime.scheduler import RuntimeScheduler
+from tradeclaw.strategies.agent import LangChainAgentStrategy
 
 
 class _DemoDataProvider:
@@ -61,6 +63,14 @@ class _DemoAgentStrategy:
         return reviews
 
 
+def _build_agent_strategy(app_cfg: AppConfig):
+    provider = app_cfg.model.provider.strip().lower()
+    if provider == "demo":
+        return _DemoAgentStrategy()
+    adapter = build_model_adapter(app_cfg.model)
+    return LangChainAgentStrategy(adapter=adapter)
+
+
 def _build_data_context(data_cfg):
     base_url = data_cfg.qmt.base_url
     symbols = data_cfg.symbols
@@ -89,6 +99,7 @@ def _build_worker_from_config(instance_config, shared_approval_gate, app_cfg: Ap
         )
     )
     data_provider, universe_provider = _build_data_context(app_cfg.data)
+    agent_strategy = _build_agent_strategy(app_cfg)
 
     if instance_config.mode == "backtest":
         execution = SimulatedBrokerAdapter()
@@ -104,7 +115,7 @@ def _build_worker_from_config(instance_config, shared_approval_gate, app_cfg: Ap
         data_provider=data_provider,
         universe_provider=universe_provider,
         signal_strategy=_DemoSignalStrategy(),
-        agent_strategy=_DemoAgentStrategy(),
+        agent_strategy=agent_strategy,
         intent_builder=None,
         intent_validator=None,
         risk_engine=risk_engine,
@@ -117,6 +128,7 @@ def _build_worker_from_config(instance_config, shared_approval_gate, app_cfg: Ap
 
 def build_platform_runtime(app_cfg: AppConfig | None = None):
     cfg = app_cfg or get_config()
+    _validate_model_config(cfg)
     approval_gate = QueuedApprovalGate(
         min_notional_for_approval=cfg.approval.min_notional_for_approval,
         timeout_seconds=cfg.approval.timeout_seconds,
@@ -135,3 +147,10 @@ def build_platform_runtime(app_cfg: AppConfig | None = None):
         "approval_gate": approval_gate,
         "channel_manager": channel_manager,
     }
+
+
+def _validate_model_config(app_cfg: AppConfig):
+    provider = app_cfg.model.provider.strip().lower()
+    if provider == "demo":
+        return
+    _build_agent_strategy(app_cfg)

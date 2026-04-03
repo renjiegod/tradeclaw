@@ -42,11 +42,35 @@ class ApprovalSettings:
 
 
 @dataclass(frozen=True)
+class AnthropicModelSettings:
+    api_key: Optional[str]
+    base_url: Optional[str]
+
+
+@dataclass(frozen=True)
+class OpenAICompatibleModelSettings:
+    api_key: Optional[str]
+    base_url: Optional[str]
+
+
+@dataclass(frozen=True)
+class ModelSettings:
+    provider: str
+    model: str
+    temperature: float
+    max_tokens: int
+    timeout_seconds: float
+    anthropic: AnthropicModelSettings
+    openai_compatible: OpenAICompatibleModelSettings
+
+
+@dataclass(frozen=True)
 class AppConfig:
     server: ServerSettings
     data: DataSettings
     risk: RiskSettings
     approval: ApprovalSettings
+    model: ModelSettings
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -71,6 +95,9 @@ def _parse(data: dict[str, Any]) -> AppConfig:
     qmt = data_block["qmt"]
     risk = data["risk"]
     approval = data["approval"]
+    model = data["model"]
+    anthropic = model.get("anthropic", {})
+    openai_compatible = model.get("openai_compatible", {})
     return AppConfig(
         server=ServerSettings(
             host=str(server["host"]),
@@ -81,8 +108,8 @@ def _parse(data: dict[str, Any]) -> AppConfig:
             symbols=[str(s) for s in data_block["symbols"]],
             qmt=QmtSettings(
                 base_url=qmt.get("base_url"),
-                token=qmt.get("token"),
-                session_id=qmt.get("session_id"),
+                token=_resolve_secret(qmt.get("token")),
+                session_id=_resolve_secret(qmt.get("session_id")),
                 timeout_seconds=float(qmt["timeout_seconds"]),
             ),
         ),
@@ -94,7 +121,41 @@ def _parse(data: dict[str, Any]) -> AppConfig:
             min_notional_for_approval=float(approval["min_notional_for_approval"]),
             timeout_seconds=int(approval["timeout_seconds"]),
         ),
+        model=ModelSettings(
+            provider=str(model["provider"]),
+            model=str(model["model"]),
+            temperature=float(model["temperature"]),
+            max_tokens=int(model["max_tokens"]),
+            timeout_seconds=float(model["timeout_seconds"]),
+            anthropic=AnthropicModelSettings(
+                api_key=_resolve_secret(anthropic.get("api_key")),
+                base_url=_maybe_str(anthropic.get("base_url")),
+            ),
+            openai_compatible=OpenAICompatibleModelSettings(
+                api_key=_resolve_secret(openai_compatible.get("api_key")),
+                base_url=_maybe_str(openai_compatible.get("base_url")),
+            ),
+        ),
     )
+
+
+def _maybe_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text
+
+
+def _resolve_secret(value: Any) -> Optional[str]:
+    text = _maybe_str(value)
+    if text is None:
+        return None
+    if text.startswith("${") and text.endswith("}") and len(text) > 3:
+        env_name = text[2:-1].strip()
+        return _maybe_str(os.environ.get(env_name))
+    return text
 
 
 def _candidate_paths() -> list[Path]:

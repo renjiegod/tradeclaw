@@ -1,3 +1,17 @@
+export type ConsolePageKey =
+  | "dashboard"
+  | "instances"
+  | "create-agent"
+  | "approvals"
+  | "backtests"
+  | "system";
+
+export type SystemState = {
+  kill_switch_enabled: boolean;
+  instance_count: number;
+  running_count: number;
+};
+
 export type InstanceStatus = {
   instance_id: string;
   name: string;

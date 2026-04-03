@@ -1,8 +1,29 @@
-import { Button, Card, Form, Input, Select, Typography } from "antd";
+import { Button, Card, Form, Input, message, Select, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
 import { createInstance, listTemplates } from "../api";
 import type { AgentTemplate, CreateInstancePayload } from "../types";
+
+const FALLBACK_TEMPLATES: AgentTemplate[] = [
+  {
+    template_id: "single-agent-trend",
+    name: "单智能体 / 趋势跟踪",
+    default_mode: "paper",
+    default_orchestrator_mode: "single-agent",
+  },
+  {
+    template_id: "single-agent-event",
+    name: "单智能体 / 事件驱动",
+    default_mode: "paper",
+    default_orchestrator_mode: "single-agent",
+  },
+  {
+    template_id: "multi-role-rtr",
+    name: "多角色 / 研究 + 交易 + 风控",
+    default_mode: "paper",
+    default_orchestrator_mode: "multi-role",
+  },
+];
 
 type Props = {
   onCreated: () => void;
@@ -43,6 +64,20 @@ export function CreateAgentCard({ onCreated }: Props) {
           });
         }
       })
+      .catch((error: unknown) => {
+        if (!active) {
+          return;
+        }
+        const detail = error instanceof Error ? error.message : String(error);
+        message.warning(`模板列表加载失败，已使用内置默认模板。${detail}`);
+        setTemplates(FALLBACK_TEMPLATES);
+        const first = FALLBACK_TEMPLATES[0];
+        form.setFieldsValue({
+          template_id: first.template_id,
+          mode: first.default_mode,
+          orchestrator_mode: first.default_orchestrator_mode,
+        });
+      })
       .finally(() => {
         if (active) {
           setFetchingTemplate(false);
@@ -70,6 +105,9 @@ export function CreateAgentCard({ onCreated }: Props) {
             await createInstance(values);
             form.resetFields(["name", "description"]);
             onCreated();
+          } catch (error: unknown) {
+            const content = error instanceof Error ? error.message : String(error);
+            message.error(`创建实例失败：${content}`);
           } finally {
             setLoading(false);
           }
