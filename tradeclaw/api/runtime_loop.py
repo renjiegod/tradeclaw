@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 
-logger = logging.getLogger(__name__)
+from tradeclaw.observability import get_logger, get_tracer
+
+
+logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 
 
 class RuntimeTickLoop:
@@ -32,12 +35,23 @@ class RuntimeTickLoop:
     async def _run(self):
         while True:
             try:
-                await self.service.tick_once()
-                if hasattr(self.approval_gate, "expire_pending"):
-                    self.approval_gate.expire_pending()
+                with tracer.start_as_current_span("runtime.tick"):
+                    try:
+                        logger.info("runtime tick started interval_seconds=%.2f", self.interval_seconds)
+                        executed = await self.service.tick_once()
+                        expired = []
+                        if hasattr(self.approval_gate, "expire_pending"):
+                            expired = self.approval_gate.expire_pending()
+                        logger.info(
+                            "runtime tick completed executed=%s expired_count=%s",
+                            executed,
+                            len(expired),
+                        )
+                    except Exception:  # pragma: no cover - defensive loop logging
+                        logger.exception("runtime tick failed")
+                        raise
                 await asyncio.sleep(self.interval_seconds)
             except asyncio.CancelledError:
                 raise
             except Exception:  # pragma: no cover - defensive loop logging
-                logger.exception("runtime tick failed")
                 await asyncio.sleep(self.interval_seconds)

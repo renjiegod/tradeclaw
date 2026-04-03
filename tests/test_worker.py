@@ -1,3 +1,4 @@
+import io
 import unittest
 
 from tradeclaw.core.worker import TradingWorker
@@ -11,6 +12,7 @@ from tradeclaw.domain.models import (
     RiskDecision,
 )
 from tradeclaw.execution.approval import ApprovalResult
+from tradeclaw.observability import initialize_observability, reset_observability
 
 
 class _StaticDataProvider:
@@ -83,6 +85,9 @@ class _ExecutionRecorder:
 
 
 class TradingWorkerTests(unittest.IsolatedAsyncioTestCase):
+    def tearDown(self):
+        reset_observability()
+
     def _build_worker(self, risk_engine, approval_gate):
         execution = _ExecutionRecorder()
         worker = TradingWorker(
@@ -123,6 +128,21 @@ class TradingWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(execution.submitted), 0)
         self.assertEqual(report.pending_approval_count, 1)
+
+    async def test_worker_cycle_logs_include_trace_context(self):
+        stream = io.StringIO()
+        initialize_observability(service_name="tradeclaw-test", stream=stream)
+        worker, _ = self._build_worker(_PassRisk(), _ApprovalPass())
+
+        await worker.run_cycle()
+
+        output = stream.getvalue()
+        self.assertIn("worker cycle started", output)
+        self.assertIn("worker cycle completed", output)
+        self.assertIn("trace_id=", output)
+        self.assertIn("span_id=", output)
+        self.assertNotIn("trace_id=-", output)
+        self.assertNotIn("span_id=-", output)
 
 
 if __name__ == "__main__":

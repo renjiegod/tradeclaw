@@ -7,6 +7,8 @@ import json
 import logging
 from typing import TYPE_CHECKING, AsyncIterator
 
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 import websockets
 from websockets.asyncio.client import connect
 
@@ -17,6 +19,7 @@ if TYPE_CHECKING:
     from qmt_proxy_sdk.data import DataApi
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 class QuoteStream:
@@ -85,64 +88,70 @@ class QuoteStream:
         return self._stream()
 
     async def _stream(self) -> AsyncIterator[QuoteData]:
-        try:
-            subscription_id = await self._ensure_subscription()
-            ws_url = f"{self._ws_base_url}/ws/quote/{subscription_id}"
-            attempt = 0
+        with tracer.start_as_current_span("qmt.ws.quote_stream") as span:
+            span.set_attribute("qmt.symbol_count", len(self._symbols))
+            try:
+                subscription_id = await self._ensure_subscription()
+                ws_url = f"{self._ws_base_url}/ws/quote/{subscription_id}"
+                attempt = 0
 
-            while not self._closed:
-                try:
-                    async with connect(
-                        ws_url,
-                        additional_headers=self._headers,
-                    ) as ws:
-                        self._ws = ws
-                        attempt = 0
-                        self._heartbeat_task = asyncio.create_task(
-                            self._heartbeat_loop(ws)
+                while not self._closed:
+                    try:
+                        async with connect(
+                            ws_url,
+                            additional_headers=self._headers,
+                        ) as ws:
+                            self._ws = ws
+                            attempt = 0
+                            logger.info("qmt websocket connected subscription_id=%s", subscription_id)
+                            self._heartbeat_task = asyncio.create_task(
+                                self._heartbeat_loop(ws)
+                            )
+
+                            try:
+                                async for raw in ws:
+                                    msg = json.loads(raw)
+                                    msg_type = msg.get("type")
+
+                                    if msg_type == "quote":
+                                        yield self._parse_quote_message(msg)
+                                    elif msg_type == "error":
+                                        raise QmtProxyError(
+                                            msg.get("message", "Unknown WebSocket error")
+                                        )
+                                    elif msg_type in ("connected", "pong"):
+                                        continue
+                            finally:
+                                self._cancel_heartbeat()
+
+                    except (
+                        websockets.ConnectionClosed,
+                        websockets.InvalidURI,
+                        ConnectionError,
+                        OSError,
+                    ) as exc:
+                        if self._closed:
+                            break
+                        attempt += 1
+                        if attempt > self._reconnect_attempts:
+                            error = TransportError(
+                                f"WebSocket reconnect failed after "
+                                f"{self._reconnect_attempts} attempts"
+                            )
+                            span.record_exception(error)
+                            span.set_status(Status(StatusCode.ERROR, str(error)))
+                            raise error from exc
+                        delay = self._reconnect_delay * attempt
+                        logger.warning(
+                            "WebSocket disconnected, reconnecting in %.1fs "
+                            "(attempt %d/%d)",
+                            delay,
+                            attempt,
+                            self._reconnect_attempts,
                         )
-
-                        try:
-                            async for raw in ws:
-                                msg = json.loads(raw)
-                                msg_type = msg.get("type")
-
-                                if msg_type == "quote":
-                                    yield self._parse_quote_message(msg)
-                                elif msg_type == "error":
-                                    raise QmtProxyError(
-                                        msg.get("message", "Unknown WebSocket error")
-                                    )
-                                elif msg_type in ("connected", "pong"):
-                                    continue
-                        finally:
-                            self._cancel_heartbeat()
-
-                except (
-                    websockets.ConnectionClosed,
-                    websockets.InvalidURI,
-                    ConnectionError,
-                    OSError,
-                ) as exc:
-                    if self._closed:
-                        break
-                    attempt += 1
-                    if attempt > self._reconnect_attempts:
-                        raise TransportError(
-                            f"WebSocket reconnect failed after "
-                            f"{self._reconnect_attempts} attempts"
-                        ) from exc
-                    delay = self._reconnect_delay * attempt
-                    logger.warning(
-                        "WebSocket disconnected, reconnecting in %.1fs "
-                        "(attempt %d/%d)",
-                        delay,
-                        attempt,
-                        self._reconnect_attempts,
-                    )
-                    await asyncio.sleep(delay)
-        finally:
-            await self._cleanup_subscription()
+                        await asyncio.sleep(delay)
+            finally:
+                await self._cleanup_subscription()
 
     # ------------------------------------------------------------------
     # Internals
@@ -197,15 +206,16 @@ class QuoteStream:
 
     async def _ensure_subscription(self) -> str:
         if self._subscription_id is None:
-            result = await self._data_api.create_subscription(
-                symbols=self._symbols,
-                period=self._period,
-                start_date=self._start_date,
-                adjust_type=self._adjust_type,
-                subscription_type=self._subscription_type,
-            )
-            self._subscription_id = result.subscription_id
-            logger.info("Created subscription %s", self._subscription_id)
+            with tracer.start_as_current_span("qmt.ws.create_subscription"):
+                result = await self._data_api.create_subscription(
+                    symbols=self._symbols,
+                    period=self._period,
+                    start_date=self._start_date,
+                    adjust_type=self._adjust_type,
+                    subscription_type=self._subscription_type,
+                )
+                self._subscription_id = result.subscription_id
+                logger.info("Created subscription %s", self._subscription_id)
         return self._subscription_id
 
     async def _heartbeat_loop(
@@ -227,8 +237,9 @@ class QuoteStream:
             sid = self._subscription_id
             self._subscription_id = None
             try:
-                await self._data_api.delete_subscription(subscription_id=sid)
-                logger.info("Deleted subscription %s", sid)
+                with tracer.start_as_current_span("qmt.ws.delete_subscription"):
+                    await self._data_api.delete_subscription(subscription_id=sid)
+                    logger.info("Deleted subscription %s", sid)
             except Exception:
                 logger.debug("Failed to delete subscription %s", sid, exc_info=True)
 

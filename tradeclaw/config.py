@@ -44,6 +44,14 @@ class ApprovalSettings:
 
 
 @dataclass(frozen=True)
+class ObservabilitySettings:
+    service_name: str
+    log_level: str
+    console_enabled: bool
+    tracing_enabled: bool
+
+
+@dataclass(frozen=True)
 class AnthropicModelSettings:
     api_key: Optional[str]
     base_url: Optional[str]
@@ -72,6 +80,7 @@ class AppConfig:
     data: DataSettings
     risk: RiskSettings
     approval: ApprovalSettings
+    observability: ObservabilitySettings
     model: ModelSettings
 
 
@@ -97,6 +106,7 @@ def _parse(data: dict[str, Any]) -> AppConfig:
     qmt = data_block["qmt"]
     risk = data["risk"]
     approval = data["approval"]
+    observability = data.get("observability", {})
     model = data["model"]
     anthropic = model.get("anthropic", {})
     openai_compatible = model.get("openai_compatible", {})
@@ -123,6 +133,12 @@ def _parse(data: dict[str, Any]) -> AppConfig:
         approval=ApprovalSettings(
             min_notional_for_approval=float(approval["min_notional_for_approval"]),
             timeout_seconds=int(approval["timeout_seconds"]),
+        ),
+        observability=ObservabilitySettings(
+            service_name=str(observability.get("service_name", "tradeclaw")).strip() or "tradeclaw",
+            log_level=str(observability.get("log_level", "INFO")).strip().upper() or "INFO",
+            console_enabled=bool(observability.get("console_enabled", True)),
+            tracing_enabled=bool(observability.get("tracing_enabled", True)),
         ),
         model=ModelSettings(
             provider=str(model["provider"]),

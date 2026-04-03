@@ -3,6 +3,12 @@ from __future__ import annotations
 import inspect
 from typing import Dict
 
+from tradeclaw.observability import get_logger, get_tracer
+
+
+logger = get_logger(__name__)
+tracer = get_tracer(__name__)
+
 
 class RuntimeScheduler:
     def __init__(self):
@@ -26,10 +32,25 @@ class RuntimeScheduler:
             if instance.status != "running":
                 continue
             try:
-                result = instance.worker.run_cycle()
-                if inspect.isawaitable(result):
-                    await result
-                executed += 1
+                with tracer.start_as_current_span("runtime.instance.tick"):
+                    try:
+                        logger.info(
+                            "instance tick started instance_id=%s name=%s",
+                            instance.instance_id,
+                            instance.config.name,
+                        )
+                        result = instance.worker.run_cycle()
+                        if inspect.isawaitable(result):
+                            await result
+                        executed += 1
+                        logger.info(
+                            "instance tick completed instance_id=%s total_executed=%s",
+                            instance.instance_id,
+                            executed,
+                        )
+                    except Exception:
+                        logger.exception("instance tick failed instance_id=%s", instance.instance_id)
+                        raise
             except Exception as exc:  # pragma: no cover - best effort safety branch
                 instance.status = "error"
                 instance.last_error = str(exc)

@@ -1,8 +1,10 @@
+import io
 import unittest
 
 from fastapi.testclient import TestClient
 
 from tradeclaw.api.app import create_app
+from tradeclaw.observability import initialize_observability, reset_observability
 
 
 class _FakeService:
@@ -35,12 +37,22 @@ class _FakeApprovalGate:
 
 
 class ApiAppTests(unittest.TestCase):
+    def tearDown(self):
+        reset_observability()
+
     def test_tick_endpoint_awaits_async_service(self):
         app = create_app(_FakeService(), _FakeApprovalGate())
+        stream = io.StringIO()
+        initialize_observability(service_name="tradeclaw-test", stream=stream, app=app)
 
         with TestClient(app) as client:
             response = client.post("/system/tick")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"executed": 2, "expired_count": 1})
-
+        lines = [line for line in stream.getvalue().splitlines() if "api system tick handled" in line]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("trace_id=", lines[0])
+        self.assertIn("span_id=", lines[0])
+        self.assertNotIn("trace_id=-", lines[0])
+        self.assertNotIn("span_id=-", lines[0])

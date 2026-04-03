@@ -4,15 +4,22 @@ from tradeclaw.api.app import create_app
 from tradeclaw.api.runtime_loop import RuntimeTickLoop
 from tradeclaw.bootstrap import build_platform_runtime
 from tradeclaw.config import get_config
+from tradeclaw.observability import initialize_observability
 
 
 def build_api_with_runtime(tick_interval_seconds: float | None = None):
-    runtime = build_platform_runtime()
+    cfg = get_config()
+    runtime = build_platform_runtime(app_cfg=cfg)
     service = runtime["service"]
     approval_gate = runtime["approval_gate"]
     app = create_app(service, approval_gate)
-
-    cfg = get_config()
+    initialize_observability(
+        service_name=cfg.observability.service_name,
+        log_level=cfg.observability.log_level,
+        tracing_enabled=cfg.observability.tracing_enabled,
+        console_enabled=cfg.observability.console_enabled,
+        app=app,
+    )
     interval = tick_interval_seconds if tick_interval_seconds is not None else cfg.server.tick_seconds
 
     loop = RuntimeTickLoop(service=service, approval_gate=approval_gate, interval_seconds=interval)

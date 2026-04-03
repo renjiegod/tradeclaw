@@ -26,6 +26,12 @@ approval:
   min_notional_for_approval: 1000.0
   timeout_seconds: 300
 
+observability:
+  service_name: "tradeclaw"
+  log_level: "INFO"
+  console_enabled: true
+  tracing_enabled: true
+
 model:
   provider: "demo" # demo | anthropic | openai_compatible
   model: "gpt-4o-mini"

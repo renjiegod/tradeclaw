@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 from qmt_proxy_sdk.exceptions import (
     AuthenticationError,
@@ -12,6 +15,10 @@ from qmt_proxy_sdk.exceptions import (
     ServerError,
     TransportError,
 )
+
+
+logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 class AsyncHttpTransport:
@@ -51,26 +58,48 @@ class AsyncHttpTransport:
         json: Any = None,
         headers: dict[str, str] | None = None,
     ) -> Any:
-        try:
-            response = await self._client.request(
-                method=method,
-                url=path,
-                params=params,
-                json=json,
-                headers=headers,
+        with tracer.start_as_current_span(f"qmt.http.{method.lower()}") as span:
+            span.set_attribute("http.method", method.upper())
+            span.set_attribute("url.path", path)
+            logger.info("qmt http request started method=%s path=%s", method.upper(), path)
+            try:
+                response = await self._client.request(
+                    method=method,
+                    url=path,
+                    params=params,
+                    json=json,
+                    headers=headers,
+                )
+            except httpx.HTTPError as exc:
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, str(exc)))
+                logger.exception("qmt http transport failed method=%s path=%s", method.upper(), path)
+                raise TransportError(str(exc)) from exc
+
+            payload = self._decode_response(response)
+
+            if response.is_error:
+                error = self._map_error(response.status_code, payload)
+                span.record_exception(error)
+                span.set_status(Status(StatusCode.ERROR, str(error)))
+                logger.warning(
+                    "qmt http request failed method=%s path=%s status_code=%s",
+                    method.upper(),
+                    path,
+                    response.status_code,
+                )
+                raise error
+
+            logger.info(
+                "qmt http request completed method=%s path=%s status_code=%s",
+                method.upper(),
+                path,
+                response.status_code,
             )
-        except httpx.HTTPError as exc:
-            raise TransportError(str(exc)) from exc
+            if isinstance(payload, dict) and self._looks_like_envelope(payload):
+                return payload.get("data")
 
-        payload = self._decode_response(response)
-
-        if response.is_error:
-            raise self._map_error(response.status_code, payload)
-
-        if isinstance(payload, dict) and self._looks_like_envelope(payload):
-            return payload.get("data")
-
-        return payload
+            return payload
 
     async def aclose(self) -> None:
         if self._owns_client:

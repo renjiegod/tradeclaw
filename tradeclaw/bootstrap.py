@@ -9,6 +9,7 @@ from tradeclaw.execution.adapters import PaperExecutionAdapter, SimulatedBrokerA
 from tradeclaw.execution.approval import AutoApprovalGate, QueuedApprovalGate
 from tradeclaw.execution.risk import BasicRiskEngine, RiskConfig
 from tradeclaw.models.factory import build_model_adapter
+from tradeclaw.observability import initialize_observability
 from tradeclaw.persistence.trace_store import InMemoryTraceStore
 from tradeclaw.platform.service import TradingPlatformService
 from tradeclaw.runtime.scheduler import RuntimeScheduler
@@ -92,6 +93,12 @@ def _build_worker_from_config(instance_config, shared_approval_gate, app_cfg: Ap
 
 def build_platform_runtime(app_cfg: AppConfig | None = None):
     cfg = app_cfg or get_config()
+    initialize_observability(
+        service_name=cfg.observability.service_name,
+        log_level=cfg.observability.log_level,
+        tracing_enabled=cfg.observability.tracing_enabled,
+        console_enabled=cfg.observability.console_enabled,
+    )
     _validate_model_config(cfg)
     approval_gate = QueuedApprovalGate(
         min_notional_for_approval=cfg.approval.min_notional_for_approval,

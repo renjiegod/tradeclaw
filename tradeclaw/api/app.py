@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from tradeclaw.observability import get_logger
+
+
+logger = get_logger(__name__)
+
 
 def create_app(service, approval_gate):
     try:
@@ -37,12 +42,18 @@ def create_app(service, approval_gate):
     async def set_kill_switch(payload: dict):
         enabled = bool(payload.get("enabled", True))
         service.set_kill_switch(enabled)
+        logger.warning("api kill switch updated enabled=%s", enabled)
         return service.get_system_state()
 
     @app.post("/system/tick")
     async def tick_once():
         executed = await service.tick_once()
         expired = approval_gate.expire_pending() if hasattr(approval_gate, "expire_pending") else []
+        logger.info(
+            "api system tick handled executed=%s expired_count=%s",
+            executed,
+            len(expired),
+        )
         return {"executed": executed, "expired_count": len(expired)}
 
     @app.post("/instances")
@@ -58,6 +69,12 @@ def create_app(service, approval_gate):
             )
         except (KeyError, ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        logger.info(
+            "api instance created instance_id=%s template_id=%s mode=%s",
+            instance.instance_id,
+            instance.config.template_id,
+            instance.config.mode,
+        )
         return service.get_instance_status(instance.instance_id)
 
     @app.post("/instances/{instance_id}/start")
@@ -68,6 +85,7 @@ def create_app(service, approval_gate):
             raise HTTPException(status_code=404, detail=str(exc))
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
+        logger.info("api instance started instance_id=%s", instance_id)
         return service.get_instance_status(instance_id)
 
     @app.post("/instances/{instance_id}/pause")
@@ -76,6 +94,7 @@ def create_app(service, approval_gate):
             service.pause_instance(instance_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
+        logger.info("api instance paused instance_id=%s", instance_id)
         return service.get_instance_status(instance_id)
 
     @app.post("/instances/{instance_id}/stop")
@@ -84,6 +103,7 @@ def create_app(service, approval_gate):
             service.stop_instance(instance_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
+        logger.info("api instance stopped instance_id=%s", instance_id)
         return service.get_instance_status(instance_id)
 
     @app.get("/approvals/pending")
@@ -104,6 +124,7 @@ def create_app(service, approval_gate):
             result = approval_gate.approve(approval_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
+        logger.info("api approval approved approval_id=%s intent_id=%s", approval_id, result.intent_id)
         return {
             "status": result.status,
             "intent_id": result.intent_id,
@@ -116,6 +137,7 @@ def create_app(service, approval_gate):
             result = approval_gate.reject(approval_id, reason="api reject")
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
+        logger.info("api approval rejected approval_id=%s intent_id=%s", approval_id, result.intent_id)
         return {
             "status": result.status,
             "intent_id": result.intent_id,

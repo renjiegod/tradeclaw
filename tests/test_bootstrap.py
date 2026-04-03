@@ -8,16 +8,35 @@ from tradeclaw.config import load_config
 
 class BootstrapTests(unittest.IsolatedAsyncioTestCase):
     async def test_build_runtime_and_run_single_tick(self):
-        runtime = build_platform_runtime()
-        service = runtime["service"]
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".yaml",
+            delete=False,
+            encoding="utf-8",
+        ) as handle:
+            handle.write(
+                """
+data:
+  default_provider: mock
+model:
+  provider: demo
+""".strip()
+            )
+            path = Path(handle.name)
+        try:
+            cfg = load_config(path)
+            runtime = build_platform_runtime(app_cfg=cfg)
+            service = runtime["service"]
 
-        instance = service.create_instance(name="demo", template_id="single-agent-trend")
-        service.start_instance(instance.instance_id)
-        executed = await service.tick_once()
+            instance = service.create_instance(name="demo", template_id="single-agent-trend")
+            service.start_instance(instance.instance_id)
+            executed = await service.tick_once()
 
-        self.assertEqual(executed, 1)
-        status = service.get_instance_status(instance.instance_id)
-        self.assertEqual(status["status"], "running")
+            self.assertEqual(executed, 1)
+            status = service.get_instance_status(instance.instance_id)
+            self.assertEqual(status["status"], "running")
+        finally:
+            path.unlink(missing_ok=True)
 
     async def test_runtime_fails_fast_when_model_config_is_invalid(self):
         with tempfile.NamedTemporaryFile(

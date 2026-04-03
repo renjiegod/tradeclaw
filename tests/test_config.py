@@ -40,3 +40,10 @@ class ConfigTests(unittest.TestCase):
     def test_model_defaults_available(self):
         cfg = load_config(resolve_config_path())
         self.assertIn(cfg.model.provider, {"demo", "anthropic", "openai_compatible"})
+
+    def test_observability_defaults_available(self):
+        cfg = load_config(resolve_config_path())
+        self.assertEqual(cfg.observability.service_name, "tradeclaw")
+        self.assertEqual(cfg.observability.log_level, "INFO")
+        self.assertTrue(cfg.observability.console_enabled)
+        self.assertTrue(cfg.observability.tracing_enabled)
