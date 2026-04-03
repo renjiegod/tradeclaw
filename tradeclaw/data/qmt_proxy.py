@@ -86,11 +86,3 @@ class QmtLiveDataProvider:
         close = getattr(self.client, "aclose", None)
         if close is not None:
             await close()
-
-
-class QmtUniverseProvider:
-    def __init__(self, symbols):
-        self.symbols = list(symbols)
-
-    async def build_universe(self, *_):
-        return list(self.symbols)

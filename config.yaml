@@ -6,13 +6,14 @@ server:
   tick_seconds: 5.0
 
 data:
+  default_provider: qmt # auto | mock | qmt (instances may override via API data_provider)
   symbols:
     - "600000.SH"
     - "601318.SH"
   qmt:
-    base_url: null
-    token: null
-    session_id: null
+    base_url: http://localwin:8000
+    token: dev-api-key-001
+    session_id: demo-session
     timeout_seconds: 5.0
 
 risk:
@@ -31,7 +32,7 @@ model:
   max_tokens: 100000
   timeout_seconds: 30.0
   anthropic:
-    api_key: "${LM_API_TOKEN}"
+    api_key: aaa
     base_url: "http://localhost:1234"
   openai_compatible:
     api_key: null

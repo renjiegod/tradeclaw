@@ -27,6 +27,8 @@ class QmtSettings:
 class DataSettings:
     symbols: list[str]
     qmt: QmtSettings
+    # auto | mock | qmt — per-instance can override via AgentInstanceConfig.data_provider.
+    default_provider: str
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,7 @@ def _parse(data: dict[str, Any]) -> AppConfig:
                 session_id=_resolve_secret(qmt.get("session_id")),
                 timeout_seconds=float(qmt["timeout_seconds"]),
             ),
+            default_provider=str(data_block.get("default_provider", "auto")).strip().lower() or "auto",
         ),
         risk=RiskSettings(
             max_single_order_amount=float(risk["max_single_order_amount"]),

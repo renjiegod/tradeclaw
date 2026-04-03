@@ -54,6 +54,7 @@ def create_app(service, approval_gate):
                 mode=payload.get("mode"),
                 orchestrator_mode=payload.get("orchestrator_mode"),
                 description=payload.get("description", ""),
+                data_provider=payload.get("data_provider"),
             )
         except (KeyError, ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))

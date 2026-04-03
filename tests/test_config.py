@@ -22,6 +22,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(cfg.server.tick_seconds, 5.0)
             self.assertEqual(cfg.risk.max_single_order_amount, 20000.0)
             self.assertIsNone(cfg.data.qmt.session_id)
+            self.assertEqual(cfg.data.default_provider, "auto")
         finally:
             path.unlink(missing_ok=True)
 

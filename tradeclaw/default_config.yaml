@@ -6,6 +6,9 @@ server:
   tick_seconds: 5.0
 
 data:
+  # auto: use qmt when data.qmt.base_url is set, else mock.
+  # mock | qmt: force that channel (qmt requires base_url).
+  default_provider: auto
   symbols:
     - "600000.SH"
     - "601318.SH"

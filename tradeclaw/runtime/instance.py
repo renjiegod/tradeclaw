@@ -11,6 +11,8 @@ class AgentInstanceConfig:
     orchestrator_mode: str = "single-agent"
     template_id: str = ""
     description: str = ""
+    # Overrides config.data.default_provider when set (auto | mock | qmt or custom registered id).
+    data_provider: str | None = None
 
 
 @dataclass

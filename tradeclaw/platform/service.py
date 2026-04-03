@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
+from tradeclaw.data.factory import resolve_effective_provider
 from tradeclaw.runtime.instance import AgentInstance, AgentInstanceConfig
 
 
@@ -42,10 +43,12 @@ class TradingPlatformService:
         scheduler,
         worker_factory: Callable[[AgentInstanceConfig], object],
         templates: Optional[Dict[str, AgentTemplate]] = None,
+        default_data_provider: str = "auto",
     ):
         self.scheduler = scheduler
         self.worker_factory = worker_factory
         self.templates = templates or DEFAULT_TEMPLATES
+        self.default_data_provider = (default_data_provider or "auto").strip().lower() or "auto"
         self.instances: Dict[str, AgentInstance] = {}
         self.kill_switch_enabled = False
 
@@ -56,6 +59,7 @@ class TradingPlatformService:
         mode: Optional[str] = None,
         orchestrator_mode: Optional[str] = None,
         description: str = "",
+        data_provider: Optional[str] = None,
     ) -> AgentInstance:
         template = self.templates.get(template_id)
         if template is None:
@@ -67,6 +71,7 @@ class TradingPlatformService:
             orchestrator_mode=orchestrator_mode or template.default_orchestrator_mode,
             template_id=template_id,
             description=description,
+            data_provider=data_provider,
         )
         worker = self.worker_factory(config)
         instance = AgentInstance(config=config, worker=worker)
@@ -137,6 +142,7 @@ class TradingPlatformService:
         instance_id = self.resolve_instance_id(identifier)
         instance = self.instances[instance_id]
         cycles = getattr(instance.worker, "cycles", None)
+        effective = resolve_effective_provider(instance.config.data_provider, self.default_data_provider)
         return {
             "instance_id": instance.instance_id,
             "name": instance.config.name,
@@ -144,6 +150,8 @@ class TradingPlatformService:
             "status": instance.status,
             "cycles": cycles,
             "last_error": instance.last_error,
+            "data_provider": instance.config.data_provider,
+            "data_provider_effective": effective,
         }
 
     async def aclose(self):

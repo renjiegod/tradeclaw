@@ -3,9 +3,8 @@ from __future__ import annotations
 from tradeclaw.channels.manager import ChannelManager
 from tradeclaw.config import AppConfig, get_config
 from tradeclaw.core.worker import TradingWorker
-from tradeclaw.data.qmt_proxy import QmtLiveDataProvider, QmtUniverseProvider
-from tradeclaw.data.qmt_proxy_client import QmtProxyRestClient
-from tradeclaw.domain.models import AccountSnapshot, AgentReview, MarketContext, OrderProposal, PositionSnapshot
+from tradeclaw.data.factory import build_trading_data_stack, resolve_effective_provider
+from tradeclaw.domain.models import AgentReview, OrderProposal
 from tradeclaw.execution.adapters import PaperExecutionAdapter, SimulatedBrokerAdapter
 from tradeclaw.execution.approval import AutoApprovalGate, QueuedApprovalGate
 from tradeclaw.execution.risk import BasicRiskEngine, RiskConfig
@@ -14,22 +13,6 @@ from tradeclaw.persistence.trace_store import InMemoryTraceStore
 from tradeclaw.platform.service import TradingPlatformService
 from tradeclaw.runtime.scheduler import RuntimeScheduler
 from tradeclaw.strategies.agent import LangChainAgentStrategy
-
-
-class _DemoDataProvider:
-    async def get_market_context(self):
-        return MarketContext(symbol_to_price={"600000.SH": 10.0, "601318.SH": 50.0})
-
-    async def get_account_snapshot(self):
-        return AccountSnapshot(cash=100000.0, equity=100000.0)
-
-    async def get_positions(self):
-        return [PositionSnapshot(symbol="600000.SH", quantity=0, cost_price=0.0)]
-
-
-class _DemoUniverseProvider:
-    async def build_universe(self, *_):
-        return ["600000.SH", "601318.SH"]
 
 
 class _DemoSignalStrategy:
@@ -71,26 +54,6 @@ def _build_agent_strategy(app_cfg: AppConfig):
     return LangChainAgentStrategy(adapter=adapter)
 
 
-def _build_data_context(data_cfg):
-    base_url = data_cfg.qmt.base_url
-    symbols = data_cfg.symbols
-    if not base_url:
-        return _DemoDataProvider(), _DemoUniverseProvider()
-
-    token = data_cfg.qmt.token
-    session_id = data_cfg.qmt.session_id
-    timeout_seconds = data_cfg.qmt.timeout_seconds
-    client = QmtProxyRestClient(
-        base_url=base_url,
-        token=token,
-        session_id=session_id,
-        timeout_seconds=timeout_seconds,
-    )
-    data_provider = QmtLiveDataProvider(client=client, symbols=symbols)
-    universe_provider = QmtUniverseProvider(symbols=symbols)
-    return data_provider, universe_provider
-
-
 def _build_worker_from_config(instance_config, shared_approval_gate, app_cfg: AppConfig):
     risk_engine = BasicRiskEngine(
         RiskConfig(
@@ -98,7 +61,8 @@ def _build_worker_from_config(instance_config, shared_approval_gate, app_cfg: Ap
             max_position_ratio=app_cfg.risk.max_position_ratio,
         )
     )
-    data_provider, universe_provider = _build_data_context(app_cfg.data)
+    effective = resolve_effective_provider(instance_config.data_provider, app_cfg.data.default_provider)
+    data_provider, universe_provider = build_trading_data_stack(effective, app_cfg.data)
     agent_strategy = _build_agent_strategy(app_cfg)
 
     if instance_config.mode == "backtest":
@@ -139,6 +103,7 @@ def build_platform_runtime(app_cfg: AppConfig | None = None):
         worker_factory=lambda instance_config: _build_worker_from_config(
             instance_config, approval_gate, cfg
         ),
+        default_data_provider=cfg.data.default_provider,
     )
     channel_manager = ChannelManager(service=service, approval_gate=approval_gate)
     return {
