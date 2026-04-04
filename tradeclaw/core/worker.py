@@ -66,13 +66,13 @@ class TradingWorker:
         with tracer.start_as_current_span("worker.run_cycle"):
             logger.info("worker cycle started run_id=%s run_mode=%s", run_id, self.run_mode)
             try:
-                self._record_phase(run_id, "load_context", {"status": "start"})
+                await self._record_phase(run_id, "load_context", {"status": "start"})
 
                 # --- 2. 刷新市场与账户事实（价格、现金、权益、持仓列表）---
                 # 具体来源由 data_provider 实现决定（mock / qmt-proxy 等），LLM 不应编造这些数值。
                 with tracer.start_as_current_span("worker.phase.refresh_market_state"):
                     market_context = await _maybe_await(self.data_provider.get_market_context())
-                    self._record_phase(
+                    await self._record_phase(
                         run_id,
                         "refresh_market_state",
                         {"symbol_count": len(market_context.symbol_to_price)},
@@ -80,7 +80,7 @@ class TradingWorker:
 
                 with tracer.start_as_current_span("worker.phase.refresh_portfolio_state"):
                     account_snapshot = await _maybe_await(self.data_provider.get_account_snapshot())
-                    self._record_phase(
+                    await self._record_phase(
                         run_id,
                         "refresh_portfolio_state",
                         {"equity": account_snapshot.equity},
@@ -92,22 +92,22 @@ class TradingWorker:
                     universe = await _maybe_await(
                         self.universe_provider.build_universe(market_context, account_snapshot, positions)
                     )
-                    self._record_phase(run_id, "build_universe", {"size": len(universe)})
+                    await self._record_phase(run_id, "build_universe", {"size": len(universe)})
 
                 # --- 4. 规则层：生成「交易提案」OrderProposal（尚未带执行语义，偏信号/意图）---
                 with tracer.start_as_current_span("worker.phase.run_signal_strategies"):
                     proposals = self.signal_strategy.generate(market_context, account_snapshot, positions, universe)
-                    self._record_phase(run_id, "run_signal_strategies", {"proposal_count": len(proposals)})
+                    await self._record_phase(run_id, "run_signal_strategies", {"proposal_count": len(proposals)})
 
                 # --- 5. Agent 层：对每条 proposal 给出是否批准、置信度与补充理由（可对接 LLM）---
                 with tracer.start_as_current_span("worker.phase.run_agent_strategies"):
                     reviews = self.agent_strategy.review(proposals, market_context, account_snapshot, positions)
-                    self._record_phase(run_id, "run_agent_strategies", {"review_count": len(reviews)})
+                    await self._record_phase(run_id, "run_agent_strategies", {"review_count": len(reviews)})
 
                 # --- 6. 将 proposal + 审核结果合并为可校验的 OrderIntent（含 intent_id、参考价等）---
                 with tracer.start_as_current_span("worker.phase.build_order_intents"):
                     intents = self._build_order_intents(proposals, reviews, market_context)
-                    self._record_phase(run_id, "build_order_intents", {"intent_count": len(intents)})
+                    await self._record_phase(run_id, "build_order_intents", {"intent_count": len(intents)})
 
                 # --- 7. 意图校验：字段合法、业务规则（如数量与金额互斥等），不通过则不会进入风控/下单 ---
                 validator = self.intent_validator or OrderIntentValidator()
@@ -121,7 +121,7 @@ class TradingWorker:
                 with tracer.start_as_current_span("worker.phase.run_risk_checks"):
                     decisions = self.risk_engine.evaluate(valid_intents, account_snapshot, positions)
                     decision_by_id = {decision.intent_id: decision for decision in decisions}
-                    self._record_phase(run_id, "run_risk_checks", {"decision_count": len(decisions)})
+                    await self._record_phase(run_id, "run_risk_checks", {"decision_count": len(decisions)})
 
                 # --- 9. 逐单：风控通过 → 审批（可能同步通过、pending 排队、或拒绝）→ 提交执行适配器 ---
                 submitted_count = 0
@@ -141,7 +141,7 @@ class TradingWorker:
                     # live 等模式下可进入人工审批队列；paper / AutoApprovalGate 常直接 approved。
                     with tracer.start_as_current_span("worker.phase.await_approval_if_needed"):
                         approval = await _maybe_await(self._request_approval(intent, account_snapshot, market_context))
-                        self._record_phase(
+                        await self._record_phase(
                             run_id,
                             "await_approval_if_needed",
                             {"intent_id": intent.intent_id, "status": approval.status},
@@ -157,19 +157,19 @@ class TradingWorker:
                     with tracer.start_as_current_span("worker.phase.dispatch_orders"):
                         await _maybe_await(self.execution_adapter.submit_intent(intent))
                         submitted_count += 1
-                        self._record_phase(
+                        await self._record_phase(
                             run_id,
                             "dispatch_orders",
                             {"intent_id": intent.intent_id, "status": "submitted"},
                         )
 
                 # --- 10. 收尾 trace：当前实现未在此处拉最新成交/持仓，仅占位与设计阶段名一致 ---
-                self._record_phase(
+                await self._record_phase(
                     run_id,
                     "sync_fills_and_positions",
                     {"submitted_count": submitted_count},
                 )
-                self._record_phase(
+                await self._record_phase(
                     run_id,
                     "persist_trace_and_metrics",
                     {
@@ -240,13 +240,13 @@ class TradingWorker:
 
         return intents
 
-    def _append_trace(self, run_id: str, phase: str, payload: dict):
+    async def _append_trace(self, run_id: str, phase: str, payload: dict):
         if self.trace_store is None:
             return
-        self.trace_store.append(run_id=run_id, phase=phase, payload=payload)
+        await _maybe_await(self.trace_store.append(run_id=run_id, phase=phase, payload=payload))
 
-    def _record_phase(self, run_id: str, phase: str, payload: dict):
-        self._append_trace(run_id, phase, payload)
+    async def _record_phase(self, run_id: str, phase: str, payload: dict):
+        await self._append_trace(run_id, phase, payload)
         details = " ".join(f"{key}={value}" for key, value in payload.items())
         if details:
             logger.info("worker phase completed run_id=%s phase=%s %s", run_id, phase, details)

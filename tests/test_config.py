@@ -47,3 +47,146 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.observability.log_level, "INFO")
         self.assertTrue(cfg.observability.console_enabled)
         self.assertTrue(cfg.observability.tracing_enabled)
+
+    def test_database_defaults_available(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write("")
+            path = Path(handle.name)
+        try:
+            cfg = load_config(path)
+            self.assertEqual(cfg.database.url, "sqlite+aiosqlite:///./tradeclaw.db")
+            self.assertFalse(cfg.database.echo)
+            self.assertTrue(cfg.database.pool_pre_ping)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_database_override_is_loaded(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write(
+                """
+database:
+  url: postgresql+asyncpg://user:pass@localhost:5432/tradeclaw
+  echo: true
+  pool_pre_ping: false
+""".strip()
+            )
+            path = Path(handle.name)
+        try:
+            cfg = load_config(path)
+            self.assertEqual(
+                cfg.database.url,
+                "postgresql+asyncpg://user:pass@localhost:5432/tradeclaw",
+            )
+            self.assertTrue(cfg.database.echo)
+            self.assertFalse(cfg.database.pool_pre_ping)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_database_url_explicit_null_raises(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write("database:\n  url: null\n")
+            path = Path(handle.name)
+        try:
+            with self.assertRaises(ValueError):
+                load_config(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_database_url_blank_raises(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write('database:\n  url: "   "\n')
+            path = Path(handle.name)
+        try:
+            with self.assertRaises(ValueError):
+                load_config(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_database_boolean_string_values_are_parsed(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write(
+                """
+database:
+  echo: "false"
+  pool_pre_ping: "on"
+""".strip()
+            )
+            path = Path(handle.name)
+        try:
+            cfg = load_config(path)
+            self.assertFalse(cfg.database.echo)
+            self.assertTrue(cfg.database.pool_pre_ping)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_database_invalid_boolean_raises(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write(
+                """
+database:
+  echo: "not-a-bool"
+""".strip()
+            )
+            path = Path(handle.name)
+        try:
+            with self.assertRaises(ValueError):
+                load_config(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_database_null_raises_database_mapping_error(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write("database: null\n")
+            path = Path(handle.name)
+        try:
+            with self.assertRaisesRegex(ValueError, "database must be a mapping"):
+                load_config(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_database_list_raises_database_mapping_error(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write("database: []\n")
+            path = Path(handle.name)
+        try:
+            with self.assertRaisesRegex(ValueError, "database must be a mapping"):
+                load_config(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_database_url_non_string_values_raise(self):
+        cases = (
+            "database:\n  url: 123\n",
+            "database:\n  url: true\n",
+            "database:\n  url: {}\n",
+        )
+        for content in cases:
+            with self.subTest(content=content):
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+                ) as handle:
+                    handle.write(content)
+                    path = Path(handle.name)
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError, "database.url must be a non-empty string"
+                    ):
+                        load_config(path)
+                finally:
+                    path.unlink(missing_ok=True)

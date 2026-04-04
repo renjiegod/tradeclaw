@@ -11,8 +11,9 @@ tracer = get_tracer(__name__)
 
 
 class RuntimeScheduler:
-    def __init__(self):
+    def __init__(self, on_instance_error=None):
         self.instances: Dict[str, object] = {}
+        self.on_instance_error = on_instance_error
 
     def register(self, instance):
         self.instances[instance.instance_id] = instance
@@ -54,4 +55,6 @@ class RuntimeScheduler:
             except Exception as exc:  # pragma: no cover - best effort safety branch
                 instance.status = "error"
                 instance.last_error = str(exc)
+                if self.on_instance_error is not None:
+                    await self.on_instance_error(instance.instance_id, str(exc))
         return executed

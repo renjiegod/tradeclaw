@@ -41,7 +41,7 @@ class RuntimeTickLoop:
                         executed = await self.service.tick_once()
                         expired = []
                         if hasattr(self.approval_gate, "expire_pending"):
-                            expired = self.approval_gate.expire_pending()
+                            expired = await self.approval_gate.expire_pending()
                         logger.info(
                             "runtime tick completed executed=%s expired_count=%s",
                             executed,

@@ -44,3 +44,8 @@ model:
   openai_compatible:
     api_key: null
     base_url: null
+
+database:
+  url: "sqlite+aiosqlite:///./tradeclaw.db"
+  echo: false
+  pool_pre_ping: true

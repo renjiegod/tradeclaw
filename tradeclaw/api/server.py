@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from tradeclaw.api.app import create_app
 from tradeclaw.api.runtime_loop import RuntimeTickLoop
 from tradeclaw.bootstrap import build_platform_runtime
@@ -7,9 +9,9 @@ from tradeclaw.config import get_config
 from tradeclaw.observability import initialize_observability
 
 
-def build_api_with_runtime(tick_interval_seconds: float | None = None):
+async def build_api_with_runtime(tick_interval_seconds: float | None = None):
     cfg = get_config()
-    runtime = build_platform_runtime(app_cfg=cfg)
+    runtime = await build_platform_runtime(app_cfg=cfg)
     service = runtime["service"]
     approval_gate = runtime["approval_gate"]
     app = create_app(service, approval_gate)
@@ -23,6 +25,7 @@ def build_api_with_runtime(tick_interval_seconds: float | None = None):
     interval = tick_interval_seconds if tick_interval_seconds is not None else cfg.server.tick_seconds
 
     loop = RuntimeTickLoop(service=service, approval_gate=approval_gate, interval_seconds=interval)
+    app.state.runtime = runtime
     app.state.runtime_loop = loop
 
     @app.on_event("startup")
@@ -32,6 +35,10 @@ def build_api_with_runtime(tick_interval_seconds: float | None = None):
     @app.on_event("shutdown")
     async def _on_shutdown():
         await loop.stop()
+        close_runtime = runtime.get("aclose")
+        if close_runtime is not None:
+            await close_runtime()
+            return
         close = getattr(service, "aclose", None)
         if close is not None:
             await close()
@@ -47,7 +54,7 @@ def main():
 
     cfg = get_config()
 
-    app = build_api_with_runtime()
+    app = asyncio.run(build_api_with_runtime())
     uvicorn.run(app, host=cfg.server.host, port=cfg.server.port)
 
 

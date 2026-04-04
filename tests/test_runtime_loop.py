@@ -19,12 +19,15 @@ class _FakeApprovalGate:
     def __init__(self):
         self.calls = 0
 
-    def expire_pending(self):
+    async def expire_pending(self):
         self.calls += 1
         return []
 
 
 class RuntimeTickLoopTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        reset_observability()
+
     def tearDown(self):
         reset_observability()
 

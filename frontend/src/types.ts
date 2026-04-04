@@ -15,10 +15,22 @@ export type SystemState = {
 export type InstanceStatus = {
   instance_id: string;
   name: string;
+  template_id: string;
   mode: "paper" | "live" | "backtest" | string;
+  orchestrator_mode: "single-agent" | "multi-role" | string;
+  description: string;
   status: "configured" | "running" | "paused" | "stopped" | "error" | string;
   cycles: number | null;
   last_error: string;
+  data_provider: string | null;
+  data_provider_effective: string;
+  watch_symbols: string[];
+  execution_strategy: string;
+  account_id: string;
+  model_id: string;
+  settings: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type PendingApproval = {
@@ -41,4 +53,10 @@ export type CreateInstancePayload = {
   mode?: string;
   orchestrator_mode?: string;
   description?: string;
+  data_provider?: string;
+  watch_symbols?: string[];
+  execution_strategy?: string;
+  account_id?: string;
+  model_id?: string;
+  settings?: Record<string, unknown> | null;
 };

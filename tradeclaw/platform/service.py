@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 from tradeclaw.data.factory import resolve_effective_provider
 from tradeclaw.runtime.instance import AgentInstance, AgentInstanceConfig
@@ -42,17 +43,33 @@ class TradingPlatformService:
         self,
         scheduler,
         worker_factory: Callable[[AgentInstanceConfig], object],
+        instance_repository,
+        system_state_repository,
         templates: Optional[Dict[str, AgentTemplate]] = None,
         default_data_provider: str = "auto",
     ):
         self.scheduler = scheduler
         self.worker_factory = worker_factory
+        self.instance_repository = instance_repository
+        self.system_state_repository = system_state_repository
         self.templates = templates or DEFAULT_TEMPLATES
         self.default_data_provider = (default_data_provider or "auto").strip().lower() or "auto"
         self.instances: Dict[str, AgentInstance] = {}
         self.kill_switch_enabled = False
+        existing_error_handler = getattr(self.scheduler, "on_instance_error", None)
 
-    def create_instance(
+        async def persist_instance_error(instance_id: str, error_message: str):
+            instance = self.instances.get(instance_id)
+            if instance is not None:
+                instance.status = "error"
+                instance.last_error = error_message
+            await self.instance_repository.update_status(instance_id, "error", error_message)
+            if existing_error_handler is not None:
+                await existing_error_handler(instance_id, error_message)
+
+        self.scheduler.on_instance_error = persist_instance_error
+
+    async def create_instance(
         self,
         name: str,
         template_id: str,
@@ -60,6 +77,11 @@ class TradingPlatformService:
         orchestrator_mode: Optional[str] = None,
         description: str = "",
         data_provider: Optional[str] = None,
+        watch_symbols: Optional[List[str]] = None,
+        execution_strategy: str = "",
+        account_id: str = "",
+        model_id: str = "",
+        settings: Optional[dict] = None,
     ) -> AgentInstance:
         template = self.templates.get(template_id)
         if template is None:
@@ -74,14 +96,37 @@ class TradingPlatformService:
             data_provider=data_provider,
         )
         worker = self.worker_factory(config)
-        instance = AgentInstance(config=config, worker=worker)
+        record = await self.instance_repository.create_instance(
+            instance_id=str(uuid.uuid4()),
+            name=name,
+            template_id=template_id,
+            mode=config.mode,
+            orchestrator_mode=config.orchestrator_mode,
+            description=description,
+            data_provider=data_provider,
+            status="configured",
+            last_error="",
+            watch_symbols=list(watch_symbols or []),
+            execution_strategy=execution_strategy,
+            account_id=account_id,
+            model_id=model_id,
+            settings=settings,
+        )
+        instance = AgentInstance(
+            instance_id=record.instance_id,
+            config=config,
+            worker=worker,
+            status=record.status,
+            last_error=record.last_error,
+        )
 
         self.instances[instance.instance_id] = instance
         self.scheduler.register(instance)
         return instance
 
-    def list_instances(self):
-        return list(self.instances.values())
+    async def list_instances(self):
+        records = await self.instance_repository.list_instances()
+        return [await self.get_instance_status(record.instance_id) for record in records]
 
     def list_templates(self):
         return [
@@ -102,56 +147,128 @@ class TradingPlatformService:
                 return instance.instance_id
         raise KeyError(f"instance not found: {identifier}")
 
-    def start_instance(self, identifier: str):
+    async def start_instance(self, identifier: str):
+        record = await self.instance_repository.get_instance(identifier)
+        self.kill_switch_enabled = await self.system_state_repository.get_kill_switch_enabled()
         if self.kill_switch_enabled:
             raise RuntimeError("kill switch enabled")
-        instance_id = self.resolve_instance_id(identifier)
-        self.scheduler.start(instance_id)
-        return self.instances[instance_id]
+        instance = await self._load_or_build_instance(record)
+        self.scheduler.start(instance.instance_id)
+        await self.instance_repository.update_status(instance.instance_id, "running", "")
+        return instance
 
-    def pause_instance(self, identifier: str):
-        instance_id = self.resolve_instance_id(identifier)
-        self.scheduler.pause(instance_id)
-        return self.instances[instance_id]
+    async def pause_instance(self, identifier: str):
+        record = await self.instance_repository.get_instance(identifier)
+        instance = await self._load_or_build_instance(record)
+        self.scheduler.pause(instance.instance_id)
+        await self.instance_repository.update_status(instance.instance_id, "paused", "")
+        return instance
 
-    def stop_instance(self, identifier: str):
-        instance_id = self.resolve_instance_id(identifier)
-        self.scheduler.stop(instance_id)
-        return self.instances[instance_id]
+    async def stop_instance(self, identifier: str):
+        record = await self.instance_repository.get_instance(identifier)
+        instance = await self._load_or_build_instance(record)
+        self.scheduler.stop(instance.instance_id)
+        await self.instance_repository.update_status(instance.instance_id, "stopped", "")
+        return instance
 
     async def tick_once(self):
+        self.kill_switch_enabled = await self.system_state_repository.get_kill_switch_enabled()
         if self.kill_switch_enabled:
             return 0
         return await self.scheduler.tick_once()
 
-    def set_kill_switch(self, enabled: bool):
+    async def _load_or_build_instance(self, record):
+        cached = self.instances.get(record.instance_id)
+        if cached is not None:
+            cached.status = record.status
+            cached.last_error = record.last_error
+            return cached
+
+        config = AgentInstanceConfig(
+            name=record.name,
+            mode=record.mode,
+            orchestrator_mode=record.orchestrator_mode,
+            template_id=record.template_id,
+            description=record.description,
+            data_provider=record.data_provider,
+        )
+        worker = self.worker_factory(config)
+        instance = AgentInstance(
+            instance_id=record.instance_id,
+            config=config,
+            worker=worker,
+            status=record.status,
+            last_error=record.last_error,
+        )
+        self.instances[instance.instance_id] = instance
+        self.scheduler.register(instance)
+        return instance
+
+    async def restore_instances(self) -> int:
+        restored = 0
+        self.kill_switch_enabled = await self.system_state_repository.get_kill_switch_enabled()
+        for record in await self.instance_repository.list_instances():
+            try:
+                instance = await self._load_or_build_instance(record)
+            except Exception as exc:
+                await self.instance_repository.update_status(record.instance_id, "error", str(exc))
+                continue
+
+            if record.status == "running" and not self.kill_switch_enabled:
+                try:
+                    self.scheduler.start(instance.instance_id)
+                    restored += 1
+                except Exception as exc:
+                    instance.status = "error"
+                    instance.last_error = str(exc)
+                    await self.instance_repository.update_status(instance.instance_id, "error", str(exc))
+        return restored
+
+    async def set_kill_switch(self, enabled: bool):
+        await self.system_state_repository.set_kill_switch_enabled(enabled)
         self.kill_switch_enabled = enabled
         if enabled:
-            for instance in self.instances.values():
-                if instance.status == "running":
+            for record in await self.instance_repository.list_instances():
+                if record.status != "running":
+                    continue
+                instance = self.instances.get(record.instance_id)
+                if instance is not None and instance.status == "running":
                     self.scheduler.stop(instance.instance_id)
+                await self.instance_repository.update_status(record.instance_id, "stopped", "")
 
-    def get_system_state(self):
+    async def get_system_state(self):
+        records = await self.instance_repository.list_instances()
+        kill_switch_enabled = await self.system_state_repository.get_kill_switch_enabled()
         return {
-            "kill_switch_enabled": self.kill_switch_enabled,
-            "instance_count": len(self.instances),
-            "running_count": len([item for item in self.instances.values() if item.status == "running"]),
+            "kill_switch_enabled": kill_switch_enabled,
+            "instance_count": len(records),
+            "running_count": len([item for item in records if item.status == "running"]),
         }
 
-    def get_instance_status(self, identifier: str):
-        instance_id = self.resolve_instance_id(identifier)
-        instance = self.instances[instance_id]
-        cycles = getattr(instance.worker, "cycles", None)
-        effective = resolve_effective_provider(instance.config.data_provider, self.default_data_provider)
+    async def get_instance_status(self, identifier: str):
+        record = await self.instance_repository.get_instance(identifier)
+        instance = self.instances.get(record.instance_id)
+        cycles = getattr(instance.worker, "cycles", None) if instance is not None else None
+        effective = resolve_effective_provider(record.data_provider, self.default_data_provider)
         return {
-            "instance_id": instance.instance_id,
-            "name": instance.config.name,
-            "mode": instance.config.mode,
-            "status": instance.status,
+            "instance_id": record.instance_id,
+            "name": record.name,
+            "template_id": record.template_id,
+            "mode": record.mode,
+            "orchestrator_mode": record.orchestrator_mode,
+            "description": record.description,
+            "status": record.status,
             "cycles": cycles,
-            "last_error": instance.last_error,
-            "data_provider": instance.config.data_provider,
+            "last_error": record.last_error,
+            "data_provider": record.data_provider,
             "data_provider_effective": effective,
+            "watch_symbols": list(record.watch_symbols),
+            "execution_strategy": record.execution_strategy,
+            "account_id": record.account_id,
+            "model_id": record.model_id,
+            "settings": record.settings,
+            "created_at": record.created_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
         }
 
     async def aclose(self):

@@ -75,6 +75,13 @@ class ModelSettings:
 
 
 @dataclass(frozen=True)
+class DatabaseSettings:
+    url: str
+    echo: bool
+    pool_pre_ping: bool
+
+
+@dataclass(frozen=True)
 class AppConfig:
     server: ServerSettings
     data: DataSettings
@@ -82,6 +89,7 @@ class AppConfig:
     approval: ApprovalSettings
     observability: ObservabilitySettings
     model: ModelSettings
+    database: DatabaseSettings
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -110,6 +118,9 @@ def _parse(data: dict[str, Any]) -> AppConfig:
     model = data["model"]
     anthropic = model.get("anthropic", {})
     openai_compatible = model.get("openai_compatible", {})
+    database = data.get("database", {})
+    if not isinstance(database, dict):
+        raise ValueError("database must be a mapping")
     return AppConfig(
         server=ServerSettings(
             host=str(server["host"]),
@@ -155,7 +166,44 @@ def _parse(data: dict[str, Any]) -> AppConfig:
                 base_url=_maybe_str(openai_compatible.get("base_url")),
             ),
         ),
+        database=DatabaseSettings(
+            url=_parse_required_non_empty_str(
+                database.get("url", "sqlite+aiosqlite:///./tradeclaw.db"),
+                field_name="database.url",
+            ),
+            echo=_parse_bool(database.get("echo", False), field_name="database.echo"),
+            pool_pre_ping=_parse_bool(
+                database.get("pool_pre_ping", True),
+                field_name="database.pool_pre_ping",
+            ),
+        ),
     )
+
+
+def _parse_required_non_empty_str(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a non-empty string")
+    text = value.strip()
+    if not text:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return text
+
+
+def _parse_bool(value: Any, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        if value in {0, 1}:
+            return bool(value)
+        raise ValueError(f"{field_name} must be a boolean")
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "1", "on"}:
+            return True
+        if normalized in {"false", "no", "0", "off"}:
+            return False
+        raise ValueError(f"{field_name} must be a boolean")
+    raise ValueError(f"{field_name} must be a boolean")
 
 
 def _maybe_str(value: Any) -> Optional[str]:

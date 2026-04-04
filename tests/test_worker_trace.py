@@ -1,9 +1,14 @@
 import unittest
+from pathlib import Path
+import tempfile
 
 from tradeclaw.core.worker import TradingWorker
 from tradeclaw.domain.models import AccountSnapshot, AgentReview, MarketContext, OrderProposal, PositionSnapshot, RiskDecision
 from tradeclaw.execution.approval import ApprovalResult
-from tradeclaw.persistence.trace_store import InMemoryTraceStore
+from tradeclaw.persistence.db import create_engine_and_session_factory, dispose_engine
+from tradeclaw.persistence.models import Base
+from tradeclaw.persistence.repositories import SqlAlchemyTraceEventRepository
+from tradeclaw.persistence.trace_store import AsyncTraceStore, InMemoryTraceStore
 
 
 class _StaticDataProvider:
@@ -56,7 +61,41 @@ class _Execution:
 
 
 class WorkerTraceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        db_path = Path(self.tempdir.name) / "runtime.db"
+        self.engine, self.session_factory = create_engine_and_session_factory(
+            f"sqlite+aiosqlite:///{db_path}"
+        )
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def asyncTearDown(self):
+        await dispose_engine(self.engine)
+        self.tempdir.cleanup()
+
     async def test_worker_persists_run_phases_to_trace_store(self):
+        store = AsyncTraceStore(SqlAlchemyTraceEventRepository(self.session_factory))
+        worker = TradingWorker(
+            data_provider=_StaticDataProvider(),
+            universe_provider=_UniverseProvider(),
+            signal_strategy=_SignalStrategy(),
+            agent_strategy=_AgentStrategy(),
+            intent_builder=None,
+            intent_validator=None,
+            risk_engine=_Risk(),
+            approval_gate=_Approval(),
+            execution_adapter=_Execution(),
+            trace_store=store,
+        )
+
+        await worker.run_cycle()
+
+        events = await store.get_run_events(worker.last_run_id)
+        self.assertGreaterEqual(len(events), 1)
+        self.assertEqual(events[-1].phase, "persist_trace_and_metrics")
+
+    async def test_worker_still_supports_in_memory_trace_store(self):
         store = InMemoryTraceStore()
         worker = TradingWorker(
             data_provider=_StaticDataProvider(),
