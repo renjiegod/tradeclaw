@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from doyoutrade import onboarding
 from doyoutrade.onboarding import (
+    _PRESETS,
     _Answers,
     _agent_route_usable,
     _apply,
@@ -12,6 +13,13 @@ from doyoutrade.onboarding import (
     _unique_route_name,
 )
 from doyoutrade.persistence.repositories import ModelRouteRecord
+
+
+def _preset_index(slug: str) -> int:
+    for i, preset in enumerate(_PRESETS):
+        if preset.slug == slug:
+            return i
+    raise AssertionError(f"preset slug not found: {slug}")
 
 _DT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -144,13 +152,51 @@ class OnboardingWizardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(name, "default")
 
 
+class OnboardingPresetCatalogTests(unittest.TestCase):
+    def test_presets_cover_opencode_style_openai_compat_vendors(self):
+        slugs = {p.slug for p in _PRESETS}
+        for expected in (
+            "deepseek",
+            "kimi",
+            "qwen",
+            "zhipu",
+            "siliconflow",
+            "volcengine",
+            "minimax",
+            "openai",
+            "anthropic",
+            "openrouter",
+            "groq",
+            "xai",
+            "mistral",
+            "together",
+            "fireworks",
+            "cerebras",
+            "deepinfra",
+            "ollama",
+            "lmstudio",
+            "custom",
+        ):
+            self.assertIn(expected, slugs)
+
+    def test_presets_only_use_supported_provider_kinds(self):
+        allowed = {"anthropic", "openai_compatible", "lmstudio"}
+        for preset in _PRESETS:
+            self.assertIn(preset.provider_kind, allowed, preset.slug)
+
+    def test_local_presets_do_not_require_api_key(self):
+        for slug in ("ollama", "lmstudio"):
+            self.assertFalse(_PRESETS[_preset_index(slug)].needs_key)
+
+
 class OnboardingPromptTests(unittest.TestCase):
     """The interactive prompt parses answers; it never touches the DB."""
 
     def test_prompt_deepseek_flow_accepts_defaults(self):
-        # DeepSeek is preset #1; empty inputs accept the suggested base_url/model/route.
-        inputs = iter(["1", "", "", "default"])  # choice, base_url, model, route_name
-        with patch("builtins.input", lambda *_: next(inputs)), \
+        # Menu returns DeepSeek; empty inputs accept suggested base_url/model/name.
+        inputs = iter(["", "", "default"])  # base_url, model, route_name
+        with patch.object(onboarding, "select_index", return_value=_preset_index("deepseek")), \
+             patch("builtins.input", lambda *_: next(inputs)), \
              patch.object(onboarding.getpass, "getpass", return_value="sk-live"):
             answers = _prompt()
         self.assertIsNotNone(answers)
@@ -161,21 +207,33 @@ class OnboardingPromptTests(unittest.TestCase):
         self.assertEqual(answers.model, "deepseek-chat")
         self.assertEqual(answers.route_name, "default")
 
-    def test_prompt_choice_zero_skips(self):
-        with patch("builtins.input", lambda *_: "0"):
+    def test_prompt_skip_returns_none(self):
+        with patch.object(onboarding, "select_index", return_value=None):
             self.assertIsNone(_prompt())
 
     def test_prompt_missing_key_aborts(self):
-        inputs = iter(["1", "", "", "default"])
-        with patch("builtins.input", lambda *_: next(inputs)), \
+        inputs = iter(["", "", "default"])
+        with patch.object(onboarding, "select_index", return_value=_preset_index("deepseek")), \
+             patch("builtins.input", lambda *_: next(inputs)), \
              patch.object(onboarding.getpass, "getpass", return_value="  "):
             self.assertIsNone(_prompt())
 
     def test_prompt_custom_openai_requires_base_url(self):
-        # Preset #6 (自定义 OpenAI 兼容) with an empty base_url must abort.
-        inputs = iter(["6", ""])  # choice, base_url (blank)
-        with patch("builtins.input", lambda *_: next(inputs)):
+        inputs = iter([""])  # blank base_url
+        with patch.object(onboarding, "select_index", return_value=_preset_index("custom")), \
+             patch("builtins.input", lambda *_: next(inputs)):
             self.assertIsNone(_prompt())
+
+    def test_prompt_openai_preset_uses_official_base_url(self):
+        inputs = iter(["", "gpt-4.1", "default"])
+        with patch.object(onboarding, "select_index", return_value=_preset_index("openai")), \
+             patch("builtins.input", lambda *_: next(inputs)), \
+             patch.object(onboarding.getpass, "getpass", return_value="sk-openai"):
+            answers = _prompt()
+        self.assertIsNotNone(answers)
+        self.assertEqual(answers.slug, "openai")
+        self.assertEqual(answers.base_url, "https://api.openai.com/v1")
+        self.assertEqual(answers.model, "gpt-4.1")
 
 
 if __name__ == "__main__":

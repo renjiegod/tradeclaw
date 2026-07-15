@@ -94,20 +94,20 @@ export function ModelInvocationsPage() {
         ),
       },
       {
-        title: "Model ID",
+        title: "模型 ID",
         dataIndex: "model_id",
         key: "model_id",
         width: 220,
       },
       {
-        title: "Kind",
+        title: "接口类型",
         dataIndex: "provider_kind",
         key: "provider_kind",
         width: 130,
         render: (v: string) => <Tag className="rounded-lg">{v}</Tag>,
       },
       {
-        title: "路由",
+        title: "配置名称",
         dataIndex: "model_route_name",
         key: "model_route_name",
         width: 120,
@@ -115,7 +115,7 @@ export function ModelInvocationsPage() {
         render: (v: string | null | undefined) => v ?? "—",
       },
       {
-        title: "provider_key",
+        title: "供应商标识",
         dataIndex: "provider_key",
         key: "provider_key",
         width: 120,

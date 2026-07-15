@@ -545,7 +545,7 @@ export function CycleRunDetailBody({
             },
             {
               key: "model_route",
-              label: "模型路由",
+              label: "使用的模型",
               children: pd.composer_agent.agent.model_route_name || "—",
             },
             {

@@ -29,6 +29,7 @@ import uuid
 from dataclasses import dataclass
 
 from doyoutrade.observability import get_logger
+from doyoutrade.terminal_menu import select_index
 
 logger = get_logger(__name__)
 
@@ -45,15 +46,78 @@ class _Preset:
     needs_key: bool = True
 
 
-# Friendly presets. base_url + model_hint are suggestions the user can override;
-# the model id is always confirmed by the user (never silently assumed) so a
-# stale suggestion here can't wire a wrong model.
+# Friendly presets curated from OpenCode's provider directory, limited to what
+# our adapters can speak today (anthropic / openai_compatible / lmstudio).
+# base_url + model_hint are suggestions the user can override; the model id is
+# always confirmed by the user (never silently assumed).
 _PRESETS: tuple[_Preset, ...] = (
+    # —— 国内常用 ——
     _Preset("DeepSeek", "openai_compatible", "deepseek", "https://api.deepseek.com", "deepseek-chat"),
     _Preset("Kimi / Moonshot", "openai_compatible", "kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
-    _Preset("通义千问 / DashScope", "openai_compatible", "qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+    _Preset(
+        "通义千问 / DashScope",
+        "openai_compatible",
+        "qwen",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "qwen-plus",
+    ),
+    _Preset("智谱 GLM", "openai_compatible", "zhipu", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"),
+    _Preset(
+        "硅基流动 SiliconFlow",
+        "openai_compatible",
+        "siliconflow",
+        "https://api.siliconflow.cn/v1",
+        "deepseek-ai/DeepSeek-V3",
+    ),
+    _Preset(
+        "火山方舟 Volcengine",
+        "openai_compatible",
+        "volcengine",
+        "https://ark.cn-beijing.volces.com/api/v3",
+        "doubao-pro-32k",
+    ),
+    _Preset("MiniMax", "openai_compatible", "minimax", "https://api.minimax.chat/v1", "MiniMax-Text-01"),
+    # —— 国际 / 聚合 ——
+    _Preset("OpenAI", "openai_compatible", "openai", "https://api.openai.com/v1", "gpt-4.1"),
     _Preset("Anthropic Claude", "anthropic", "anthropic", None, "claude-sonnet-4-5"),
-    _Preset("LM Studio (本地)", "lmstudio", "lmstudio", "http://localhost:1234/v1", "local-model", needs_key=False),
+    _Preset("OpenRouter", "openai_compatible", "openrouter", "https://openrouter.ai/api/v1", "openai/gpt-4.1"),
+    _Preset("Groq", "openai_compatible", "groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+    _Preset("xAI Grok", "openai_compatible", "xai", "https://api.x.ai/v1", "grok-2-latest"),
+    _Preset("Mistral", "openai_compatible", "mistral", "https://api.mistral.ai/v1", "mistral-large-latest"),
+    _Preset("Together AI", "openai_compatible", "together", "https://api.together.xyz/v1", "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"),
+    _Preset(
+        "Fireworks AI",
+        "openai_compatible",
+        "fireworks",
+        "https://api.fireworks.ai/inference/v1",
+        "accounts/fireworks/models/llama-v3p1-70b-instruct",
+    ),
+    _Preset("Cerebras", "openai_compatible", "cerebras", "https://api.cerebras.ai/v1", "llama3.1-70b"),
+    _Preset(
+        "DeepInfra",
+        "openai_compatible",
+        "deepinfra",
+        "https://api.deepinfra.com/v1/openai",
+        "meta-llama/Meta-Llama-3.1-70B-Instruct",
+    ),
+    # —— 本地 ——
+    _Preset(
+        "Ollama（本地）",
+        "openai_compatible",
+        "ollama",
+        "http://localhost:11434/v1",
+        "llama3.2",
+        needs_key=False,
+    ),
+    _Preset(
+        "LM Studio（本地）",
+        "lmstudio",
+        "lmstudio",
+        "http://localhost:1234/v1",
+        "local-model",
+        needs_key=False,
+    ),
+    # —— 兜底 ——
     _Preset("自定义 OpenAI 兼容接口", "openai_compatible", "custom", None, ""),
 )
 
@@ -238,26 +302,25 @@ def _prompt() -> _Answers | None:
     print("\n" + "=" * 60, flush=True)
     print("DoYouTrade 安装向导 — 未检测到可用的模型配置", flush=True)
     print("=" * 60, flush=True)
-    print("为默认智能体配置一个大模型供应商（可随时在网页 /settings/models 修改）。\n", flush=True)
-    for idx, preset in enumerate(_PRESETS, start=1):
-        print(f"  {idx}. {preset.label}", flush=True)
-    print("  0. 跳过（稍后在网页配置）", flush=True)
+    print("为默认智能体配置一个大模型供应商（可随时在网页 /settings/models 修改）。", flush=True)
 
-    choice = _ask("请选择供应商编号", default="1").strip()
-    if choice == "0":
+    choice = select_index(
+        "请选择供应商（↑↓ 选择，Enter 确认；无方向键时输入编号）",
+        [p.label for p in _PRESETS],
+        allow_skip=True,
+        skip_label="跳过（稍后在网页配置）",
+        default=0,
+    )
+    if choice is None:
         return None
-    try:
-        preset = _PRESETS[int(choice) - 1]
-    except (ValueError, IndexError):
-        print("无效编号，已跳过安装向导。", flush=True)
-        return None
+    preset = _PRESETS[choice]
 
     if preset.base_url is not None:
-        base_url = _ask("Base URL", default=preset.base_url).strip() or None
+        base_url = _ask("接口地址", default=preset.base_url).strip() or None
     elif preset.provider_kind == "openai_compatible":
-        base_url = _ask("Base URL（OpenAI 兼容接口地址）", default="").strip() or None
+        base_url = _ask("接口地址（OpenAI 兼容接口）", default="").strip() or None
         if not base_url:
-            print("OpenAI 兼容接口必须填 Base URL，已跳过安装向导。", flush=True)
+            print("OpenAI 兼容接口必须填接口地址，已跳过安装向导。", flush=True)
             return None
     else:  # anthropic：官方地址由 SDK 默认，留空即可
         base_url = None
@@ -268,14 +331,14 @@ def _prompt() -> _Answers | None:
             print("未输入 API Key，已跳过安装向导。", flush=True)
             return None
     else:
-        api_key = _ask("API Key（LM Studio 可留空）", default="").strip()
+        api_key = _ask("API Key（本地服务可留空）", default="").strip()
 
     model = _ask("模型 ID", default=preset.model_hint).strip()
     if not model:
         print("未输入模型 ID，已跳过安装向导。", flush=True)
         return None
 
-    route_name = _ask("路由名称（route_name）", default=DEFAULT_ROUTE_NAME).strip() or DEFAULT_ROUTE_NAME
+    route_name = _ask("配置名称", default=DEFAULT_ROUTE_NAME).strip() or DEFAULT_ROUTE_NAME
 
     return _Answers(
         provider_kind=preset.provider_kind,
@@ -311,8 +374,8 @@ async def _apply(answers: _Answers, route_repo, agent_repo) -> None:
         answers.model,
     )
     print("\n✓ 已写入模型配置，并绑定默认智能体。", flush=True)
-    print(f"  route_name = {route_name}", flush=True)
-    print(f"  model      = {answers.model}", flush=True)
+    print(f"  配置名称 = {route_name}", flush=True)
+    print(f"  模型 ID  = {answers.model}", flush=True)
     print("正在启动服务……\n", flush=True)
 
 

@@ -151,7 +151,7 @@ describe("AgentFormModal", () => {
       expect(listAssistantAgentPromptTemplates).toHaveBeenCalled();
     });
 
-    fireEvent.mouseDown(screen.getByLabelText("模型路由"));
+    fireEvent.mouseDown(screen.getByLabelText("使用的模型"));
     expect(await screen.findByRole("option", { name: "default → claude-test" })).toBeInTheDocument();
 
     fireEvent.mouseDown(screen.getByLabelText("工具"));
@@ -175,7 +175,7 @@ describe("AgentFormModal", () => {
       fireEvent.input(editableDiv, { target: { textContent: "hi" } });
     }
 
-    await chooseSelectOption("模型路由", "default → claude-test");
+    await chooseSelectOption("使用的模型", "default → claude-test");
     await chooseSelectOption("工具", "data_bars_relative");
     await chooseSelectOption("Skills", "research");
 
@@ -306,7 +306,7 @@ describe("AgentFormModal", () => {
     fireEvent.change(screen.getByLabelText("保留最近消息数"), { target: { value: "8" } });
     fireEvent.change(screen.getByLabelText("保留最近工具对数"), { target: { value: "2" } });
     fireEvent.change(screen.getByLabelText("工具结果最大字符数"), { target: { value: "2000" } });
-    await chooseSelectOption("摘要模型路由", "default → claude-test");
+    await chooseSelectOption("摘要用的模型", "default → claude-test");
     await userEvent.click(screen.getByLabelText("允许 /compact"));
 
     fireEvent.click(screen.getByRole("button", { name: "创建" }));
@@ -428,7 +428,7 @@ describe("AgentFormModal", () => {
     expect(screen.queryByLabelText("工具")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Skills")).not.toBeInTheDocument();
     // The runtime knobs remain editable.
-    expect(screen.getByLabelText("模型路由")).toBeInTheDocument();
+    expect(screen.getByLabelText("使用的模型")).toBeInTheDocument();
     expect(screen.getByLabelText("压缩模式")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "保存" }));

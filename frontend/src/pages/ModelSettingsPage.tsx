@@ -49,10 +49,14 @@ function isConfigUnavailableError(e: unknown): boolean {
 }
 
 const KIND_OPTIONS = [
-  { value: "anthropic", label: "anthropic（Messages API）" },
-  { value: "openai_compatible", label: "openai_compatible（Chat Completions）" },
-  { value: "lmstudio", label: "lmstudio（LM Studio SDK）" },
+  { value: "anthropic", label: "Anthropic（官方 Messages API）" },
+  { value: "openai_compatible", label: "OpenAI 兼容接口" },
+  { value: "lmstudio", label: "LM Studio（本地）" },
 ];
+
+const KIND_LABELS: Record<string, string> = Object.fromEntries(
+  KIND_OPTIONS.map((o) => [o.value, o.label]),
+);
 
 type RouteFormValues = {
   route_name: string;
@@ -132,7 +136,7 @@ export function ModelSettingsPage() {
   const submitRoute = async () => {
     try {
       const v = await routeForm.validateFields();
-      const settings = parseJsonObjectOrNull(v.settings_json, "settings");
+      const settings = parseJsonObjectOrNull(v.settings_json, "高级参数");
       setRouteSubmitting(true);
       if (routeEditId) {
         const patch: Parameters<typeof patchModelRoute>[1] = {
@@ -190,7 +194,7 @@ export function ModelSettingsPage() {
 
   const routeColumns: ColumnsType<ModelRouteRow> = [
     {
-      title: "route_name",
+      title: "配置名称",
       dataIndex: "route_name",
       key: "route_name",
       ellipsis: true,
@@ -201,13 +205,14 @@ export function ModelSettingsPage() {
       ),
     },
     {
-      title: "类型",
+      title: "接口类型",
       dataIndex: "provider_kind",
       key: "provider_kind",
-      width: 140,
+      width: 180,
+      render: (k: string) => KIND_LABELS[k] ?? k,
     },
     {
-      title: "base_url",
+      title: "接口地址",
       dataIndex: "base_url",
       key: "base_url",
       ellipsis: true,
@@ -221,14 +226,14 @@ export function ModelSettingsPage() {
       render: (m: string) => <Typography.Text className="font-mono text-xs">{m || "—"}</Typography.Text>,
     },
     {
-      title: "target_model",
+      title: "模型 ID",
       dataIndex: "target_model",
       key: "target_model",
       ellipsis: true,
       render: (m: string | null) => m ?? "—",
     },
     {
-      title: "settings",
+      title: "高级参数",
       key: "settings",
       width: 160,
       ellipsis: true,
@@ -253,7 +258,7 @@ export function ModelSettingsPage() {
           </Button>
           <Popconfirm
             title="删除此模型？"
-            description="若实例或回测任务仍引用该 route_name，将返回 409。"
+            description="若实例或回测任务仍引用该配置名称，将无法删除（返回 409）。"
             onConfirm={async () => {
               try {
                 await deleteModelRoute(row.id);
@@ -277,7 +282,7 @@ export function ModelSettingsPage() {
     <>
       <PageIntro
         title="模型配置"
-        description="管理可用模型：每条配置自包含适配器类型、base_url、API Key 与模型 ID，并由 route_name 供实例、回测与 Agent 引用。创建 Agent 时的「模型」下拉与此共用同一数据源。"
+        description="管理可用模型：每条配置包含接口类型、接口地址、API Key 与模型 ID，并用「配置名称」供实例、回测与智能体引用。创建智能体时的「使用的模型」下拉与此共用同一数据源。"
         extra={
           <Button className="rounded-xl" icon={<ReloadOutlined />} onClick={() => void loadRoutes()}>
             刷新
@@ -292,9 +297,7 @@ export function ModelSettingsPage() {
       <div className="rounded-2xl border border-shell-line bg-card-bg p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <Typography.Text type="secondary" className="text-sm">
-            <Typography.Text code>route_name</Typography.Text> 须与实例{' '}
-            <Typography.Text code>model_route_name</Typography.Text> 一致；列表中的{' '}
-            <Typography.Text code>api_key_masked</Typography.Text> 仅作提示，完整密钥通过「查看 Key」拉取。
+            「配置名称」会在实例与智能体中被引用；列表中的 API Key 已脱敏，完整密钥通过「查看 Key」拉取。
           </Typography.Text>
           <Button type="primary" className="rounded-xl" icon={<PlusOutlined />} onClick={openCreateRoute}>
             新建模型
@@ -321,34 +324,34 @@ export function ModelSettingsPage() {
         destroyOnClose
       >
         <Form form={routeForm} layout="vertical" className="mt-2">
-          <Form.Item name="route_name" label="route_name" rules={[{ required: true, message: "必填" }]}>
-            <Input placeholder="实例 settings / 顶层 model_route_name 使用的名字" />
+          <Form.Item name="route_name" label="配置名称" rules={[{ required: true, message: "必填" }]}>
+            <Input placeholder="例如 default；实例与智能体会按此名称引用" />
           </Form.Item>
           <Form.Item
             name="provider_kind"
-            label="provider_kind"
+            label="接口类型"
             rules={[{ required: true }]}
-            extra="openai_compatible：base_url 须非空。lmstudio：base_url 可省略（使用 LM Studio 默认）。anthropic：base_url 可选（留空走默认端点）。"
+            extra="OpenAI 兼容接口须填写接口地址；LM Studio 可省略（使用本地默认）；Anthropic 可留空走官方端点。"
           >
             <Select options={KIND_OPTIONS} />
           </Form.Item>
-          <Form.Item name="api_key" label={routeEditId ? "api_key（留空则不修改）" : "api_key"}>
+          <Form.Item name="api_key" label={routeEditId ? "API Key（留空则不修改）" : "API Key"}>
             <Input.Password placeholder={routeEditId ? "不修改请留空" : "可留空；生产环境请填写"} autoComplete="new-password" />
           </Form.Item>
           <Form.Item
             name="base_url"
-            label="base_url"
-            extra="openai_compatible 要求非空 base_url；anthropic 可为空使用默认。"
+            label="接口地址"
+            extra="OpenAI 兼容接口要求填写；Anthropic 可留空使用官方默认。"
           >
             <Input placeholder="https://…" allowClear />
           </Form.Item>
-          <Form.Item name="target_model" label="target_model（最终使用的模型 ID）">
+          <Form.Item name="target_model" label="模型 ID">
             <Input placeholder="例如 claude-sonnet-4-5 / deepseek-chat" allowClear />
           </Form.Item>
           <Form.Item
             name="settings_json"
-            label="settings（JSON 对象，合并到 YAML model 基线）"
-            extra="留空表示不传；可填 temperature、max_tokens、signal_strategy 等。"
+            label="高级参数（JSON）"
+            extra="留空表示不传；可填 temperature、max_tokens 等。"
           >
             <Input.TextArea rows={5} placeholder='例如 {"temperature": 0.2}' className="font-mono text-xs" />
           </Form.Item>

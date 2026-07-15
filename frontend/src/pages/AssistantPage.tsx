@@ -1049,7 +1049,7 @@ export function AssistantPage() {
     if (!sessionId) return;
     const isLifecycleCommand = /^\/new\s*$/i.test(rawText);
     if (!activeModelRoute && !isLifecycleCommand) {
-      message.warning("当前 Agent 会话未关联 Model Route，请新建会话并选择模型路由。");
+      message.warning("当前智能体会话未关联模型，请新建会话并选择要使用的模型。");
       return;
     }
 
@@ -1362,7 +1362,7 @@ export function AssistantPage() {
         }
         extra={
           <Space wrap>
-            {activeModelRoute ? <Tag color="blue">Model Route: {activeModelRoute}</Tag> : null}
+            {activeModelRoute ? <Tag color="blue">使用的模型: {activeModelRoute}</Tag> : null}
             <Tooltip title="调试模式：逐条展示每个工具调用与思考卡片；关闭后执行过程折叠为单个进度卡片">
               <Space size={4} data-testid="assistant-debug-mode-toggle">
                 <span className="text-xs text-gray-500">调试模式</span>

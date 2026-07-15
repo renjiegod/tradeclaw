@@ -253,7 +253,7 @@ export const AgentFormModal: React.FC<Props> = ({ agent, onSaved, onClose }) => 
             showIcon
             style={{ marginBottom: 16 }}
             message="固定主智能体"
-            description="仅可编辑运行配置（模型路由 / 上下文压缩 / 最大轮数）；名称、提示词、Skills、Tools 由代码控制。"
+            description="仅可编辑运行配置（使用的模型 / 上下文压缩 / 最大轮数）；名称、提示词、Skills、Tools 由代码控制。"
           />
         )}
         <Row gutter={16}>
@@ -375,7 +375,7 @@ export const AgentFormModal: React.FC<Props> = ({ agent, onSaved, onClose }) => 
             )}
           </>
         )}
-        <Form.Item name="model_route_name" label="模型路由">
+        <Form.Item name="model_route_name" label="使用的模型">
           <Select
             placeholder="留空使用系统默认"
             allowClear
@@ -541,7 +541,7 @@ export const AgentFormModal: React.FC<Props> = ({ agent, onSaved, onClose }) => 
                     <Col span={12}>
                       <Form.Item
                         name={["context_compaction", "summary_model_route_name"]}
-                        label="摘要模型路由"
+                        label="摘要用的模型"
                       >
                         <Select
                           placeholder="留空则复用主路由"

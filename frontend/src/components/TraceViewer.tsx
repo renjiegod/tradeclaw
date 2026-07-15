@@ -472,15 +472,15 @@ export function TraceViewer({ spans, loading }: Props) {
       {modelInvocationDetail && (
         <Space direction="vertical" size={12} className="w-full">
           <Descriptions size="small" bordered column={2} items={[
-            { key: "model", label: "Model", children: modelInvocationDetail.model },
-            { key: "model_id", label: "Model ID", children: modelInvocationDetail.model_id },
-            { key: "provider_kind", label: "Kind", children: modelInvocationDetail.provider_kind },
-            { key: "call_kind", label: "Call Kind", children: modelInvocationDetail.call_kind },
-            { key: "ok", label: "Status", children: modelInvocationDetail.ok ? "OK" : "Error" },
-            { key: "total_latency_ms", label: "Latency (ms)", children: modelInvocationDetail.total_latency_ms },
-            { key: "total_tokens", label: "Total Tokens", children: modelInvocationDetail.total_tokens },
-            { key: "cache_read_tokens", label: "Cache Read", children: modelInvocationDetail.cache_read_tokens ?? "—" },
-            { key: "cache_write_tokens", label: "Cache Write", children: modelInvocationDetail.cache_write_tokens ?? "—" },
+            { key: "model", label: "模型", children: modelInvocationDetail.model },
+            { key: "model_id", label: "模型 ID", children: modelInvocationDetail.model_id },
+            { key: "provider_kind", label: "接口类型", children: modelInvocationDetail.provider_kind },
+            { key: "call_kind", label: "调用类型", children: modelInvocationDetail.call_kind },
+            { key: "ok", label: "状态", children: modelInvocationDetail.ok ? "OK" : "Error" },
+            { key: "total_latency_ms", label: "耗时 (ms)", children: modelInvocationDetail.total_latency_ms },
+            { key: "total_tokens", label: "总 Token", children: modelInvocationDetail.total_tokens },
+            { key: "cache_read_tokens", label: "缓存读取", children: modelInvocationDetail.cache_read_tokens ?? "—" },
+            { key: "cache_write_tokens", label: "缓存写入", children: modelInvocationDetail.cache_write_tokens ?? "—" },
           ]} />
           {modelInvocationDetail.error_message && (
             <Alert type="error" message={modelInvocationDetail.error_message} />

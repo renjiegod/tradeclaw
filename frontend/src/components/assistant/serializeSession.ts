@@ -71,7 +71,7 @@ function formatAgentSection(
   lines.push(`- id: \`${agent.id}\``);
   lines.push(`- name: ${agent.name}`);
   lines.push(`- status: ${agent.status}`);
-  lines.push(`- model_route: ${agent.model_route_name || "(none)"}`);
+  lines.push(`- model: ${agent.model_route_name || "(none)"}`);
   lines.push(`- max_turns: ${agent.max_turns}`);
   if (agent.skill_names?.length) {
     lines.push(`- enabled_skills: ${agent.skill_names.join(", ")}`);
