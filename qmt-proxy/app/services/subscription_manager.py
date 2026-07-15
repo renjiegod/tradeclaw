@@ -1,0 +1,575 @@
+"""
+订阅管理器模块
+负责管理xtdata行情订阅的生命周期和数据分发
+"""
+
+import asyncio
+import os
+import sys
+import threading
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, AsyncIterator, Dict, List, Optional
+from app.utils.logger import logger
+
+# 添加xtquant包到Python路径
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+try:
+    import xtquant.xtdata as xtdata
+
+    XTQUANT_AVAILABLE = True
+except ImportError:
+    logger.warning("xtquant模块未正确安装")
+    XTQUANT_AVAILABLE = False
+
+    class MockModule:
+        def __getattr__(self, name):
+            def mock_function(*args, **kwargs):
+                raise NotImplementedError(f"xtquant模块未正确安装，无法调用 {name}")
+
+            return mock_function
+
+    xtdata = MockModule()
+
+from app.config import Settings, XTQuantMode
+from app.utils.exceptions import DataServiceException
+from app.utils.logger import logger
+
+
+@dataclass
+class SubscriptionContext:
+    """订阅上下文"""
+
+    subscription_id: str
+    symbols: List[str]
+    period: str = "tick"
+    start_date: str = ''
+    adjust_type: str = "none"
+    subids_xtquant: List[int] = field(default_factory=list)  # xtquant内部订阅ID
+    subscription_type: str = "quote"  # "quote" 或 "whole_quote"
+    queue: Optional[asyncio.Queue] = None  # 延迟初始化，避免在无事件循环线程中创建
+    created_at: datetime = field(default_factory=datetime.now)
+    last_heartbeat: datetime = field(default_factory=datetime.now)
+    active: bool = True
+    _queue_maxsize: int = 1000  # 队列最大尺寸配置
+
+    def get_queue(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> asyncio.Queue:
+        """获取或创建队列（线程安全的惰性初始化）"""
+        if self.queue is None:
+            # 如果没有队列，创建一个新的
+            if loop is not None:
+                # 在指定的事件循环中创建队列
+                self.queue = asyncio.Queue(maxsize=self._queue_maxsize)
+            else:
+                # 尝试使用当前事件循环
+                try:
+                    self.queue = asyncio.Queue(maxsize=self._queue_maxsize)
+                except RuntimeError:
+                    # 如果没有事件循环，延迟创建
+                    # 这种情况下，队列将在第一次stream_quotes调用时创建
+                    pass
+        return self.queue
+
+
+class SubscriptionManager:
+    """订阅管理器"""
+
+    def __init__(self, settings: Settings):
+        """初始化订阅管理器"""
+        self.settings = settings
+        self._subscriptions: Dict[str, SubscriptionContext] = {}
+        self._symbolperiod_to_subscriptions: Dict[str, List[str]] = {}  # symbolperiod -> [subscription_ids]
+        self._lock = threading.Lock()
+        self._xtdata_thread: Optional[threading.Thread] = None
+        self._xtdata_running = False
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+
+        # 配置参数
+        self.max_queue_size = getattr(settings.xtquant.data, "max_queue_size", 1000)
+        self.max_subscriptions = getattr(settings.xtquant.data, "max_subscriptions", 100)
+        self.heartbeat_timeout = getattr(settings.xtquant.data, "heartbeat_timeout", 60)
+        self.whole_quote_enabled = getattr(settings.xtquant.data, "whole_quote_enabled", False)
+
+        logger.info(f"SubscriptionManager初始化完成，模式: {settings.xtquant.mode.value}")
+
+        # 如果是真实模式，启动xtdata后台线程
+        if settings.xtquant.mode != XTQuantMode.MOCK:
+            self._start_xtdata_thread()
+
+    def _start_xtdata_thread(self):
+        """启动xtdata后台线程"""
+        if self._xtdata_running:
+            logger.warning("xtdata线程已在运行")
+            return
+
+        def xtdata_worker():
+            """xtdata后台工作线程"""
+            logger.info("启动xtdata后台线程")
+            self._xtdata_running = True
+
+            try:
+                # 运行xtdata事件循环（阻塞式）
+                xtdata.run()
+            except Exception as e:
+                logger.error(f"xtdata线程异常退出: {e}")
+            finally:
+                self._xtdata_running = False
+                logger.warning("xtdata线程已停止")
+
+        self._xtdata_thread = threading.Thread(target=xtdata_worker, daemon=True, name="xtdata-worker")
+        self._xtdata_thread.start()
+        logger.info("xtdata后台线程已启动")
+
+    def _on_data_callback_tick(self, data: Dict[str, Any]):
+        self._on_data_callback("tick", data)  
+
+    def _on_data_callback_1m(self, data: Dict[str, Any]):
+        self._on_data_callback("1m", data) 
+
+    def _on_data_callback_5m(self, data: Dict[str, Any]):
+        self._on_data_callback("5m", data) 
+
+    def _on_data_callback_15m(self, data: Dict[str, Any]):
+        self._on_data_callback("15m", data) 
+
+    def _on_data_callback_30m(self, data: Dict[str, Any]):
+        self._on_data_callback("30m", data) 
+
+    def _on_data_callback_1h(self, data: Dict[str, Any]):
+        self._on_data_callback("1h", data) 
+
+    def _on_data_callback_1d(self, data: Dict[str, Any]):
+        self._on_data_callback("1d", data) 
+
+    def _on_data_callback_1w(self, data: Dict[str, Any]):
+        self._on_data_callback("1w", data)   
+
+    def _on_data_callback_1mon(self, data: Dict[str, Any]):
+        self._on_data_callback("1mon", data)   
+
+    def _on_data_callback_1q(self, data: Dict[str, Any]):
+        self._on_data_callback("1q", data)           
+
+    def _on_data_callback_1hy(self, data: Dict[str, Any]):
+        self._on_data_callback("1hy", data)   
+
+    def _on_data_callback_1y(self, data: Dict[str, Any]):
+        self._on_data_callback("1y", data)   
+
+
+    def _on_data_callback(self, period: str, data: Dict[str, Any]):
+        """
+        xtdata行情回调处理器
+        此方法在xtdata的后台线程中被调用
+        """
+        try:
+            symbols = data.keys()
+            if not symbols:
+                logger.warning(f"收到无效的行情数据（缺少symbol）: {data}")
+                return
+
+            # 查找所有订阅了该symbol的订阅ID
+            all_subscription_ids = set()
+            with self._lock:
+                for symbol in symbols:
+                    symbolperiod = f"{symbol}_{period}"
+                    subscription_ids = self._symbolperiod_to_subscriptions.get(symbolperiod, [])
+                    all_subscription_ids.update(subscription_ids)
+
+            if not all_subscription_ids:
+                return
+
+            # 将数据推送到所有相关订阅的队列
+            for sub_id in all_subscription_ids:
+                with self._lock:
+                    context = self._subscriptions.get(sub_id)
+
+                if context and context.active:
+                    # 使用线程安全的方式将数据放入asyncio队列
+                    if self._event_loop:
+                        try:
+                            # 确保队列已初始化
+                            queue = context.get_queue(self._event_loop)
+                            asyncio.run_coroutine_threadsafe(self._put_to_queue(queue, data), self._event_loop)
+                        except Exception as e:
+                            logger.error(f"推送数据到订阅 {sub_id} 失败: {e}")
+
+        except Exception as e:
+            logger.error(f"行情回调处理异常: {e}", exc_info=True)
+
+    async def _put_to_queue(self, queue: Optional[asyncio.Queue], data: Dict[str, Any]):
+        """将数据放入队列（处理队列满的情况）"""
+        if queue is None:
+            logger.warning("队列尚未初始化，跳过数据推送")
+            return
+
+        try:
+            queue.put_nowait(data)
+        except asyncio.QueueFull:
+            # 队列满时，丢弃最旧的数据
+            try:
+                queue.get_nowait()
+                queue.put_nowait(data)
+                logger.warning("订阅队列已满，丢弃旧数据")
+            except Exception as e:
+                logger.error(f"处理队列满异常: {e}")
+
+    def set_event_loop(self, loop: asyncio.AbstractEventLoop):
+        """设置事件循环（由应用启动时调用）"""
+        self._event_loop = loop
+        logger.info("已设置事件循环")
+
+    def subscribe_quote(self, symbols: List[str], period: str = "tick", start_date: str = '', adjust_type: str = "none") -> str:
+        """
+        订阅单股或多股行情
+
+        Args:
+            symbols: 股票代码列表
+            period: 周期
+            start_date: 开始时间
+            adjust_type: 复权类型 "none", "front", "back", "front_ratio", "back_ratio"
+
+        Returns:
+            subscription_id: 订阅ID
+        """
+        # 检查股票代码列表不能为空
+        if not symbols or len(symbols) == 0:
+            raise DataServiceException("股票代码列表不能为空", error_code="EMPTY_SYMBOLS")
+
+        # 过滤空字符串
+        symbols = [s.strip() for s in symbols if s and s.strip()]
+        if not symbols:
+            raise DataServiceException("股票代码列表不能为空", error_code="EMPTY_SYMBOLS")
+
+        # 检查订阅数量限制
+        with self._lock:
+            if len(self._subscriptions) >= self.max_subscriptions:
+                raise DataServiceException(
+                    f"订阅数量已达上限 {self.max_subscriptions}", error_code="SUBSCRIPTION_LIMIT_EXCEEDED"
+                )
+
+        if self.settings.xtquant.mode == XTQuantMode.MOCK and period != "tick":
+            raise DataServiceException(f"Mock模式只支持tick周期, 当前周期: {period}", error_code="NON_TICK_PERIOD_NOT_SUPPORTED_IN_MOCK")
+
+        # 生成订阅ID
+        subscription_id = f"sub_{uuid.uuid4().hex[:16]}"
+
+        # 创建订阅上下文
+        context = SubscriptionContext(
+            subscription_id=subscription_id, symbols=symbols, period=period, start_date=start_date, adjust_type=adjust_type, subscription_type="quote"
+        )
+
+        # 注册订阅
+        with self._lock:
+            self._subscriptions[subscription_id] = context
+
+            # 更新symbolperiod到订阅的映射
+            for symbol in symbols:
+                symbolperiod = f"{symbol}_{period}"
+                if symbolperiod not in self._symbolperiod_to_subscriptions:
+                    self._symbolperiod_to_subscriptions[symbolperiod] = []
+                self._symbolperiod_to_subscriptions[symbolperiod].append(subscription_id)
+
+        # 真实模式下调用xtdata订阅
+        if self.settings.xtquant.mode != XTQuantMode.MOCK:
+            try:
+                callback_method = getattr(self, f"_on_data_callback_{period}")
+                # 调用xtdata订阅接口
+                for symbol in symbols:
+                    if adjust_type == "none":
+                        # 不复权：使用标准订阅接口
+                        subid_xtquant = xtdata.subscribe_quote(symbol, period=period, start_time=start_date, count=-1, callback=callback_method)
+                        if subid_xtquant < 0:
+                            raise DataServiceException(f"订阅失败", error_code="SUBSCRIPTION_XTQUANT_FAILED")
+                        context.subids_xtquant.append(subid_xtquant)
+                        logger.info(f"订阅行情（不复权）: {symbol} {period} {start_date} {subid_xtquant}")
+                    else:
+                        # 复权：使用subscribe_quote2接口，支持前复权(front), 后复权(back), 等比前复权(front_ratio), 等比后复权(back_ratio)
+                        # dividend_type参数: 'front'=前复权, 'back'=后复权, 'front_ratio', 'back_ratio'
+                        if not hasattr(xtdata, "subscribe_quote2"):
+                            # 如果xtdata版本不支持subscribe_quote2，降级使用普通订阅并警告                            
+                            subid_xtquant = xtdata.subscribe_quote(symbol, period=period, start_time=start_date, count=-1, callback=callback_method)                            
+                            if subid_xtquant < 0:
+                                raise DataServiceException(f"订阅失败", error_code="SUBSCRIPTION_XTQUANT_FAILED")
+                            context.subids_xtquant.append(subid_xtquant)
+                            logger.warning(f"当前xtdata版本不支持subscribe_quote2，复权参数 {adjust_type} 将被忽略")
+                        else:
+                            subid_xtquant = xtdata.subscribe_quote2(
+                                stock_code=symbol,
+                                period=period,  # 默认为tick级别
+                                start_time=start_date,
+                                end_time="",
+                                count=-1,
+                                dividend_type=adjust_type,  # front/back/front_ratio/back_ratio
+                                callback=callback_method,
+                            )   
+                            if subid_xtquant < 0:
+                                raise DataServiceException(f"订阅失败", error_code="SUBSCRIPTION_XTQUANT_FAILED")                     
+                            context.subids_xtquant.append(subid_xtquant)
+                            logger.info(f"订阅行情（{adjust_type}复权）: {symbol} {period} {start_date} {subid_xtquant}")
+
+                logger.info(f"已订阅行情: {subscription_id} symbols: {symbols}, period: {period} start_date: {start_date} adjust_type: {adjust_type}, subids_xtquant: {context.subids_xtquant}")
+
+            except Exception as e:
+                # 订阅失败，清理上下文
+                with self._lock:
+                    del self._subscriptions[subscription_id]
+                    for symbol in symbols:
+                        symbolperiod = f"{symbol}_{period}"
+                        if symbolperiod in self._symbolperiod_to_subscriptions:
+                            self._symbolperiod_to_subscriptions[symbolperiod].remove(subscription_id)
+                    for subid in context.subids_xtquant:
+                        try:
+                            xtdata.unsubscribe_quote(subid)
+                            context.subids_xtquant.remove(subid)
+                        except Exception:
+                            pass                    
+
+                logger.error(f"xtdata订阅失败: {e}, 未取消的xtquant订阅ID: {context.subids_xtquant}")
+                raise DataServiceException(f"订阅失败: {e}", error_code="SUBSCRIPTION_FAILED")
+        else:
+            logger.info(f"Mock模式：创建订阅 {subscription_id}, symbols: {symbols}")
+
+        return subscription_id
+
+    def subscribe_whole_quote(self) -> str:
+        """
+        订阅全推行情
+
+        Returns:
+            subscription_id: 订阅ID
+        """
+        # 检查是否允许全推
+        if not self.whole_quote_enabled:
+            raise DataServiceException("全推订阅未启用，请在配置中开启", error_code="WHOLE_QUOTE_DISABLED")
+
+        if self.settings.xtquant.mode == XTQuantMode.MOCK:
+            raise DataServiceException("Mock模式不支持全推订阅", error_code="WHOLE_QUOTE_NOT_SUPPORTED_IN_MOCK")
+
+        # 生成订阅ID
+        subscription_id = f"whole_{uuid.uuid4().hex[:16]}"
+
+        # 创建订阅上下文
+        context = SubscriptionContext(
+            subscription_id=subscription_id, symbols=["*"], subscription_type="whole_quote"  # 全推标记
+        )
+
+        # 注册订阅
+        with self._lock:
+            self._subscriptions[subscription_id] = context
+
+        # 真实模式下调用xtdata全推订阅
+        if self.settings.xtquant.mode != XTQuantMode.MOCK:
+            try:
+                subid_xtquant = xtdata.subscribe_whole_quote(["SH", "SZ"], callback=self._on_data_callback_tick)
+                if subid_xtquant < 0:
+                    raise DataServiceException(f"全推订阅失败", error_code="WHOLE_QUOTE_XTQUANT_FAILED")
+                context.subids_xtquant = [subid_xtquant]
+                logger.info(f"已订阅全推行情: {subscription_id}")
+            except Exception as e:
+                # 订阅失败，清理上下文
+                with self._lock:
+                    del self._subscriptions[subscription_id]
+
+                logger.error(f"全推订阅失败: {e}")
+                raise DataServiceException(f"全推订阅失败: {e}", error_code="WHOLE_QUOTE_FAILED")
+
+        return subscription_id
+
+    def unsubscribe(self, subscription_id: str) -> bool:
+        """
+        取消订阅
+
+        Args:
+            subscription_id: 订阅ID
+
+        Returns:
+            是否成功取消
+        """
+        with self._lock:
+            context = self._subscriptions.get(subscription_id)
+
+            if not context:
+                logger.warning(f"订阅不存在: {subscription_id}")
+                return True  # 幂等操作，返回成功
+
+            # 标记为非活跃
+            context.active = False
+
+            # 清理symbol映射
+            for symbol in context.symbols:
+                symbolperiod = f"{symbol}_{context.period}"
+                if symbolperiod in self._symbolperiod_to_subscriptions:
+                    try:
+                        self._symbolperiod_to_subscriptions[symbolperiod].remove(subscription_id)
+                        if not self._symbolperiod_to_subscriptions[symbolperiod]:
+                            del self._symbolperiod_to_subscriptions[symbolperiod]
+                    except ValueError:
+                        pass
+
+            # 删除订阅上下文
+            del self._subscriptions[subscription_id]
+
+        # 真实模式下调用xtdata取消订阅
+        if self.settings.xtquant.mode != XTQuantMode.MOCK:
+            try:
+                with self._lock:                    
+                    for subid in context.subids_xtquant:
+                        xtdata.unsubscribe_quote(subid)   
+                        context.subids_xtquant.remove(subid)                                         
+                logger.info(f"已取消订阅: {subscription_id}")
+            except Exception as e:
+                logger.error(f"取消订阅失败: {e}, 未取消的xtquant订阅ID: {context.subids_xtquant}")
+                # 不抛出异常，因为本地已经清理
+        else:
+            logger.info(f"Mock模式：取消订阅 {subscription_id}")
+
+        return True
+
+    async def stream_quotes(self, subscription_id: str) -> AsyncIterator[Dict[str, Any]]:
+        """
+        流式获取行情数据
+
+        Args:
+            subscription_id: 订阅ID
+
+        Yields:
+            行情数据字典
+        """
+        context = self._subscriptions.get(subscription_id)
+
+        if not context:
+            raise DataServiceException(f"订阅不存在: {subscription_id}", error_code="SUBSCRIPTION_NOT_FOUND")
+
+        # 确保队列已初始化（惰性创建）
+        try:
+            loop = asyncio.get_running_loop()
+            context.get_queue(loop)
+        except RuntimeError:
+            # 没有运行中的事件循环，尝试创建
+            context.get_queue(None)
+
+        logger.info(f"开始流式推送: {subscription_id}")
+
+        try:
+            # Mock模式：生成模拟数据
+            if self.settings.xtquant.mode == XTQuantMode.MOCK:
+                while context.active:
+                    # 模拟行情数据
+                    for symbol in context.symbols:
+                        mock_data = {
+                            "stock_code": symbol,
+                            "timestamp": datetime.now().isoformat(),
+                            "last_price": 10.0 + (hash(symbol) % 100) / 10.0,
+                            "volume": 1000000,
+                            "amount": 10000000.0,
+                            "open": 9.9,
+                            "high": 10.5,
+                            "low": 9.8,
+                            "close": 10.0,
+                        }
+                        yield mock_data
+
+                    await asyncio.sleep(1.0)  # 每秒推送一次
+
+            # 真实模式：从队列读取数据
+            else:
+                queue = context.get_queue()
+                if queue is None:
+                    raise DataServiceException(
+                        f"订阅队列未初始化: {subscription_id}", error_code="QUEUE_NOT_INITIALIZED"
+                    )
+
+                while context.active:
+                    try:
+                        # 等待队列数据（设置超时以便检查active状态）
+                        data = await asyncio.wait_for(queue.get(), timeout=1.0)
+
+                        # 更新心跳时间
+                        context.last_heartbeat = datetime.now()
+
+                        yield data
+
+                    except asyncio.TimeoutError:
+                        # 超时，检查active状态
+                        continue
+
+        except asyncio.CancelledError:
+            logger.info(f"流式推送被取消: {subscription_id}")
+            raise
+
+        except Exception as e:
+            logger.error(f"流式推送异常: {subscription_id}, {e}", exc_info=True)
+            raise
+
+        finally:
+            logger.info(f"流式推送结束: {subscription_id}")
+
+    def get_subscription_info(self, subscription_id: str) -> Optional[Dict[str, Any]]:
+        """获取订阅信息"""
+        context = self._subscriptions.get(subscription_id)
+
+        if not context:
+            return None
+
+        queue = context.get_queue()
+        queue_size = queue.qsize() if queue is not None else 0
+
+        return {
+            "subscription_id": context.subscription_id,
+            "subids_xtquant": context.subids_xtquant,
+            "symbols": context.symbols,
+            "period": context.period,
+            "start_date": context.start_date,
+            "adjust_type": context.adjust_type,
+            "subscription_type": context.subscription_type,
+            "created_at": context.created_at.isoformat(),
+            "last_heartbeat": context.last_heartbeat.isoformat(),
+            "active": context.active,
+            "queue_size": queue_size,
+        }
+
+    def list_subscriptions(self) -> List[Dict[str, Any]]:
+        """列出所有订阅"""
+        with self._lock:
+            return [self.get_subscription_info(sub_id) for sub_id in self._subscriptions.keys()]
+
+    def cleanup_inactive_subscriptions(self):
+        """清理超时的订阅"""
+        now = datetime.now()
+        inactive_ids = []
+
+        with self._lock:
+            for sub_id, context in self._subscriptions.items():
+                # 检查心跳超时
+                elapsed = (now - context.last_heartbeat).total_seconds()
+                if elapsed > self.heartbeat_timeout:
+                    logger.warning(f"订阅心跳超时: {sub_id}, 已超时 {elapsed:.1f}秒")
+                    inactive_ids.append(sub_id)
+
+        # 清理超时订阅
+        for sub_id in inactive_ids:
+            self.unsubscribe(sub_id)
+
+        return len(inactive_ids)
+
+    def shutdown(self):
+        """关闭订阅管理器"""
+        logger.info("关闭订阅管理器...")
+
+        # 取消所有订阅
+        with self._lock:
+            subscription_ids = list(self._subscriptions.keys())
+
+        for sub_id in subscription_ids:
+            try:
+                self.unsubscribe(sub_id)
+            except Exception as e:
+                logger.error(f"关闭订阅失败: {sub_id}, {e}")
+
+        # 停止xtdata线程
+        self._xtdata_running = False
+
+        logger.info("订阅管理器已关闭")

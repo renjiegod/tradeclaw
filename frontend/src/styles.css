@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply box-border;
+  }
+
+  body {
+    @apply m-0 min-h-screen bg-shell-bg font-sans text-shell-ink;
+  }
+
+  #root {
+    @apply min-h-screen;
+  }
+}
+
+/* "Agent thinking" waiting cue — a pulsing asterisk glyph next to a label
+   whose text shimmers via a repeating background-clip gradient. */
+.assistant-thinking {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 13px;
+  line-height: 1.4;
+  --assistant-thinking-color: #246bfe;
+  --assistant-thinking-shimmer: #86a9ff;
+}
+.assistant-thinking__glyph {
+  display: inline-block;
+  width: 1em;
+  flex: none;
+  text-align: center;
+  line-height: 1;
+  color: var(--assistant-thinking-color);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  transform: translateY(0.06em);
+}
+.assistant-thinking__label {
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  background-image: linear-gradient(
+    100deg,
+    var(--assistant-thinking-color) 0%,
+    var(--assistant-thinking-color) 35%,
+    var(--assistant-thinking-shimmer) 50%,
+    var(--assistant-thinking-color) 65%,
+    var(--assistant-thinking-color) 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: var(--assistant-thinking-color);
+  animation: assistant-thinking-shimmer 2.4s linear infinite;
+}
+@keyframes assistant-thinking-shimmer {
+  from { background-position: 0% 0; }
+  to { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .assistant-thinking__label { animation: none; }
+}

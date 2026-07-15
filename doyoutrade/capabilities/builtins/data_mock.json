@@ -1,0 +1,17 @@
+{
+  "id": "data.mock",
+  "kind": "data_provider",
+  "label": "Mock",
+  "description": "Deterministic mock market data provider for tests and local runs.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "provider_id": "mock"
+  },
+  "runtime": {
+    "factory": "doyoutrade.data.factory:_build_mock_stack"
+  }
+}

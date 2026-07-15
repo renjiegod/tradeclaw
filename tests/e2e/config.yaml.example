@@ -1,0 +1,48 @@
+# Optional E2E overlay. Copy to tests/e2e/config.yaml or point
+# DOYOUTRADE_E2E_CONFIG at another file.
+#
+# Loading order:
+# 1. repo-root config.yaml
+# 2. this overlay
+# 3. DOYOUTRADE_E2E_PROFILE built-in overrides
+#
+# Keep this file out of secret-bearing commits if you add real credentials.
+
+e2e:
+  # Symbols are seeded into instrument_catalog before tasks are created.
+  symbols:
+    - 601138.SH
+
+  task:
+    # mock keeps E2E deterministic. Set qmt in local/live profiles to exercise
+    # qmt-proxy data paths with the app-level data.qmt block below.
+    data_provider: mock
+
+  # Used by tests/e2e/support.py when E2EModelMode.REAL is requested.
+  # Stub mode creates the same route/provider shape but patches the adapter.
+  model:
+    route_name: MiniMax-M2.7-highspeed
+    provider_key: minimax_anthropic
+    provider_kind: anthropic
+    target_model: MiniMax-M2.7-highspeed
+    api_key: sk-REPLACE_WITH_YOUR_KEY
+    base_url: https://api.minimaxi.com/anthropic
+    extra_config: {}
+    route_settings:
+      temperature: 1
+      max_tokens: 100000
+
+# App config overrides below are deep-merged onto repo-root config.yaml.
+# Examples:
+#
+# database:
+#   url: postgresql+asyncpg://doyoutrade:doyoutrade@localhost:5432/doyoutrade_e2e
+#
+# data:
+#   default_provider: qmt
+#   qmt:
+#     base_url: http://your-qmt-host:8000
+#     token: YOUR_QMT_TOKEN
+#     account_mode: mock
+#     session_id: YOUR_SESSION_ID
+#     account_id: YOUR_BROKER_ACCOUNT

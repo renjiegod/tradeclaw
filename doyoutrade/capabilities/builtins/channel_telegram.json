@@ -1,0 +1,17 @@
+{
+  "id": "channel.telegram",
+  "kind": "channel",
+  "label": "Telegram",
+  "description": "Outbound Telegram bot notification channel.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "channel_type": "telegram"
+  },
+  "runtime": {
+    "channel": "doyoutrade.assistant.channels.telegram.channel:TelegramChannel"
+  }
+}

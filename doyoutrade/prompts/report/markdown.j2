@@ -1,0 +1,59 @@
+# {{ title }}
+
+{% if as_of %}
+> {{ labels.as_of }}: {{ as_of }}
+{% endif %}
+
+**{{ labels.summary }}**: {{ summary_line }}
+
+{% if not items %}
+{{ labels.no_items }}
+{% elif not summary_only %}
+{% for item in items %}
+---
+
+## {{ item.symbol }}{% if item.name %} {{ item.name }}{% endif %} — {{ item.action_label }}
+
+- **{{ labels.score }}**: {{ item.score_display }}
+- **{{ labels.price }}**: {{ item.price_display }}（{{ labels.change_pct }} {{ item.change_pct_display }}）
+{% if item.trend %}
+- **{{ labels.trend }}**: {{ item.trend }}
+{% endif %}
+{% if item.core_conclusion %}
+
+**{{ labels.core_conclusion }}**: {{ item.core_conclusion }}
+{% endif %}
+{% if item.key_indicators %}
+
+**{{ labels.key_indicators }}**:
+
+{% for k, v in item.key_indicators.items() %}
+- {{ k }}: {{ v }}
+{% endfor %}
+{% endif %}
+{% if item.has_plan %}
+
+**{{ labels.battle_plan }}**:
+
+{% for k, v in item.battle_plan.items() %}
+- {{ labels.get(k, k) }}: {{ v }}
+{% endfor %}
+{% endif %}
+{% if item.logic %}
+
+**{{ labels.logic }}**: {{ item.logic }}
+{% endif %}
+{% if item.risks %}
+
+**{{ labels.risks }}**: {{ item.risks }}
+{% endif %}
+{% if item.news %}
+
+**{{ labels.news }}**:
+
+{% for n in item.news %}
+- {{ n }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% endif %}

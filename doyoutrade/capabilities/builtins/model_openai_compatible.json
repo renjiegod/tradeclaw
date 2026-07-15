@@ -1,0 +1,21 @@
+{
+  "id": "model.openai_compatible",
+  "kind": "model_provider",
+  "label": "OpenAI Compatible",
+  "description": "OpenAI-compatible chat completions model provider.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "api_key": {"type": "string"},
+      "base_url": {"type": "string"},
+      "target_model": {"type": "string"}
+    }
+  },
+  "metadata": {
+    "provider_kind": "openai_compatible"
+  },
+  "runtime": {
+    "factory": "doyoutrade.models.factory:build_model_adapter"
+  }
+}

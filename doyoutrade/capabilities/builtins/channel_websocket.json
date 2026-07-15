@@ -1,0 +1,15 @@
+{
+  "id": "channel.websocket",
+  "kind": "channel",
+  "label": "WebSocket",
+  "description": "WebSocket assistant channel.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "channel_type": "websocket"
+  },
+  "runtime": {}
+}

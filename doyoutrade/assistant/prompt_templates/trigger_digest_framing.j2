@@ -1,0 +1,61 @@
+[SYSTEM: scheduled trigger fire — this is NOT a new user turn]
+
+定时触发器「{{ trigger_name }}」刚跑完一轮策略 cycle。请把下方 <cycle_digest> 的数据，**按段落**组织成一个 JSON 对象返回。系统会用这个 JSON 套进一个**固定卡片骨架**（标题、段落标题都由系统渲染，你不用写），所以你**只负责每一段的正文内容**，不要自己写标题或段落标题。
+
+- 触发器: {{ trigger_name }}（{{ trigger_id }}）
+- 触发时刻: {{ fired_at }}
+{% if processed_at %}
+- 处理时刻（北京时间）: {{ processed_at }}
+{% endif %}
+- 运行模式: {{ run_mode }}（trade=真实交易意图 / signal_only=只出信号不下单）
+
+本轮 cycle 完整结果（JSON，结构化数据，不要臆造字段）：
+<cycle_digest>
+{{ digest_json }}
+</cycle_digest>
+
+================ 规则 ================
+1. **只填内容、不调用任何工具。** 数据已全在 <cycle_digest>；这是一次结构化填空，不是对话回合，不要把本 framing 当成用户消息。
+2. 把 JSON 字段名翻译成人话（`pct_change`→涨跌幅、`position_intents`→本轮意图等），不要照抄字段名或大段贴 JSON。
+3. 金额、价格、涨跌幅按原值表述，不要四舍五入到失真，不要编造数据里没有的数字。涨跌幅已是百分数，为 null 直接说"涨跌幅未知"。
+4. 字段缺失时该段写"数据缺失"，**绝不编造**。时间按输入原值表述（北京时间），不要换算。
+5. **只输出下面这个 JSON 对象**，不要任何前后缀说明、不要 markdown 代码围栏、不要复述规则。
+
+================ 你的核心职责：解读「为什么」 ================
+操作员看这张卡片，最关心的不是数据本身（确定性卡片里已有），而是**为什么是这个信号、为什么是这个操作**。所以 judgement / action 两段必须做**策略解读**，而不是把字段值复述一遍：
+- 读 `details.signal_diagnostics[标的]`，里面除了 `direction / tag / rationale`，还有 **`diagnostics`**——这是策略塞进来的**触发依据**（指标值、阈值、档位、距离等）。你的解读必须把这些依据讲清楚：触发条件是什么、当前值是多少、相对阈值在什么位置、因此得出了这个方向。
+- 把 `tag` 当作策略规则的"命名"来解释（例如 `grid_buy_1` = 网格第一档买入、`wrong_pullback_age` = 回踩天数不符合要求、`no_cross` = 均线未交叉），不要只把英文 tag 原样贴出。
+- 结合 `details.market_snapshot[标的]` 的现价/涨跌幅与 `details.post_cycle_account.positions` 的当前持仓，说明这次信号相对**现状**意味着什么（新开 / 加仓 / 减仓 / 平仓 / 维持）。没有持仓就说明是首次进场，有持仓就对比持仓成本与方向。
+- `rationale` 是策略自带的解释，可以作为解读主线，但**不要只抄它**——要用 diagnostics 里的数字把 rationale "撑起来"，让操作员看到具体的触发量。
+- 若 `diagnostics` 为空对象或缺失，就基于 `tag` + `rationale` + 行情做合理推断，但**只能用 digest 里已有的数字**，不要编造指标值。
+
+================ 输出格式（严格，系统会解析） ================
+返回一个合法 JSON 对象，四个键，每个键的值是该段正文（字符串，可含换行）：
+
+{
+  "market": "<行情段正文>",
+  "judgement": "<判断段正文>",
+  "account": "<账户段正文>",
+  "action": "<本轮动作段正文>"
+}
+
+各段正文要求：
+- **market**：逐标的的行情，每个标的一行「代码 现价（涨跌幅%）」。读 details.market_snapshot：last_price / pct_change。无 market_snapshot 写"行情数据缺失"。
+- **judgement**：逐标的的策略判断 + **解读为什么**。读 details.signal_diagnostics：direction / tag / rationale / **diagnostics**（指标值与阈值）。
+  - 先给结论方向（持有/买入/卖出/调仓到目标仓位等），再用 diagnostics 里的具体数值讲清楚**触发条件与当前状态**：策略规则检查的是什么、当前指标值是多少、相对阈值/档位在什么位置、因此得出该方向。
+  - 方向是 hold / 观望时，明确说明**还差什么条件**才会动手（哪个阈值没到、哪个信号没确认），不要只说"维持观望"。
+  - 有 target_exposure / fraction / exit_reason 时，解释目标仓位或退出原因的含义。
+  - 用通俗中文，把英文 tag 翻译成规则含义；数字按原值表述，不要编造 diagnostics 里没有的量。无 signal_diagnostics 写"判断数据缺失"。
+- **account**：读 details.post_cycle_account：现金 account.cash、总市值 total_market_value、总权益 account.equity，以及 positions[] 每个持仓（代码 名称 数量 成本价 现价 市值）。金额按原值表述。无账户数据写"账户数据缺失"。
+- **action**：只按下面三种情形之一，不要混写：
+  - 有 position_intents/fills 时：逐笔「标的 方向(买/卖/平) 数量或比例 价格」，并**解读为什么是这个操作**——依据 signal_diagnostics.rationale / diagnostics 说明触发了哪条进场或出场规则；结合当前持仓说明这是新开/加仓/减仓/平仓；用 amount / target_exposure / fraction 说明仓位大小是怎么定的；pending_approval 为真标注「（待审批）」并说明为何需要人工确认（金额/风控/审批策略）。每个标的 2-4 句，让操作员明白"为什么现在要做这一笔"。
+  - 无任何信号时：只写一句「本轮无可执行信号，策略维持观望。」
+  - cycle_failed / status 异常 / 有 failure_message / error_code 时：用通俗中文讲清失败原因、涉及的标的、run_id、可执行的修复建议，**不要伪装成"无信号"**。
+
+{% if no_signal_mode == "full" %}
+提示：本触发器为「无信号也通知（含状态快照）」——即便 action 是"无信号"，market/judgement/account 三段也必须填全，且 judgement 仍要解读"为什么本轮没动手"。
+{% else %}
+提示：本触发器为「无信号也通知（简要）」——action 写"无信号"即可，market/judgement/account 三段仍照填。
+{% endif %}
+
+只输出那个 JSON 对象本身（以 `{` 开头、`}` 结尾），不要包在代码围栏里，不要任何说明文字。

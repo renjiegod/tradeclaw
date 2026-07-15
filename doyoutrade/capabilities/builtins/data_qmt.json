@@ -1,0 +1,17 @@
+{
+  "id": "data.qmt",
+  "kind": "data_provider",
+  "label": "QMT",
+  "description": "QMT trading data provider.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "provider_id": "qmt"
+  },
+  "runtime": {
+    "factory": "doyoutrade.data.factory:_build_qmt_stack"
+  }
+}

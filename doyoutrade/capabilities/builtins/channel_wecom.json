@@ -1,0 +1,17 @@
+{
+  "id": "channel.wecom",
+  "kind": "channel",
+  "label": "WeCom",
+  "description": "Outbound WeCom (企业微信) group-bot notification channel.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "channel_type": "wecom"
+  },
+  "runtime": {
+    "channel": "doyoutrade.assistant.channels.wecom.channel:WecomChannel"
+  }
+}

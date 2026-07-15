@@ -1,0 +1,51 @@
+## 市场行情（market_prices）
+
+{% if payload.get("market_prices") %}
+### 参考价表
+
+| 标的 | 价格 |
+| --- | --- |
+{% for sym, price in payload["market_prices"].items() %}
+| `{{ sym }}` | {{ price }} |
+{% endfor %}
+{% else %}
+（无）
+{% endif %}
+
+## 账户（account）
+
+- **现金（cash）**：{{ payload["account"]["cash"] }}
+- **权益（equity）**：{{ payload["account"]["equity"] }}
+
+## 复核规模参数（本周期）
+
+{% set rs = payload.get("review_sizing") or {} %}
+{% set cap = rs.get("notional_cap") %}
+{% set frac = rs.get("equity_fraction", 0.5) %}
+- **cap（单笔名义上限）**：{% if cap is none %}（未设置 / 无上限）{% else %}{{ cap }}{% endif %}
+- **f（权益比例）**：{{ frac }}（{% if cap is none %}**T = 权益 × f**{% else %}用于 **T = min(cap, 权益 × f)**{% endif %}）
+
+## 持仓（positions）
+
+{% if payload.get("positions") %}
+{% for p in payload["positions"] %}
+- **`{{ p["symbol"] }}`**：数量 {{ p["quantity"] }}，成本价 {{ p["cost_price"] }}
+{% endfor %}
+{% else %}
+（无持仓）
+{% endif %}
+
+## 待复核提案（proposals）
+
+信号阶段 **不含** 下单规模。本阶段 **不做** 信号质量判断：请仅按系统提示中的 **持仓/现金校验** 与 **规模公式** 决定每条提案的 **`action`**（`buy` / `sell` / `observe`）及 **`amount`**（买=名义金额，卖=股数）。
+
+{% for row in payload["proposals"] %}
+### 提案 #{{ row["proposal_index"] }} — `{{ row["symbol"] }}`
+
+- **proposal_index**：{{ row["proposal_index"] }}
+- **symbol**：`{{ row["symbol"] }}`
+- **side**：{{ row["side"] }}
+- **strategy_tag**：{{ row["strategy_tag"] }}
+- **rationale**：{{ row["rationale"] }}
+
+{% endfor %}

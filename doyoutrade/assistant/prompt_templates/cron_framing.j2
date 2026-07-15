@@ -1,0 +1,41 @@
+[SYSTEM: scheduled cron fire — this is NOT a new user turn]
+
+定时任务已触发：
+- 任务名: {{ job.name }}
+- 任务 ID: {{ job.id }}
+- 任务种类: {{ task_kind }}
+- 触发时刻: {{ fired_at }}
+- 触发缘由: 用户此前请求设置该定时任务，原话如下
+
+<user_request>
+{{ user_request }}
+</user_request>
+{% if pre_data %}
+
+本次触发系统已为你预采集了以下数据（JSON）：
+<pre_data>
+{{ pre_data_json }}
+</pre_data>
+{% endif %}
+
+请基于以上用户原话{% if pre_data %}与预采集数据{% endif %}，用自然语言生成一条要推送给用户的消息文本，作为你这一轮的 final response。无论 cycle 是否成功、是否产生买卖信号，都必须由你总结后发出，不要输出系统模板句式。
+
+硬约束（违反会导致投递错误或重复消息）：
+- 你的 final response 文本会被系统以 role=assistant 直接 append 到用户的对话 session（session_id={{ target_session_id or "<none>" }}）并触发前端推送。
+- 不要把这条 framing 当成"用户给你发了一条新消息"——这是系统调度，不是对话回合。
+- 不要调用任何 send_message / 通知 / IM / 邮件 工具，投递由系统完成。
+- 阅读 <pre_data> 里每个 instance 的 status / error_code / failure_message：
+  - 若存在 task_not_*、tick_failed、no_cycle_executed、tick_session_lookup_failed、no_run_id、cycle_run_* 等运行或配置异常，必须用通俗中文说明「本次未能得到可信信号」的原因、涉及的 task_id、以及用户可执行的修复建议（例如启动 task、改为 signal_only + cron_driven、检查 QMT 连接）。**禁止**对此类情况回复 [SILENT]。
+  - 若某个 instance 带有 `task_last_error`（task 进入 error 状态时记录的原始异常）或 `last_cycle_error`（最近一次失败 cycle 的 `error_code` / `failure_message` / `run_id` / `trace_id`），**必须把这条具体根因原文转述给用户**，不要只说「task 处于 error 状态，请自行排查」。例如：「task `<task_id>` 因 <task_last_error> 进入 error」「最近一次 cycle 失败 error_code=<code>：<failure_message>，可用 run_id=<run_id> / trace_id=<trace_id> 复查」。在给出根因后再附可执行修复步骤（如修好后 `task start`）。根因字段缺失才退回到通用说明，不要编造 error_code 或 run_id。
+{% if no_signal_mode == "brief" %}
+  - 本任务配置为「无信号也通知」（no_signal_mode=brief）：当 cycle 正常完成但没有新的买卖/平仓类信号时，**不要**回复 [SILENT]；用一句话简报告知用户「本轮无新信号」并带上本次所跑的标的，让用户确认任务仍在正常运行。
+{% elif no_signal_mode == "full" %}
+  - 本任务配置为「无信号也通知（含状态快照）」（no_signal_mode=full）：当 cycle 正常完成但没有新的买卖/平仓类信号时，**不要**回复 [SILENT]；除了说明「本轮无新信号」，还要尽量从每个 instance 里读出并汇报以下要点（字段缺失就跳过该项、不要编造）：
+    - **行情**：读 `instance.market_snapshot[<symbol>]` —— 最新价 `last_price`、昨收 `prev_close`、涨跌幅 `pct_change`（已是百分数，正为涨负为跌；为 null 表示数据缺失，直接说"涨跌幅未知"）、必要时 `open/high/low`。
+    - **策略判断因素**：读 `instance.signal_diagnostics[<symbol>]` —— `direction`（buy/sell/hold）、`tag`（决策标签，如 `wrong_pullback_age` 表示回踩天数不符）、`rationale`（自然语言理由）、`diagnostics`（关键指标值）。用通俗中文转述"为什么本轮没动手"。
+    - **账户/持仓**：账户现金、持仓市值等快照要点。
+    用简洁的中文小结这些要点，让用户既知道任务在跑、也理解当前标的状态与策略观点。
+{% else %}
+  - 本任务配置为「无信号静默」（no_signal_mode=silent）：仅当 cycle 正常完成且确实没有新的买卖/平仓类信号时，才可回复 [SILENT]（不附加任何其他字符），系统会跳过本次推送。
+{% endif %}
+- 有信号或有问题需要用户知晓时：简洁列出标的、方向、依据要点；失败时说明 failed 与 hint，不要照抄 JSON 字段名。

@@ -1,0 +1,17 @@
+{
+  "id": "channel.dingtalk",
+  "kind": "channel",
+  "label": "DingTalk",
+  "description": "Outbound DingTalk (钉钉) group-bot notification channel.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "channel_type": "dingtalk"
+  },
+  "runtime": {
+    "channel": "doyoutrade.assistant.channels.dingtalk.channel:DingtalkChannel"
+  }
+}

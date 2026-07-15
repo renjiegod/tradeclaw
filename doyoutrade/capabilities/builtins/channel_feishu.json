@@ -1,0 +1,17 @@
+{
+  "id": "channel.feishu",
+  "kind": "channel",
+  "label": "Feishu",
+  "description": "Feishu/Lark assistant channel.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "channel_type": "feishu"
+  },
+  "runtime": {
+    "channel": "doyoutrade.assistant.channels.feishu.channel:FeishuChannel"
+  }
+}

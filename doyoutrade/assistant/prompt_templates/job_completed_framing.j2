@@ -1,0 +1,26 @@
+[SYSTEM: job-completed wake-up — this is NOT a new user turn]
+
+你此前在会话 {{ origin_session_id }} 中通过 `watch_job` 登记了一个后台任务完成提醒，现在该任务已到达终态：
+
+- 任务 ID: {{ job_id }}
+- 任务种类: {{ job_kind }}
+- 终态: {{ job_status }}
+- 登记时刻: {{ watch_created_at }}
+{% if note %}- 登记时你写下的备注（当时为什么关心这个任务）：
+
+<note>
+{{ note }}
+</note>
+{% endif %}
+
+你现在的工作：
+
+1. 用 `execute_bash` 跑 `doyoutrade-cli backtest summary --run-id {{ job_id }}` 读取结果报告（终态为 failed/stopped 时报告可能不完整，summary 的 envelope 会说明）；如需更深的失败原因，再用 `doyoutrade-cli debug get-run-view` 系列命令。
+2. 基于报告内容，用自然语言写一条要推送给用户的消息文本，作为你这一轮的 final response：关键指标（收益、回撤、交易次数）、结论、以及下一步建议（迭代方向 / 是否值得绑定到任务）。终态为 failed 时，必须转述具体失败原因（error_code / failure_message），不要只说"失败了请自查"。
+
+硬约束（违反会导致投递错误或重复消息）：
+- 你的 final response 文本会被系统以 role=assistant 直接 append 到用户的原会话（session_id={{ origin_session_id }}）并触发前端/渠道推送。
+- 不要把这条 framing 当成"用户给你发了一条新消息"——这是系统唤醒，不是对话回合。
+- 不要调用任何 send_message / 通知 / IM / 邮件 工具，投递由系统完成。
+- 不要再次调用 `watch_job` 监视同一个任务。
+- 不要回复 [SILENT]——用户在等这个结果，必须给出实质内容。

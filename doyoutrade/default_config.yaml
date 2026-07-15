@@ -1,0 +1,112 @@
+# DoYouTrade defaults. These seed the writable, UI-editable config at
+# ``~/.doyoutrade/config.yaml`` (created on first run) and are the fallback when
+# no config file is found. Edit the running config in the Web UI 「设置」 page
+# (GET/PUT /config), or hand-edit ~/.doyoutrade/config.yaml — do NOT edit this
+# bundled file to change a deployment. Account / model-route / channel config
+# lives in the database, not here.
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  tick_seconds: 5.0
+
+data:
+  # auto: use qmt when a default account with base_url exists, else akshare/baostock.
+  # mock | qmt: force that channel (qmt requires a default account with base_url).
+  # QMT connection / account config now lives in the ``accounts`` DB table —
+  # manage it via the /accounts API, the Accounts page, or `doyoutrade-cli account`.
+  default_provider: auto
+  symbols:
+    - "600000.SH"
+    - "601318.SH"
+  # News axis (separate from the OHLCV default_provider above). The
+  # ``websearch`` news source (doyoutrade-cli data news --data-source websearch)
+  # fans out over these web-search engines; an engine with no keys is skipped.
+  # Keys are secrets — prefer ${ENV} refs or the comma-separated env fallbacks
+  # DOYOUTRADE_TAVILY_API_KEYS / DOYOUTRADE_BOCHA_API_KEYS over committing them.
+  news:
+    websearch:
+      tavily_api_keys: []   # e.g. ["${TAVILY_API_KEY}"] or ["tvly-xxx", "tvly-yyy"]
+      bocha_api_keys: []    # e.g. ["${BOCHA_API_KEY}"]
+      timeout_seconds: 10.0
+      max_results_per_engine: 10
+
+# Feishu channel configuration. WebSocket long connection via lark-oapi SDK.
+# Set enabled: true and provide app_id + app_secret to activate.
+feishu:
+  enabled: false
+  app_id: ""
+  app_secret: ""
+  encrypt_key: ""
+  verification_token: ""
+  domain: feishu  # "feishu" for China, "lark" for international
+
+observability:
+  service_name: "doyoutrade"
+  log_level: "INFO"
+  console_enabled: true
+  tracing_enabled: true
+
+# TTL pruning of the heavy observability / trace tables: debug_sessions,
+# debug_session_events, debug_session_spans, model_invocations. Rows older than
+# observability_ttl_days are deleted by a daily background loop (and once at
+# startup when prune_on_startup is true). cycle_runs / trade_fills / runs are the
+# durable record and are NEVER pruned. Env overrides win over these values:
+# DOYOUTRADE_OBSERVABILITY_TTL_DAYS, DOYOUTRADE_RETENTION_PRUNE_INTERVAL_HOURS.
+retention:
+  enabled: true
+  observability_ttl_days: 7
+  prune_interval_hours: 24
+  prune_on_startup: true
+
+# Model providers and routes are stored in the database (see POST /model-providers, /model-routes).
+# Each agent instance must set settings.model_route_name to an existing route name.
+
+# Proposal review is deterministic-only (mechanical sizing in code).
+# symbol_scope_mode: default | block_all — latter sets empty scope so no intents pass worker filter.
+review:
+  symbol_scope_mode: default
+
+database:
+  url: "sqlite+aiosqlite:///./data/doyoutrade.db"
+  echo: false
+  pool_pre_ping: true
+
+market_data:
+  # Local SQLite file by default — zero external dependency. For full-market
+  # sync or heavy 5m history, point this at PostgreSQL with the TimescaleDB
+  # extension instead: postgresql+asyncpg://user:pass@host:5432/dbname
+  database_url: "sqlite+aiosqlite:///./data/market_bars.db"
+  enabled_intervals: ["1d", "5m"]
+  lookback_years: 10
+  default_provider: auto
+  sync_on_startup: true
+  sync_concurrency: 4
+  provider_rate_limit_per_second: 2.0
+
+assistant:
+  tool_result_max_chars: 50000
+
+# Release-based update notifications (设置页「自动更新」). When enabled, a
+# background loop polls https://github.com/<repo>/releases every
+# check_interval_hours and, on finding a release newer than the installed
+# version, shows an "有新版本" prompt in the web UI. Nothing is installed
+# automatically — the user clicks 「立即更新」 to run
+# `uv tool install --force --from git+https://github.com/<repo>.git@<tag>`
+# and restart the server. All fields hot-reload (no restart needed).
+auto_update:
+  enabled: true
+  check_interval_hours: 6.0
+  repo: "renjiegod/doyoutrade"
+
+# Embedded qmt-proxy (started by `doyoutrade --mode both` / `--mode qmt-proxy`).
+# On Windows the launcher defaults to `both`, running qmt-proxy in the same
+# process on this port and auto-wiring the default account's base_url to it.
+# mode: mock | dev | prod (maps to qmt-proxy APP_MODE; dev = connect xtquant
+# read-only, prod = allow real trading, mock = never touch xtquant).
+qmt_proxy:
+  host: "127.0.0.1"
+  port: 8001
+  mode: dev
+  grpc_enabled: false
+  local_token: "embedded-local"

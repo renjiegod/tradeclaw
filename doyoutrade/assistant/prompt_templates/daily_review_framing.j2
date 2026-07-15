@@ -1,0 +1,85 @@
+[SYSTEM: scheduled cron fire — this is NOT a new user turn]
+
+每日复盘任务已触发：
+- 任务名: {{ job.name }}
+- 任务 ID: {{ job.id }}
+- 复盘日期(asof): {{ asof }}
+- 触发时刻: {{ fired_at }}
+- 触发缘由: 用户此前请求设置该每日复盘，原话如下
+
+<user_request>
+{{ user_request }}
+</user_request>
+
+系统已为你预采集了今日账户对账单与相关私有知识（JSON）：
+<pre_data>
+{{ pre_data_json }}
+</pre_data>
+
+{% if has_market %}
+其中 `<pre_data>.market` 是系统预采集的**今日市场四维**（大盘/情绪/主线/个股），字段说明：
+- `breadth`：当日 A 股涨停(`limit_up_count`)/跌停(`limit_down_count`)/炸板(`broken_board_count`)家数、炸板率(`broken_board_rate`，0.325 表示 32.5%)、最高连板(`max_streak`)、连板梯队(`ladder`，{高度:家数})，以及规则情绪标签(`sentiment.label` / `sentiment.reason`，单日快照、非预测、非投资建议)。
+- `sector_heat_top`：当日**主线题材**（概念板块）按涨跌幅排名前几名，每项含 `board_name` / `change_pct`(百分数) / `leader_stock`(领涨股) / `leader_change_pct`。
+- `holdings_lhb`：用户**持仓个股**当日的龙虎榜命中（若有），每项含 symbol / name / reason(上榜原因) / net_buy_amount(净买额,元) 等；为空数组表示持仓当日无个股上榜。
+`market` 缺失或某维为 null，说明该项采集失败/无数据（eastmoney 端点会限流），**如实说明、禁止编造**行情数字。
+{% else %}
+本次**未采集到今日市场四维数据**（大盘/情绪/主线；eastmoney 端点限流或非交易日）。复盘的"今日市场"小节请如实写明"本次市场数据不可用"，不要编造涨停家数/情绪/主线题材。
+{% endif %}
+
+{% if metrics_json is not none %}
+系统已在 Python 层为你预计算了对账后的结构化指标（JSON，权威值）：
+<pre_metrics>
+{{ metrics_json }}
+</pre_metrics>
+
+**<pre_metrics> 中的数字为已对账权威值。禁止自己从 <pre_data> 的原始成交/持仓重算以下任一指标**（胜率、手续费率、集中度、现金占比、浮盈亏占比等）——历史踩坑：LLM 自己重算容易把金额字符串当浮点、漏掉某些成交、或混淆"今日已实现 PnL"与"持仓浮盈"。指标缺失（值为 null）时，如实说"该指标本次不可用"，**禁止编造**。
+{% endif %}
+
+{% if diagnostics_json is not none %}
+系统已运行规则引擎，给出确定性诊断要点（JSON，权威结论）：
+<rule_diagnostics>
+{{ diagnostics_json }}
+</rule_diagnostics>
+
+**<rule_diagnostics> 中的每条 finding 都是确定性结论，你必须：**
+- 在「盈亏归因与复盘」中**引用**这些 finding（可改写措辞，但保留 severity 与核心事实）；
+- **不得**与 severity=critical 的结论相矛盾；
+- **不得**编造未在 findings 中出现的新数据点（可以补充因果解读，但不要捏造数字/标的/事件）；
+- severity=info 的 finding 是上下文提示，不一定都写入复盘。
+{% endif %}
+
+请基于以上预采集数据{% if metrics_json is not none or diagnostics_json is not none %}、预计算指标与规则诊断{% endif %}，生成一份**当日交易复盘**，作为你这一轮的 final response。这份文本会被系统同时（1）写入用户私有知识库的 `journal/{{ asof[:4] }}/{{ asof }}.md`，（2）以 role=assistant append 到用户会话（session_id={{ target_session_id or "<none>" }}）并触发前端/渠道推送。所以它必须自洽、可独立阅读。
+
+输出格式（Markdown，中文）：
+- **第一行必须是** `# {{ asof }} 复盘`（这是知识库索引标题，缺失会被降级为弱标题）。
+- 之后按以下小节组织（数据缺失的小节如实说明"无数据"，**不要编造**）：
+  1. `## 今日市场（大盘/情绪/主线）` —— 读 `<pre_data>.market`（若有）：先给一句情绪定调（引用 `breadth.sentiment.label` 与 `breadth.sentiment.reason` 的规则口径，并转述涨停/跌停/炸板家数、炸板率、最高连板与连板梯队），再点出 `sector_heat_top` 里的当日主线题材（板块 + 涨跌幅 + 领涨股），最后若 `holdings_lhb` 非空，指出用户持仓中当日上榜的个股（含上榜原因/净买额）。情绪标签是**单日快照、非预测、非投资建议**——只描述"今天市场处于什么阶段"，不要转成买卖建议。`market` 缺失或某维为 null 时写明"本次市场数据不可用/该维无数据"，**禁止编造**。
+  2. `## 账户概览` —— 读 `account_statement.account.account`（cash/equity）与 `account_statement.asset`（total_asset / market_value / available_cash / frozen_cash / profit_loss / profit_loss_ratio）。金额均为十进制字符串，原样转述、不要二次四舍五入。
+  3. `## 今日成交` —— 读 `account_statement.trades`（实时 QMT 当日成交）与 `knowledge.trades_csv`（券商导出交割单，权威）。逐笔列出 标的 / 方向(side) / 数量 / 价格 / 金额 / 手续费(commission)；若两个来源都为空，写明"今日无成交"。两个来源都存在时以 `trades_csv` 为权威，并指出实时与导出是否一致。
+  4. `## 持仓盘点` —— 读 `account_statement.account.positions`（逐仓 symbol/name/quantity/available/cost_price/last_price/market_value/frozen）。点出浮盈/浮亏标的。集中度结论直接引用 <pre_metrics> 的 concentration_top1_pct / top_positions。
+  5. `## 盈亏归因与复盘` —— 结合今日市场情绪（第 1 小节）、`knowledge.latest_journal`（上一篇复盘）、`knowledge.symbols_roles`（标的角色）、`knowledge.cycles_overview`（情绪周期/题材）做归因：今天赚/亏在哪、是否踩对/踩错市场节奏与主线、是否符合既定策略与标的角色、有无追高杀跌或违纪操作。**必须显式引用 <rule_diagnostics> 中的 critical/warn 结论**（用列表形式转述，可补充因果）。
+  6. `## 风险提示与明日计划` —— 给出可执行的明日关注点（标的、仓位、纪律），并与 <rule_diagnostics> 中的 recommendation 字段对齐（不要与之矛盾）。
+
+硬约束（违反会导致投递错误、重复消息或知识库污染）：
+- 这是系统调度，**不是用户给你发了新消息**。
+- 这是 compose-only 任务：**不要调用任何工具**（不要 read_file / knowledge_index / execute_bash / stock lookup / 下单 / send_message / 通知 / IM / 邮件）。所有需要的数据都已在 <pre_data>{% if metrics_json is not none %} / <pre_metrics>{% endif %}{% if diagnostics_json is not none %} / <rule_diagnostics>{% endif %} 里，缺什么就如实说缺什么。投递与知识库写入都由系统完成。
+- **数据可见性优先**：检查 `account_statement.errors` 与 `knowledge.errors`（也会出现在 <pre_metrics>.errors）。若任一非空，必须在复盘开头用一句话说明"本次某项数据采集失败（stage / error_type / message）"并带上其 `hint`，让用户知道复盘是基于不完整数据生成的——**禁止**假装数据完整或编造缺失的数字。
+- **数字口径**：金额一律按 <pre_data> 中的十进制字符串原样使用；涨跌幅/比率为数值，按"百分数"语义解读（如 0.0123 表示 +1.23%）。<pre_metrics> 中以 `_pct` 结尾的字段**已经乘 100**（如 `cash_ratio_pct: 12.3` 表示 12.3%，不是 0.123）。不得混淆"今日已实现 PnL"与"持仓浮盈"。
+- 不要输出系统模板句式或照抄 JSON 字段名，用通俗中文转述。
+- 每日复盘总会产出内容（任务只在交易日触发），**不要**回复 [SILENT]。
+
+结构化输出（用于前端红绿灯与历史对比，**必须**附在 Markdown 末尾）：
+在 Markdown 主体写完后，另起一行，输出一个 ```json fenced code block，包含且仅包含以下结构（所有字段必填，没有可写空数组）：
+
+```json
+{
+  "source": "llm",
+  "ai_status": "ok",
+  "summary": "（一句话中文总结当日，不超过 80 字）",
+  "diagnosis": ["（critical/warn finding 的简短中文转述，每条一句）"],
+  "recommendations": ["（明日可执行动作，每条一句）"],
+  "cautions": ["（边界声明，例如：本复盘只读，不会自动改策略参数 / 模型路由）"]
+}
+```
+
+系统会从你输出的末尾解析这个 JSON block；如果解析失败，本次复盘会被降级为 fallback 模式重新生成，所以请严格遵循格式。

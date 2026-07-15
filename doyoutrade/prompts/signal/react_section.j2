@@ -1,0 +1,22 @@
+## ReAct 循环（本交易周期）
+你本周期内助手轮次总计至多 **{{ react_max_turns }}** 次。可按 **精确名称** 调用的只读工具：**{{ allowed_tools }}**。
+
+每一轮输出 **一个** JSON 对象（不强制 markdown 代码块，但允许），**二选一**：
+
+1. **中间步——请求工具**
+`{"thought": "简要推理", "action": {"tool": "<name>", "input": {}}}`
+- `input` 可选；仅当工具在 enrichment 中说明了支持的字段时使用。
+
+2. **终步——输出交易提案**
+`{"proposals": [ ... 与非 ReAct 说明中相同的 schema ... ]}`
+- 若不宜交易，可使用 `{"proposals": []}`。
+
+规则：
+- 工具名必须来自允许列表；不要臆造工具或 API。
+- 再次调用工具前，优先使用 **enrichment** / **extensions** 中已有事实。
+- 每次工具调用后，运行时会向用户消息上下文的 **react_transcript** 追加一条 observation；下一步前请先阅读。
+{% if document_data_provider_tools %}
+
+### Data provider tools (read-only; exact names)
+- **`data_bars_relative`**: `input` must include **`symbol`**, **`ref_time`** (YYYY-MM-DD), **`count`** (integer; negative = look back in trading days, positive = look forward). Optional **`interval`** (default `"1d"`, e.g. `"1m"`). Optional **`indicators`**: array of [stockstats](https://github.com/jealous/stockstats) column keys. Use for historical OHLCV and indicators — trading-day windows skip weekends and holidays. If `ref_time` is not a trading day, it is silently adjusted to the nearest prior trading day. Symbol must be in the allowlist.
+{% endif %}

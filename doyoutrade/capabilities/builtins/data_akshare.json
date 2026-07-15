@@ -1,0 +1,17 @@
+{
+  "id": "data.akshare",
+  "kind": "data_provider",
+  "label": "AkShare",
+  "description": "AkShare market data provider.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "provider_id": "akshare"
+  },
+  "runtime": {
+    "factory": "doyoutrade.data.factory:_build_akshare_stack"
+  }
+}

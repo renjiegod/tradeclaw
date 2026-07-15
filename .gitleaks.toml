@@ -1,0 +1,21 @@
+# gitleaks 配置：扩展默认规则集，允许清单只放确认无害的占位符/样例。
+# 真实凭据一律走环境变量或 gitignore 的本地文件（config.yaml / tests/e2e/config.yaml / .env）。
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "文档占位符与历史清洗后的占位符"
+regexes = [
+  '''your-api-key''',
+  '''sk-REPLACE_WITH_YOUR_KEY''',
+  '''REDACTED-MINIMAX-KEY''',
+]
+
+[[allowlists]]
+description = "飞书图片资源 ID（非机密）"
+regexes = ['''img_v[0-9]_[0-9a-zA-Z_-]+''']
+
+[[allowlists]]
+description = "第三方 vendored 源码/文档样例"
+paths = ['''^tmp/''']

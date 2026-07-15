@@ -1,0 +1,20 @@
+{
+  "id": "model.lmstudio",
+  "kind": "model_provider",
+  "label": "LM Studio",
+  "description": "LM Studio OpenAI-compatible local model provider.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "base_url": {"type": "string"},
+      "target_model": {"type": "string"}
+    }
+  },
+  "metadata": {
+    "provider_kind": "lmstudio"
+  },
+  "runtime": {
+    "factory": "doyoutrade.models.factory:build_model_adapter"
+  }
+}

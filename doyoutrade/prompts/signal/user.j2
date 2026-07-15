@@ -1,0 +1,61 @@
+{% set _skills_reminder = skills_reminder_listing | default('', true) %}
+{% if _skills_reminder.strip() %}
+<system-reminder>
+以下为当前交易周期可用的用户可调用技能；名称须与 **invoke_skill** 的 skill 参数 **完全一致**。请先调用 **invoke_skill**，再阅读同轮次出现的 **``<invoke_skill_loaded>``** 块中的全文后执行工作流；不要仅凭摘要臆造步骤。
+
+{{ _skills_reminder }}
+</system-reminder>
+
+{% endif %}
+## 周期与时间
+
+- **cycle_time**：{{ payload.cycle_time }}
+- **max_proposals**：{{ payload.max_proposals }}
+
+## 可交易标的（universe）
+
+{% if payload.universe %}
+{% for sym in payload.universe %}
+- `{{ sym }}`
+{% endfor %}
+{% else %}
+（无）
+{% endif %}
+
+## 策略偏好（strategy_preferences）
+
+{% if payload.strategy_preferences %}
+{{ payload.strategy_preferences }}
+{% else %}
+（无）
+{% endif %}
+
+{% if payload.debug_note %}
+## 调试备注（debug_note）
+
+{{ payload.debug_note }}
+{% endif %}
+
+## 市场行情
+
+本用户消息 **不包含** 预取的最新价或逐笔快照。若 API 工具列表中有数据类只读工具（例如 `data_bars_relative`），请在定稿前自行拉取报价或 K 线以支撑推理。
+
+## 扩展字段（extensions）
+
+{% if payload.extensions %}
+```json
+{{ payload.extensions | tojson_pretty }}
+```
+{% else %}
+（无）
+{% endif %}
+
+## 运行时丰富信息（enrichment）
+
+{% if payload.enrichment %}
+```json
+{{ payload.enrichment | tojson_pretty }}
+```
+{% else %}
+（无）
+{% endif %}

@@ -1,0 +1,17 @@
+{
+  "id": "channel.slack",
+  "kind": "channel",
+  "label": "Slack",
+  "description": "Outbound Slack notification channel (incoming webhook or bot token).",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "channel_type": "slack"
+  },
+  "runtime": {
+    "channel": "doyoutrade.assistant.channels.slack.channel:SlackChannel"
+  }
+}

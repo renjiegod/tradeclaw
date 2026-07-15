@@ -1,0 +1,62 @@
+# DoYouTrade runtime config — copy to config.yaml and fill in your own values.
+# config.yaml is gitignored: NEVER commit real credentials.
+# When no repo-root config.yaml exists, doyoutrade/default_config.yaml is used.
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  tick_seconds: 5.0
+
+data:
+  # auto: use qmt when a default account with base_url exists, else akshare/baostock.
+  # mock | qmt: force that channel.
+  # QMT connection / account config lives in the `accounts` DB table —
+  # manage it via the /accounts API, the Accounts page, or `doyoutrade-cli account`.
+  default_provider: auto
+  symbols:
+    - "600000.SH"
+    - "601318.SH"
+
+# Main DB defaults to local SQLite (./data/doyoutrade.db); uncomment for PostgreSQL.
+# database:
+#   url: postgresql+asyncpg://USER:PASSWORD@localhost:5432/doyoutrade
+
+# Market bars warehouse defaults to a local SQLite file (./data/market_bars.db) —
+# no external service needed. For full-market sync / heavy 5m history, switch to
+# PostgreSQL with the TimescaleDB extension:
+# market_data:
+#   database_url: postgresql+asyncpg://USER:PASSWORD@localhost:5432/doyoutrade
+
+# Feishu / Lark channel. Set enabled: true and fill app_id + app_secret to activate.
+feishu:
+  enabled: false
+  app_id: ""
+  app_secret: ""
+  encrypt_key: ""
+  verification_token: ""
+  domain: feishu  # "feishu" for China, "lark" for international
+
+observability:
+  service_name: "doyoutrade"
+  log_level: "INFO"
+  console_enabled: true
+  tracing_enabled: true
+
+# Model providers and routes are stored in the database
+# (see POST /model-providers, /model-routes).
+
+# Embedded qmt-proxy — only relevant when you run `doyoutrade --mode both`
+# (default on Windows) or `--mode qmt-proxy`. On Windows the launcher runs
+# qmt-proxy in-process on this port and auto-wires the default account's
+# base_url to http://127.0.0.1:8001, so real quotes work with zero config once
+# miniQMT is logged in. On macOS/Linux doyoutrade runs alone and points at a
+# remote qmt-proxy (set via the first-run wizard or `doyoutrade-cli account`).
+# qmt_proxy:
+#   host: "127.0.0.1"
+#   port: 8001
+#   mode: dev          # mock | dev | prod  (prod = allow real trading)
+#   grpc_enabled: false
+#   local_token: "embedded-local"
+
+review:
+  symbol_scope_mode: default

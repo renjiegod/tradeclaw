@@ -1,0 +1,17 @@
+{
+  "id": "channel.http",
+  "kind": "channel",
+  "label": "HTTP",
+  "description": "HTTP webhook assistant channel.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "channel_type": "http"
+  },
+  "runtime": {
+    "channel": "doyoutrade.assistant.channels.http.channel:HttpChannel"
+  }
+}

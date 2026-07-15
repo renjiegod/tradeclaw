@@ -1,0 +1,17 @@
+{
+  "id": "channel.email",
+  "kind": "channel",
+  "label": "Email",
+  "description": "Outbound SMTP email notification channel.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "channel_type": "email"
+  },
+  "runtime": {
+    "channel": "doyoutrade.assistant.channels.email.channel:EmailChannel"
+  }
+}

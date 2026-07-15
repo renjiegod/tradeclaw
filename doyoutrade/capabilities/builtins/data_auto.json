@@ -1,0 +1,15 @@
+{
+  "id": "data.auto",
+  "kind": "data_provider",
+  "label": "Auto",
+  "description": "Automatic trading data provider selection.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "provider_id": "auto"
+  },
+  "runtime": {}
+}

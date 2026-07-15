@@ -1,0 +1,9 @@
+{{ title }}{% if as_of %}（{{ labels.as_of }} {{ as_of }}）{% endif %} | {{ labels.summary }}: {{ summary_line }}
+{% if items %}
+{% for item in items %}
+- {{ item.symbol }}{% if item.name %} {{ item.name }}{% endif %} [{{ item.action_label }}/{{ item.score_display }}] {{ item.price_display }} {{ item.change_pct_display }}{% if item.core_conclusion %} — {{ item.core_conclusion }}{% endif %}
+
+{% endfor %}
+{% else %}
+{{ labels.no_items }}
+{% endif %}

@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+from doyoutrade.strategy_sdk import Strategy, Signal
+
+
+class {{ class_name }}(Strategy):
+    """{{ strategy_description or "AI-generated signal-only Strategy" }}"""
+
+    # Bar frequency for on_bar evaluation. One of: "1m" / "5m" / "15m" /
+    # "30m" / "60m" / "1d" / "1w" / "1mo". Compiler rejects others
+    # (hourly is "60m" not "1h"; monthly is "1mo" not "1M"; no "4h").
+    timeframe = "1d"
+
+    # ``startup_history`` is the *single source of truth* for the data
+    # window the runner provisions. Must be >= the longest rolling
+    # window referenced in ``populate_indicators`` — the compiler rejects
+    # ``rolling(N)`` literals where N > startup_history with
+    # ``history_check_literal_disallowed``. Size with the indicator's
+    # full warm-up: MACD ≈ ``slow + signal + 3*span``; RSI / ADX ≈
+    # ``period * 4``.
+    startup_history = {{ required_history or 60 }}
+
+    def populate_indicators(self, df, ctx):
+        """Add indicator columns to ``df`` (vectorized).
+
+        df: pandas.DataFrame with ``open / high / low / close / volume``
+        columns and a ``DatetimeIndex``. Length is at least
+        ``startup_history`` when data is available.
+
+        Cross-symbol reads are forbidden here — declare additional symbols
+        / indexes / industries in :meth:`informative_data` and read them
+        from ``on_bar``.
+        """
+        {{ populate_implementation or "return df" }}
+
+    def on_bar(self, df, ctx) -> Signal:
+        """Decide the target state for the current bar.
+
+        Read precomputed indicators from ``df.iloc[-1]`` (current bar) or
+        ``df.iloc[-2]`` (prior bar) — never ``df.iloc[i]`` with ``i >= 0``
+        (lookahead) and never ``df.shift(-n)``.
+
+        Return ``Signal.buy(tag="factor_id")`` / ``Signal.sell(tag=...)`` /
+        ``Signal.hold()``. ``tag`` is mandatory on BUY/SELL — it flows
+        into ``trade_fills.entry_tag`` / ``exit_tag`` for factor attribution.
+
+        Read ``ctx.position.is_long`` / ``ctx.position.current_profit`` if
+        exit decisions depend on holding state. Do NOT manage stops,
+        sizing, or order routing here — those belong to PositionManager
+        / OrderManager downstream.
+
+        ctx.params: {{ params_description }}
+        """
+        {{ decision_implementation }}

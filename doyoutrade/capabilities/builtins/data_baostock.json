@@ -1,0 +1,17 @@
+{
+  "id": "data.baostock",
+  "kind": "data_provider",
+  "label": "BaoStock",
+  "description": "BaoStock market data provider.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "provider_id": "baostock"
+  },
+  "runtime": {
+    "factory": "doyoutrade.data.factory:_build_baostock_stack"
+  }
+}
