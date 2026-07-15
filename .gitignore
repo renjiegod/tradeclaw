@@ -207,6 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 frontend/node_modules/
+frontend/node_modules_broken_tmp/
 
 # Runtime / local datasets at repo root only (do not match doyoutrade/data/).
 /data/
@@ -240,6 +241,7 @@ tests/e2e/config.yaml
 # === Node / TypeScript build output ===
 /node_modules/
 node_modules/
+node_modules_broken_tmp/
 *.tsbuildinfo
 
 # === Editor / AI-agent harness dirs (kept out of the public repo) ===
