@@ -319,6 +319,8 @@ export function AssistantPage() {
   >([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  sendingRef.current = sending;
   const [isStopping, setIsStopping] = useState(false);
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [activeRightTab, setActiveRightTab] = useState<"traces" | "skills-tools">("traces");
@@ -453,9 +455,11 @@ export function AssistantPage() {
     return null;
   }, [activeSession]);
   const activeModelRoute = useMemo(() => {
-    const agent = agents.find((a) => a.id === selectedAgentId);
+    const agent =
+      agents.find((a) => a.id === selectedAgentId) ??
+      agents.find((a) => a.id === activeSession?.agent_id);
     return agent?.model_route_name?.trim() ? agent.model_route_name : null;
-  }, [selectedAgentId, agents]);
+  }, [selectedAgentId, agents, activeSession?.agent_id]);
 
   const mergeSessionRows = useCallback(
     (rows: AssistantSession[], pinned: AssistantSession) => [
@@ -476,7 +480,12 @@ export function AssistantPage() {
       listAssistantSessions(sessionListParams),
     ]);
     setMessages(messageRows);
-    setPendingUserMessage(null);
+    // A concurrent refresh (e.g. URL session_id sync re-running the boot
+    // effect) must not wipe the optimistic user bubble while submit is in
+    // flight — that previously made the first send look like a no-op.
+    if (!sendingRef.current) {
+      setPendingUserMessage(null);
+    }
     setIsAtConversationBottom(true);
     setEvents(eventRows);
     const { bySession, byAttempt } = rebuildToolCallsMaps(eventRows);
@@ -873,10 +882,13 @@ export function AssistantPage() {
     // While we're pinning a new user message at the top, do NOT yank the
     // viewport to the bottom on every streaming delta.
     if (pinnedUserMessageId) return;
+    // pendingUserMessage is set before the pin effect runs (rAF). Skip the
+    // bottom-follow for that frame so we don't race the top-anchor scroll.
+    if (pendingUserMessage) return;
     // The empty-state welcome screen is taller than the viewport; scrolling it
     // to the bottom would hide the hero. Keep it pinned to the top until a real
     // message exists.
-    if (messages.length === 0 && !pendingUserMessage && !sending && !streamingContent) return;
+    if (messages.length === 0 && !sending && !streamingContent) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [
     isAtConversationBottom,
@@ -1045,8 +1057,44 @@ export function AssistantPage() {
     const hasText = rawText.length > 0;
     const hasAttachment = !override && attachment !== null;
 
-    if (!hasText && !hasAttachment) return;
-    if (!sessionId) return;
+    if (!hasText && !hasAttachment) {
+      message.warning("请输入消息或上传附件后再发送");
+      return;
+    }
+
+    // Fresh install / empty session list leaves ``sessionId`` null while the
+    // send button can still be enabled (it only gates on model route). Auto-
+    // create a session so the first send is not a silent no-op.
+    let targetSessionId = sessionId;
+    if (!targetSessionId) {
+      const agentId =
+        selectedAgentId?.trim() ||
+        agents.find((a) => a.status === "active")?.id?.trim() ||
+        "";
+      if (!agentId) {
+        message.warning("请先选择一个 Agent，或点击「新会话」");
+        return;
+      }
+      try {
+        const created = await createAssistantSession({
+          title: DEFAULT_TITLE,
+          agent_id: agentId,
+        });
+        const rows = await refreshSessions(created.session_id);
+        if (!rows.some((row) => row.session_id === created.session_id)) {
+          setSessions([created, ...rows]);
+        }
+        setSessionId(created.session_id);
+        if (!selectedAgentId) {
+          setSelectedAgentId(agentId);
+        }
+        targetSessionId = created.session_id;
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
+
     const isLifecycleCommand = /^\/new\s*$/i.test(rawText);
     if (!activeModelRoute && !isLifecycleCommand) {
       message.warning("当前智能体会话未关联模型，请新建会话并选择要使用的模型。");
@@ -1064,7 +1112,7 @@ export function AssistantPage() {
 
     const optimisticUserMessage: AssistantMessage = {
       message_id: `optimistic-${Date.now()}`,
-      session_id: sessionId,
+      session_id: targetSessionId,
       role: "user",
       content: text,
       created_at: new Date().toISOString(),
@@ -1085,7 +1133,7 @@ export function AssistantPage() {
     if (!override) setInput("");
     setPendingUserMessage(optimisticUserMessage);
     const lastEventId = events.at(-1)?.event_id ?? null;
-    const stream = new EventSource(assistantEventStreamUrl(sessionId, lastEventId));
+    const stream = new EventSource(assistantEventStreamUrl(targetSessionId, lastEventId));
     streamRef.current = stream;
     attachApprovalListeners(stream);
     stream.addEventListener("attempt.started", (rawEvent) => {
@@ -1108,7 +1156,7 @@ export function AssistantPage() {
           ...prev,
           {
             event_id: (rawEvent as MessageEvent).lastEventId || `live-${Date.now()}`,
-            session_id: sessionId,
+            session_id: targetSessionId,
             event_type: "tool.call",
             payload,
             created_at: new Date().toISOString(),
@@ -1133,7 +1181,7 @@ export function AssistantPage() {
         };
         setToolCallsState((prev) => ({
           ...prev,
-          [sessionId]: { ...(prev[sessionId] ?? {}), [tool_call_id]: entry },
+          [targetSessionId]: { ...(prev[targetSessionId] ?? {}), [tool_call_id]: entry },
         }));
         setToolCallsByAttempt((prev) => ({
           ...prev,
@@ -1151,7 +1199,7 @@ export function AssistantPage() {
           ...prev,
           {
             event_id: (rawEvent as MessageEvent).lastEventId || `live-${Date.now()}`,
-            session_id: sessionId,
+            session_id: targetSessionId,
             event_type: "tool.result",
             payload,
             created_at: new Date().toISOString(),
@@ -1171,12 +1219,12 @@ export function AssistantPage() {
         const { output, is_error } = parsePreview(payload.preview);
         if (tool_call_id) {
           setToolCallsState((prev) => {
-            const existing = prev[sessionId]?.[tool_call_id];
+            const existing = prev[targetSessionId]?.[tool_call_id];
             if (!existing) return prev;
             return {
               ...prev,
-              [sessionId]: {
-                ...prev[sessionId],
+              [targetSessionId]: {
+                ...prev[targetSessionId],
                 [tool_call_id]: {
                   tool: { ...existing.tool, status: is_error ? "error" : "completed" },
                   result: { type: "tool_result", tool_use_id: tool_call_id, output, is_error },
@@ -1238,7 +1286,7 @@ export function AssistantPage() {
         const payload = JSON.parse((rawEvent as MessageEvent).data) as Record<string, unknown>;
         // Mark all pending/running tools as error for this session
         setToolCallsState((prev) => {
-          const sessionTools = prev[sessionId] ?? {};
+          const sessionTools = prev[targetSessionId] ?? {};
           const updated: Record<string, ToolCallEntry> = {};
           for (const [id, entry] of Object.entries(sessionTools)) {
             if (entry.tool.status === "pending" || entry.tool.status === "running") {
@@ -1247,7 +1295,7 @@ export function AssistantPage() {
               updated[id] = entry;
             }
           }
-          return { ...prev, [sessionId]: updated };
+          return { ...prev, [targetSessionId]: updated };
         });
       } catch {
         // Ignore malformed live event payloads.
@@ -1257,12 +1305,12 @@ export function AssistantPage() {
       stream.close();
       if (streamRef.current === stream) streamRef.current = null;
       setIsStopping(false);
-      void Promise.all([refreshSessions(sessionId), refreshSessionData(sessionId)]).catch(() => {});
+      void Promise.all([refreshSessions(targetSessionId), refreshSessionData(targetSessionId)]).catch(() => {});
     };
     stream.addEventListener("attempt.stopped", closeAndRefreshAfterStop);
     stream.addEventListener("attempt.completed", closeAndRefreshAfterStop);
     try {
-      const result = await sendAssistantMessage(sessionId, text);
+      const result = await sendAssistantMessage(targetSessionId, text);
       if (result.lifecycle_command?.command === "new") {
         const nextSessionId = result.session.session_id;
         const rows = await refreshSessions(nextSessionId);
@@ -1280,19 +1328,19 @@ export function AssistantPage() {
       if (result.trace_id) {
         setPendingTraceId(result.trace_id);
       }
-      await Promise.all([refreshSessions(sessionId), refreshSessionData(sessionId)]);
+      await Promise.all([refreshSessions(targetSessionId), refreshSessionData(targetSessionId)]);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes("stopped by user")) {
         setPendingUserMessage(null);
         setInput(text);
-        await Promise.all([refreshSessions(sessionId), refreshSessionData(sessionId)]);
+        await Promise.all([refreshSessions(targetSessionId), refreshSessionData(targetSessionId)]);
       } else {
         message.error(msg);
         // A failed run persists an assistant error/partial message before returning
         // 500. Re-fetch so that message appears instead of the chat showing only the
         // user's query (the submit path otherwise never refreshes on failure).
-        await Promise.all([refreshSessions(sessionId), refreshSessionData(sessionId)]).catch(
+        await Promise.all([refreshSessions(targetSessionId), refreshSessionData(targetSessionId)]).catch(
           () => {},
         );
       }
@@ -1308,7 +1356,17 @@ export function AssistantPage() {
       setIsStopping(false);
       setAttachment(null);
     }
-  }, [activeModelRoute, attachment, events, input, refreshSessionData, refreshSessions, sessionId]);
+  }, [
+    activeModelRoute,
+    agents,
+    attachment,
+    events,
+    input,
+    refreshSessionData,
+    refreshSessions,
+    selectedAgentId,
+    sessionId,
+  ]);
 
   const handlePickExample = useCallback((prompt: string) => {
     setInput(prompt);

@@ -160,6 +160,7 @@ describe("AssistantPage conversation", () => {
     vi.mocked(listAssistantEvents).mockResolvedValue([]);
     vi.mocked(listAssistantTraces).mockResolvedValue({ items: [], total: 0 });
     vi.mocked(stopAssistantSession).mockResolvedValue({ stopped: true });
+    vi.mocked(createAssistantSession).mockResolvedValue(newSession);
   });
 
   afterEach(() => {
@@ -277,10 +278,75 @@ describe("AssistantPage conversation", () => {
 
     await waitFor(() => {
       expect(mockCreateSession).toHaveBeenCalledWith({
-        title: "DoYouTrade Agent",
+        title: "新会话",
         agent_id: "agent-1",
       });
     });
+  });
+
+  it("auto-creates a session on send when none exists (fresh install)", async () => {
+    const createdSession: AssistantSession = {
+      ...session,
+      session_id: "auto-session-1",
+      title: "新会话",
+    };
+    vi.mocked(listAssistantSessions)
+      .mockResolvedValueOnce({ items: [], total: 0, limit: 50, offset: 0 })
+      .mockResolvedValue({ items: [createdSession], total: 1, limit: 50, offset: 0 });
+    vi.mocked(listAssistantMessages).mockResolvedValue([]);
+    vi.mocked(createAssistantSession).mockResolvedValue(createdSession);
+    vi.mocked(sendAssistantMessage).mockResolvedValue({
+      session: createdSession,
+      messages: [
+        {
+          message_id: "u1",
+          session_id: "auto-session-1",
+          role: "user",
+          content: "你好",
+          created_at: "2026-04-29T00:00:00Z",
+          linked_attempt_id: null,
+          metadata: {},
+        },
+      ],
+      trace_id: null,
+    });
+
+    render(<AssistantPage />);
+    await waitFor(() => expect(screen.getByText("试试这些示例：")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText(messageInputPlaceholder), {
+      target: { value: "你好" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /发送/i }));
+
+    await waitFor(() =>
+      expect(createAssistantSession).toHaveBeenCalledWith({
+        title: "新会话",
+        agent_id: "agent-1",
+      }),
+    );
+    await waitFor(() =>
+      expect(sendAssistantMessage).toHaveBeenCalledWith("auto-session-1", "你好"),
+    );
+  });
+
+  it("warns instead of silently no-oping when send has no session and no agent", async () => {
+    vi.mocked(listAssistantAgents).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
+    vi.mocked(listAssistantSessions).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
+
+    render(<AssistantPage />);
+    await waitFor(() => expect(screen.getByText("选择 Agent")).toBeInTheDocument());
+
+    const textarea = screen.getByPlaceholderText(messageInputPlaceholder);
+    fireEvent.change(textarea, { target: { value: "你好" } });
+    // Button is disabled without a model route; Enter still reaches submit().
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter", keyCode: 13, shiftKey: false });
+
+    await waitFor(() => {
+      expect(screen.getByText("请先选择一个 Agent，或点击「新会话」")).toBeInTheDocument();
+    });
+    expect(createAssistantSession).not.toHaveBeenCalled();
+    expect(sendAssistantMessage).not.toHaveBeenCalled();
   });
 
   it("loads the requested session_id from the URL even when it is outside the first page", async () => {
