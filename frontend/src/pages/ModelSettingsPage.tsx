@@ -1,4 +1,4 @@
-import { DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
+import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   Alert,
   Button,
@@ -76,12 +76,8 @@ export function ModelSettingsPage() {
   const [routeModalOpen, setRouteModalOpen] = useState(false);
   const [routeEditId, setRouteEditId] = useState<string | null>(null);
   const [routeSubmitting, setRouteSubmitting] = useState(false);
+  const [routeEditLoading, setRouteEditLoading] = useState(false);
   const [routeForm] = Form.useForm<RouteFormValues>();
-
-  const [revealOpen, setRevealOpen] = useState(false);
-  const [revealLoading, setRevealLoading] = useState(false);
-  const [revealedKey, setRevealedKey] = useState("");
-  const [revealTitle, setRevealTitle] = useState("");
 
   const loadRoutes = useCallback(async () => {
     setLoadingRoutes(true);
@@ -120,8 +116,9 @@ export function ModelSettingsPage() {
     setRouteModalOpen(true);
   };
 
-  const openEditRoute = (row: ModelRouteRow) => {
+  const openEditRoute = async (row: ModelRouteRow) => {
     setRouteEditId(row.id);
+    routeForm.resetFields();
     routeForm.setFieldsValue({
       route_name: row.route_name,
       provider_kind: row.provider_kind,
@@ -131,6 +128,16 @@ export function ModelSettingsPage() {
       settings_json: row.settings ? JSON.stringify(row.settings, null, 2) : "",
     });
     setRouteModalOpen(true);
+    setRouteEditLoading(true);
+    try {
+      const res = await revealModelRouteApiKey(row.id);
+      routeForm.setFieldValue("api_key", res.api_key ?? "");
+    } catch (e: unknown) {
+      const detail = e instanceof Error ? e.message : String(e);
+      message.error(`读取 API Key 失败：${detail}`);
+    } finally {
+      setRouteEditLoading(false);
+    }
   };
 
   const submitRoute = async () => {
@@ -172,23 +179,6 @@ export function ModelSettingsPage() {
       message.error(detail);
     } finally {
       setRouteSubmitting(false);
-    }
-  };
-
-  const openRevealKey = async (row: ModelRouteRow) => {
-    setRevealTitle(row.route_name);
-    setRevealedKey("");
-    setRevealOpen(true);
-    setRevealLoading(true);
-    try {
-      const res = await revealModelRouteApiKey(row.id);
-      setRevealedKey(res.api_key ?? "");
-    } catch (e: unknown) {
-      const detail = e instanceof Error ? e.message : String(e);
-      message.error(`读取 API Key 失败：${detail}`);
-      setRevealOpen(false);
-    } finally {
-      setRevealLoading(false);
     }
   };
 
@@ -250,11 +240,8 @@ export function ModelSettingsPage() {
       fixed: "right",
       render: (_: unknown, row) => (
         <Space size="small" wrap>
-          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEditRoute(row)}>
+          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => void openEditRoute(row)}>
             编辑
-          </Button>
-          <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => void openRevealKey(row)}>
-            查看 Key
           </Button>
           <Popconfirm
             title="删除此模型？"
@@ -297,7 +284,7 @@ export function ModelSettingsPage() {
       <div className="rounded-2xl border border-shell-line bg-card-bg p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <Typography.Text type="secondary" className="text-sm">
-            「配置名称」会在实例与智能体中被引用；列表中的 API Key 已脱敏，完整密钥通过「查看 Key」拉取。
+            「配置名称」会在实例与智能体中被引用；列表中的 API Key 已脱敏，编辑时会自动回显完整密钥。
           </Typography.Text>
           <Button type="primary" className="rounded-xl" icon={<PlusOutlined />} onClick={openCreateRoute}>
             新建模型
@@ -336,7 +323,13 @@ export function ModelSettingsPage() {
             <Select options={KIND_OPTIONS} />
           </Form.Item>
           <Form.Item name="api_key" label={routeEditId ? "API Key（留空则不修改）" : "API Key"}>
-            <Input.Password placeholder={routeEditId ? "不修改请留空" : "可留空；生产环境请填写"} autoComplete="new-password" />
+            <Input.Password
+              placeholder={
+                routeEditId ? (routeEditLoading ? "加载中…" : "不修改请留空") : "可留空；生产环境请填写"
+              }
+              autoComplete="new-password"
+              disabled={routeEditLoading}
+            />
           </Form.Item>
           <Form.Item
             name="base_url"
@@ -356,29 +349,6 @@ export function ModelSettingsPage() {
             <Input.TextArea rows={5} placeholder='例如 {"temperature": 0.2}' className="font-mono text-xs" />
           </Form.Item>
         </Form>
-      </Modal>
-
-      <Modal
-        title={`API Key：${revealTitle}`}
-        open={revealOpen}
-        onCancel={() => setRevealOpen(false)}
-        footer={[
-          <Button key="close" onClick={() => setRevealOpen(false)}>
-            关闭
-          </Button>,
-        ]}
-        width={520}
-      >
-        {revealLoading ? (
-          <Typography.Text type="secondary">加载中…</Typography.Text>
-        ) : (
-          <Input.TextArea
-            readOnly
-            value={revealedKey}
-            autoSize={{ minRows: 3, maxRows: 8 }}
-            className="font-mono text-xs"
-          />
-        )}
       </Modal>
     </>
   );
