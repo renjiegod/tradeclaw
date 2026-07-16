@@ -256,6 +256,8 @@ reference/
 *.code-workspace
 
 # === Private research / internal docs / personal scripts (kept locally, not published) ===
+/CLAUDE.md
+/AGENTS.md
 /github-open-source-quant-survey.md
 docs/superpowers/
 docs/agent-autonomy-design.md
