@@ -130,7 +130,7 @@ export function SentimentTimeline({ months = DEFAULT_MONTHS }: { months?: number
 
   const subtitle = useMemo(() => {
     if (!items || items.length === 0) return `近 ${months} 个月 · 每日复盘累积`;
-    return `近 ${months} 个月 · 共 ${items.length} 个交易日 · 每日复盘累积`;
+    return `近 ${months} 个月 · ${items.length} 个交易日`;
   }, [items, months]);
 
   return (
@@ -196,7 +196,7 @@ export function SentimentTimeline({ months = DEFAULT_MONTHS }: { months?: number
           </div>
 
           <Typography.Text type="secondary" className="!text-[11px]">
-            标签仅描述当日情绪状态（涨停 / 跌停 / 炸板 / 最高连板 / 炸板率），非预测、非买卖建议。
+            仅描述当日情绪状态，非预测、非买卖建议。
           </Typography.Text>
         </div>
       )}

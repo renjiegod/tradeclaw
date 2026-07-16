@@ -118,7 +118,7 @@ export function TradeAttributionPanel({ months = DEFAULT_MONTHS }: { months?: nu
 
   const subtitle = useMemo(() => {
     if (!summary) return `近 ${months} 个月 · 券商交割单归因`;
-    return `近 ${months} 个月 · 共 ${summary.round_trips} 个回合 · 券商交割单归因`;
+    return `近 ${months} 个月 · ${summary.round_trips} 个回合`;
   }, [summary, months]);
 
   return (
@@ -185,7 +185,7 @@ export function TradeAttributionPanel({ months = DEFAULT_MONTHS }: { months?: nu
           ) : null}
 
           <Typography.Text type="secondary" className="!text-[11px]">
-            数据来自你导入的券商交割单，仅对已实现盈亏做客观归因复盘，非预测、非买卖建议。
+            基于已导入交割单的已实现盈亏归因，非预测、非买卖建议。
           </Typography.Text>
         </div>
       )}
@@ -209,7 +209,7 @@ function UnparsedAlert({
       data-testid="trade-attribution-unparsed"
       message={`${count} 个交割单文件无法解析：券商列名未识别，未纳入统计`}
       description={
-        <div className="flex flex-col gap-0.5 text-xs">
+        <div className="flex max-h-32 flex-col gap-0.5 overflow-y-auto text-xs">
           {unparsed.map((u) => (
             <div key={u.path} className="flex flex-wrap gap-x-2">
               <span className="font-medium text-shell-ink">{orDash(u.path)}</span>

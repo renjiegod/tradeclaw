@@ -184,7 +184,7 @@ export function PlaybookPanel() {
 
   const subtitle = useMemo(() => {
     if (!items || items.length === 0) return "对话里沉淀的战法 / 打法总结";
-    return `共 ${items.length} 个打法 · 对话里沉淀的战法 / 打法总结`;
+    return `共 ${items.length} 个打法`;
   }, [items]);
 
   return (
@@ -237,7 +237,7 @@ export function PlaybookPanel() {
           </div>
 
           <Typography.Text type="secondary" className="!text-[11px]">
-            打法总结是你自己沉淀的复盘记忆，仅描述交易手法，非预测、非买卖建议。
+            仅描述你沉淀的交易手法，非预测、非买卖建议。
           </Typography.Text>
         </div>
       )}

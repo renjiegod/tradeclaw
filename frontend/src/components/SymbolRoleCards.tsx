@@ -114,7 +114,7 @@ export function SymbolRoleCards() {
 
   const subtitle = useMemo(() => {
     if (!items || items.length === 0) return "对话里给标的打的角色标签";
-    return `共 ${items.length} 个标的 · 对话里给标的打的角色标签`;
+    return `共 ${items.length} 个标的`;
   }, [items]);
 
   return (
@@ -167,7 +167,7 @@ export function SymbolRoleCards() {
           </div>
 
           <Typography.Text type="secondary" className="!text-[11px]">
-            角色标签是你自己给标的贴的复盘记忆，仅描述定位，非预测、非买卖建议。
+            仅描述你标注的标的定位，非预测、非买卖建议。
           </Typography.Text>
         </div>
       )}

@@ -147,10 +147,10 @@ export function KnowledgeBrowserPanel() {
       className="!border !border-shell-line !bg-card-bg shadow-shell-card"
       title={
         <div className="flex flex-col">
-          <Typography.Text strong>知识库</Typography.Text>
+          <Typography.Text strong>全库文件</Typography.Text>
           <Typography.Text type="secondary" className="!text-xs !font-normal">
             {index
-              ? `共 ${index.total_files} 个文件 · 六分区只读浏览（情绪周期 / 标的角色 / 交割单 / 复盘 / 回测 / 打板模式）`
+              ? `共 ${index.total_files} 个文件 · 只读浏览`
               : "全库只读浏览器"}
           </Typography.Text>
         </div>
@@ -178,7 +178,7 @@ export function KnowledgeBrowserPanel() {
           showIcon
           className="!mb-3"
           message={`${index.weak_title_count} 个弱标题文件`}
-          description="这些文件缺少 `# ` 标题行（地图里只显示文件名），让 agent 给每篇补一个自描述标题即可。"
+          description="缺少 `# ` 标题行，让 agent 补一个自描述标题即可。"
           data-testid="knowledge-weak-alert"
         />
       )}
@@ -195,6 +195,7 @@ export function KnowledgeBrowserPanel() {
             <Tree
               treeData={treeData}
               defaultExpandAll
+              height={520}
               selectedKeys={selectedKey ? [selectedKey] : []}
               onSelect={(keys) => {
                 const k = keys[0];
