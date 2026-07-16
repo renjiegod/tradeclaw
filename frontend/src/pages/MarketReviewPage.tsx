@@ -406,7 +406,7 @@ export function MarketReviewPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-col">
           <Typography.Title level={3} className="!mb-0">
-            打板复盘 / 盘面
+            打板复盘
           </Typography.Title>
           <Typography.Text type="secondary">
             涨停面板 · 连板梯队 · 情绪温度计 · 龙虎榜 · 题材热度 · 资金流排名（仅供研究，非投资建议）

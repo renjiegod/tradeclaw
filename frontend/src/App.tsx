@@ -89,7 +89,7 @@ const NAV_TREE: NavEntry[] = [
     children: [
       { key: "agents", label: "Agents" },
       { key: "swarm", label: "Swarm" },
-      { key: "cron_jobs", label: "Cron Jobs" },
+      { key: "cron_jobs", label: "提醒" },
       { key: "channels", label: "Channels" },
     ],
   },
@@ -120,8 +120,8 @@ const NAV_TREE: NavEntry[] = [
     label: "系统",
     icon: <SettingOutlined />,
     children: [
-      { key: "model_invocations", label: "模型调用" },
-      { key: "settings_models", label: "模型与路由" },
+      { key: "model_invocations", label: "模型调用记录" },
+      { key: "settings_models", label: "模型配置" },
       { key: "settings", label: "设置" },
     ],
   },

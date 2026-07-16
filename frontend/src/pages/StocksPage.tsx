@@ -183,7 +183,7 @@ export function StocksPage() {
   return (
     <div className="flex flex-col gap-4">
       <Typography.Title level={3} className="!mb-0">
-        股票目录
+        股票
       </Typography.Title>
       <Typography.Paragraph type="secondary" className="!mb-0">
         手动从 akshare / QMT 同步到本地表；实例的观察标的与 universe 仅能从此目录选择。

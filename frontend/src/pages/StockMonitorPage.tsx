@@ -340,7 +340,7 @@ export function StockMonitorPage() {
           alignItems: "center",
         }}
       >
-        <h2 style={{ margin: 0 }}>股票智能盯盘</h2>
+        <h2 style={{ margin: 0 }}>盯盘</h2>
         <Button type="primary" onClick={() => setCreating(true)}>
           新建盯盘
         </Button>

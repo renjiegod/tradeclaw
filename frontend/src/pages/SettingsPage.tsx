@@ -1415,7 +1415,7 @@ export function SettingsPage() {
   return (
     <div>
       <PageIntro
-        title="系统设置"
+        title="设置"
         description="集中管理落在 ~/.doyoutrade 的静态 / 低频 YAML 配置：doyoutrade 全局项与 qmt-proxy 服务端。改动不会自动重启进程，标「需重启」的字段保存后需手动重启才生效。"
         extra={
           <Button icon={<SettingOutlined />} className="rounded-xl" onClick={() => navigate("/settings/models")}>

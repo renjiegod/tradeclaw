@@ -47,7 +47,7 @@ export function AgentsPage() {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>Agent Management</h2>
+        <h2 style={{ margin: 0 }}>Agents</h2>
         <Button type="primary" onClick={() => { setEditingAgent(undefined); setShowForm(true); }}>
           New Agent
         </Button>

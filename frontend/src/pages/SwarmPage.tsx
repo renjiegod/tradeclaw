@@ -85,7 +85,7 @@ export function SwarmPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <Card className={PANEL_CARD_CLASSNAME} title="多智能体 Swarm 团队" loading={loadingPresets}>
+      <Card className={PANEL_CARD_CLASSNAME} title="Swarm" loading={loadingPresets}>
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
           <Form layout="vertical" form={form}>
             <Form.Item label="选择团队（preset）">

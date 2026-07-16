@@ -183,7 +183,7 @@ export function CronJobsPage() {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16, gap: 16, alignItems: "center" }}>
-        <h2 style={{ margin: 0 }}>提醒 (Reminders)</h2>
+        <h2 style={{ margin: 0 }}>提醒</h2>
         <Space>
           <span style={{ color: "#666" }}>Agent:</span>
           <Select

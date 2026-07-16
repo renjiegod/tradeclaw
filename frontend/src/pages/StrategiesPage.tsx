@@ -422,7 +422,7 @@ export function StrategiesPage() {
   return (
     <Space direction="vertical" size={16} className="w-full">
       <PageIntro
-        title="策略资源"
+        title="策略库"
         description="浏览、选择和查看策略定义详情。"
         extra={
           <Button className="rounded-xl" icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>

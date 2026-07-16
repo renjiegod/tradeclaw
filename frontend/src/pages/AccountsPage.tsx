@@ -267,7 +267,7 @@ export function AccountsPage() {
           alignItems: "center",
         }}
       >
-        <h2 style={{ margin: 0 }}>账户管理</h2>
+        <h2 style={{ margin: 0 }}>账户</h2>
         <Button type="primary" onClick={openCreate}>
           新建账户
         </Button>
