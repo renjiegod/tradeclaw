@@ -164,7 +164,7 @@ export function TradeImportCard({ onImported }: { onImported?: () => void }) {
         <div className="flex flex-col">
           <Typography.Text strong>交割单导入</Typography.Text>
           <Typography.Text type="secondary" className="!text-xs !font-normal">
-            上传券商导出的交割单 CSV，预览后导入 knowledge 的 trades/ 分区
+            上传交割单 CSV，预览后导入 trades/ 分区
           </Typography.Text>
         </div>
       }
@@ -269,7 +269,7 @@ function UnparsedAlert({ unparsed, count }: { unparsed: TradeAttributionUnparsed
       message={`${count} 条内容无法解析，未纳入导入`}
       description={
         unparsed.length > 0 ? (
-          <div className="flex flex-col gap-0.5 text-xs">
+          <div className="flex max-h-32 flex-col gap-0.5 overflow-y-auto text-xs">
             {unparsed.map((u, idx) => (
               <div key={`${u.path}-${idx}`} className="flex flex-wrap gap-x-2">
                 <span className="font-medium text-shell-ink">{u.path || DASH}</span>
