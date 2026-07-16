@@ -75,22 +75,22 @@ type NavEntry = NavLeaf | NavGroup;
 const isNavGroup = (entry: NavEntry): entry is NavGroup => "children" in entry;
 
 /**
- * 分组导航树：常用入口（Chat / 审批）保留在顶层，其余按「智能体 / 交易 /
+ * 分组导航树：常用入口（对话 / 审批）保留在顶层，其余按「智能体 / 交易 /
  * 行情研究 / 系统」四组收进可折叠子菜单，降低侧边栏纵向长度。分组 key 用
  * `grp_` 前缀，避免与页面 key（ConsolePageKey）冲突。
  */
 const NAV_TREE: NavEntry[] = [
-  { key: "assistant", label: "Chat", icon: <MessageOutlined /> },
-  { key: "approvals", label: "Approvals", icon: <CheckCircleOutlined /> },
+  { key: "assistant", label: "对话", icon: <MessageOutlined /> },
+  { key: "approvals", label: "审批", icon: <CheckCircleOutlined /> },
   {
     key: "grp_automation",
     label: "智能体",
     icon: <RobotOutlined />,
     children: [
-      { key: "agents", label: "Agents" },
-      { key: "swarm", label: "Swarm" },
+      { key: "agents", label: "智能体列表" },
+      { key: "swarm", label: "协作群" },
       { key: "cron_jobs", label: "提醒" },
-      { key: "channels", label: "Channels" },
+      { key: "channels", label: "消息渠道" },
     ],
   },
   {
@@ -98,7 +98,7 @@ const NAV_TREE: NavEntry[] = [
     label: "交易",
     icon: <LineChartOutlined />,
     children: [
-      { key: "tasks", label: "Tasks" },
+      { key: "tasks", label: "任务" },
       { key: "strategies", label: "策略库" },
       { key: "accounts", label: "账户" },
     ],
@@ -266,7 +266,7 @@ function TasksOutlet() {
 function ApprovalsOutlet() {
   const { refresh } = useConsoleOutlet();
   // ApprovalsPage 自取全量数据并自轮询；这里只保留对全局 pending（导航徽标 /
-  // Chat 浮现卡）的加速静默刷新，停留该页期间生效。
+  // 对话页浮现卡）的加速静默刷新，停留该页期间生效。
   useEffect(() => {
     const timer = window.setInterval(() => {
       void refresh({ silent: true }).catch(() => {
