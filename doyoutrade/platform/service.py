@@ -24,6 +24,8 @@ from doyoutrade.debug import debug_session_scope, emit_debug_event
 from doyoutrade.debug.context import debug_observability_enabled
 from doyoutrade.debug.overrides import OverriddenUniverseProvider, PatchedDataProvider
 from doyoutrade.config import AppConfig, DataSettings, ModelSettings, default_model_route_baseline
+from doyoutrade.models.factory import build_model_adapter, wrap_with_recording
+from doyoutrade.models.invocation_context import model_invocation_scope
 from doyoutrade.models.route_resolution import resolve_model_settings
 from doyoutrade.data.bars_cache_store import RepositoryBarsCacheStore
 from doyoutrade.data.cached_bars import (
@@ -62,7 +64,7 @@ from doyoutrade.core.models import CycleReport, AccountSnapshot, PositionSnapsho
 from doyoutrade.backtest import summary as backtest_summary
 from doyoutrade.money.decimal_helpers import decimal_to_json_str
 from doyoutrade.persistence.errors import RecordNotFoundError
-from doyoutrade.persistence.repositories import TaskSnapshot
+from doyoutrade.persistence.repositories import TaskSnapshot, create_model_invocation_recorder
 from doyoutrade.observability.debug_span_export import (
     debug_span_export_for_session,
     drain_debug_span_persist_queue,
@@ -1686,6 +1688,84 @@ class TradingPlatformService:
             raise RuntimeError("model routes are not configured")
         rec = await self.model_route_repository.get_by_id(route_id)
         return {"api_key": rec.api_key}
+
+    async def prepare_model_route_test(self, route_id: str) -> tuple[Any, str]:
+        """Resolve *route_id* into a recording-wrapped adapter for a connectivity test.
+
+        Raises before any streaming starts so the API layer can map validation
+        failures (bad provider_kind, missing api_key/base_url, unresolvable
+        route) to a normal HTTP status instead of a 200 SSE stream that fails
+        mid-flight.
+        """
+        if self.model_route_repository is None:
+            raise RuntimeError("model routes are not configured")
+        rec = await self.model_route_repository.get_by_id(route_id)
+        model_settings = await resolve_model_settings(
+            route_name=rec.route_name,
+            route_repository=self.model_route_repository,
+        )
+        adapter = build_model_adapter(model_settings)
+        recorder = (
+            create_model_invocation_recorder(self.model_invocation_repository)
+            if self.model_invocation_repository is not None
+            else None
+        )
+        adapter = wrap_with_recording(
+            adapter,
+            provider=model_settings.provider,
+            provider_kind=model_settings.provider_kind,
+            model=model_settings.model,
+            recorder=recorder,
+        )
+        return adapter, rec.route_name
+
+    async def stream_model_route_test(self, adapter: Any, route_name: str, prompt: str):
+        """Drive a real streaming ``agent_turn`` call and yield structured chunks.
+
+        Not a cycle/job — ``model_invocation_scope`` gets ``cycle_state=None``,
+        mirroring the assistant_loop invocation-context precedent so the call
+        still lands in ``model_invocations`` with ``run_id``/``task_id`` null
+        and ``model_route_name`` set.
+        """
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        done_marker: dict[str, Any] = {"__done__": True}
+
+        async def on_text_delta(text: str) -> None:
+            await queue.put({"type": "delta", "text": text})
+
+        async def _run() -> None:
+            try:
+                messages = [{"role": "user", "content": prompt}]
+                with model_invocation_scope(
+                    None, "model_route_test", extras={"model_route_name": route_name}
+                ):
+                    await adapter.agent_turn(messages, on_text_delta=on_text_delta)
+                await queue.put({"type": "done"})
+            except Exception as exc:
+                logger.warning(
+                    "model_route_test failed route_name=%s error_type=%s error=%s",
+                    route_name,
+                    type(exc).__name__,
+                    exc,
+                )
+                await queue.put(
+                    {"type": "error", "error_type": type(exc).__name__, "message": str(exc)}
+                )
+            finally:
+                await queue.put(done_marker)
+
+        task = asyncio.create_task(_run())
+        try:
+            while True:
+                item = await queue.get()
+                if item is done_marker:
+                    break
+                yield item
+        finally:
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     def _effective_merged_settings(
         self, record: TaskSnapshot, settings_patch: dict | None

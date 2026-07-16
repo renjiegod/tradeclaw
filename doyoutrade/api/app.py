@@ -2990,6 +2990,28 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    @app.post("/model-routes/{route_id}/test")
+    async def test_model_route(route_id: str, payload: dict | None = None):
+        prompt = _normalize_optional_string((payload or {}).get("prompt"), field_name="prompt")
+        if not prompt:
+            prompt = "你好，请用一句话介绍一下你自己，用于测试这个模型配置是否可用。"
+        try:
+            adapter, route_name = await service.prepare_model_route_test(route_id)
+        except RecordNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        async def _sse():
+            async for chunk in service.stream_model_route_test(adapter, route_name, prompt):
+                event = chunk["type"]
+                data = json.dumps({k: v for k, v in chunk.items() if k != "type"}, ensure_ascii=False)
+                yield f"event: {event}\ndata: {data}\n\n"
+
+        return StreamingResponse(_sse(), media_type="text/event-stream")
+
     @app.get("/system/state")
     async def get_system_state():
         return await service.get_system_state()

@@ -1637,6 +1637,62 @@ export async function revealModelRouteApiKey(routeId: string): Promise<{ api_key
   return request(`/model-routes/${encodeURIComponent(routeId)}/api-key`);
 }
 
+export type ModelRouteTestChunk =
+  | { type: "delta"; text: string }
+  | { type: "done" }
+  | { type: "error"; error_type: string; message: string };
+
+/** Stream a real, live connectivity test call for a model route (SSE over POST,
+ * so it cannot use `EventSource`; parsed by hand off `fetch`'s `ReadableStream`). */
+export async function streamModelRouteTest(
+  routeId: string,
+  prompt: string,
+  onChunk: (chunk: ModelRouteTestChunk) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/model-routes/${encodeURIComponent(routeId)}/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    const rawText = await response.text();
+    const parsed = parseErrorResponse(rawText, response.status);
+    const error = new ApiError(parsed.message, response.status, parsed);
+    rememberApiError(error);
+    throw error;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sepIndex = buffer.indexOf("\n\n");
+    while (sepIndex !== -1) {
+      const rawEvent = buffer.slice(0, sepIndex);
+      buffer = buffer.slice(sepIndex + 2);
+      let eventType = "message";
+      let dataLine = "";
+      for (const line of rawEvent.split("\n")) {
+        if (line.startsWith("event:")) {
+          eventType = line.slice("event:".length).trim();
+        } else if (line.startsWith("data:")) {
+          dataLine += line.slice("data:".length).trim();
+        }
+      }
+      if (dataLine) {
+        const payload = JSON.parse(dataLine) as Record<string, unknown>;
+        onChunk({ type: eventType, ...payload } as ModelRouteTestChunk);
+      }
+      sepIndex = buffer.indexOf("\n\n");
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 系统配置 (static / low-frequency YAML config) — contract A. The Settings page
 // only ever talks to these four doyoutrade endpoints; the qmt-proxy ones are

@@ -3533,6 +3533,67 @@ class PlatformServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("session_id", item)
             self.assertNotIn("details", item)
 
+    async def test_prepare_model_route_test_builds_adapter(self):
+        service = self._build_service()
+        rec = await self.model_route_repo.get_by_route_name(self._default_model_route)
+
+        adapter, route_name = await service.prepare_model_route_test(rec.id)
+
+        self.assertEqual(route_name, self._default_model_route)
+        self.assertTrue(hasattr(adapter, "agent_turn"))
+
+    async def test_prepare_model_route_test_missing_route_raises(self):
+        from doyoutrade.persistence.errors import RecordNotFoundError
+
+        service = self._build_service()
+
+        with self.assertRaises(RecordNotFoundError):
+            await service.prepare_model_route_test("does-not-exist")
+
+    async def test_stream_model_route_test_yields_delta_and_done(self):
+        service = self._build_service()
+
+        class _FakeAdapter:
+            async def agent_turn(
+                self, messages, *, tools=None, on_text_delta=None, on_thinking_delta=None
+            ):
+                await on_text_delta("hello ")
+                await on_text_delta("world")
+                return None
+
+        chunks = [
+            chunk
+            async for chunk in service.stream_model_route_test(_FakeAdapter(), "r", "hi")
+        ]
+
+        self.assertEqual(
+            chunks,
+            [
+                {"type": "delta", "text": "hello "},
+                {"type": "delta", "text": "world"},
+                {"type": "done"},
+            ],
+        )
+
+    async def test_stream_model_route_test_surfaces_errors(self):
+        service = self._build_service()
+
+        class _FailingAdapter:
+            async def agent_turn(
+                self, messages, *, tools=None, on_text_delta=None, on_thinking_delta=None
+            ):
+                raise RuntimeError("boom")
+
+        chunks = [
+            chunk
+            async for chunk in service.stream_model_route_test(_FailingAdapter(), "r", "hi")
+        ]
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0]["type"], "error")
+        self.assertEqual(chunks[0]["error_type"], "RuntimeError")
+        self.assertIn("boom", chunks[0]["message"])
+
 
 class ParseCycleRunWallTimeRangeTests(unittest.TestCase):
     """``started_after > started_before`` must raise — without this, the

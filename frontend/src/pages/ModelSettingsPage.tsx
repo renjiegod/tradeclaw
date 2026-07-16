@@ -1,4 +1,10 @@
-import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
+import {
+  DeleteOutlined,
+  EditOutlined,
+  ExperimentOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+} from "@ant-design/icons";
 import {
   Alert,
   Button,
@@ -13,7 +19,7 @@ import {
   message,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   createModelRoute,
@@ -21,6 +27,7 @@ import {
   listModelRoutes,
   patchModelRoute,
   revealModelRouteApiKey,
+  streamModelRouteTest,
 } from "../api";
 import { PageIntro } from "../components/PageIntro";
 import { usePageRefreshToken } from "../pageRefreshContext";
@@ -79,6 +86,14 @@ export function ModelSettingsPage() {
   const [routeEditLoading, setRouteEditLoading] = useState(false);
   const [routeForm] = Form.useForm<RouteFormValues>();
 
+  const [testOpen, setTestOpen] = useState(false);
+  const [testRoute, setTestRoute] = useState<ModelRouteRow | null>(null);
+  const [testPrompt, setTestPrompt] = useState("你好，请用一句话介绍一下你自己，用于测试这个模型配置是否可用。");
+  const [testRunning, setTestRunning] = useState(false);
+  const [testOutput, setTestOutput] = useState("");
+  const [testError, setTestError] = useState<string | null>(null);
+  const testAbortRef = useRef<AbortController | null>(null);
+
   const loadRoutes = useCallback(async () => {
     setLoadingRoutes(true);
     try {
@@ -101,6 +116,12 @@ export function ModelSettingsPage() {
   useEffect(() => {
     void loadRoutes();
   }, [loadRoutes, pageRefreshToken]);
+
+  useEffect(() => {
+    return () => {
+      testAbortRef.current?.abort();
+    };
+  }, []);
 
   const openCreateRoute = () => {
     setRouteEditId(null);
@@ -182,6 +203,56 @@ export function ModelSettingsPage() {
     }
   };
 
+  const stopTest = () => {
+    testAbortRef.current?.abort();
+    testAbortRef.current = null;
+    setTestRunning(false);
+  };
+
+  const openTestRoute = (row: ModelRouteRow) => {
+    stopTest();
+    setTestRoute(row);
+    setTestOutput("");
+    setTestError(null);
+    setTestOpen(true);
+  };
+
+  const runTest = async () => {
+    if (!testRoute) {
+      return;
+    }
+    stopTest();
+    setTestOutput("");
+    setTestError(null);
+    setTestRunning(true);
+    const controller = new AbortController();
+    testAbortRef.current = controller;
+    try {
+      await streamModelRouteTest(
+        testRoute.id,
+        testPrompt.trim(),
+        (chunk) => {
+          if (chunk.type === "delta") {
+            setTestOutput((prev) => prev + chunk.text);
+          } else if (chunk.type === "error") {
+            setTestError(`${chunk.error_type}: ${chunk.message}`);
+          }
+        },
+        controller.signal,
+      );
+    } catch (e: unknown) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      setTestError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (testAbortRef.current === controller) {
+        testAbortRef.current = null;
+        setTestRunning(false);
+      }
+    }
+  };
+
   const routeColumns: ColumnsType<ModelRouteRow> = [
     {
       title: "配置名称",
@@ -236,12 +307,15 @@ export function ModelSettingsPage() {
     {
       title: "操作",
       key: "actions",
-      width: 200,
+      width: 260,
       fixed: "right",
       render: (_: unknown, row) => (
         <Space size="small" wrap>
           <Button type="link" size="small" icon={<EditOutlined />} onClick={() => void openEditRoute(row)}>
             编辑
+          </Button>
+          <Button type="link" size="small" icon={<ExperimentOutlined />} onClick={() => openTestRoute(row)}>
+            测试
           </Button>
           <Popconfirm
             title="删除此模型？"
@@ -349,6 +423,56 @@ export function ModelSettingsPage() {
             <Input.TextArea rows={5} placeholder='例如 {"temperature": 0.2}' className="font-mono text-xs" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={`测试模型配置：${testRoute?.route_name ?? ""}`}
+        open={testOpen}
+        onCancel={() => {
+          stopTest();
+          setTestOpen(false);
+        }}
+        width={640}
+        footer={[
+          <Button
+            key="close"
+            onClick={() => {
+              stopTest();
+              setTestOpen(false);
+            }}
+          >
+            关闭
+          </Button>,
+          testRunning ? (
+            <Button key="stop" danger onClick={stopTest}>
+              停止
+            </Button>
+          ) : (
+            <Button key="run" type="primary" onClick={() => void runTest()}>
+              发起测试调用
+            </Button>
+          ),
+        ]}
+      >
+        <Space direction="vertical" className="w-full" size="middle">
+          <div>
+            <Typography.Text type="secondary" className="text-sm">
+              向该配置发起一次真实的流式模型调用，验证接口类型 / 接口地址 / API Key / 模型 ID 是否可用；输出会逐字追加显示。
+            </Typography.Text>
+          </div>
+          <Form.Item label="测试提示词" className="mb-0">
+            <Input.TextArea
+              rows={2}
+              value={testPrompt}
+              onChange={(e) => setTestPrompt(e.target.value)}
+              disabled={testRunning}
+            />
+          </Form.Item>
+          {testError ? <Alert type="error" showIcon message={testError} /> : null}
+          <div className="rounded-xl border border-shell-line bg-card-bg p-3 min-h-[160px] max-h-[400px] overflow-y-auto whitespace-pre-wrap font-mono text-xs">
+            {testOutput || (testRunning ? "等待模型返回…" : "点击「发起测试调用」开始")}
+          </div>
+        </Space>
       </Modal>
     </>
   );
