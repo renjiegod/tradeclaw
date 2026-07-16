@@ -1,5 +1,5 @@
 import React from "react";
-import { Button, Form, Input, Modal, Select, Space, Switch, Table, message } from "antd";
+import { Button, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, message } from "antd";
 import {
   copyAssistantChannelSecret,
   createAssistantChannel,
@@ -13,28 +13,128 @@ import {
 import type { Agent, AssistantChannel, CreateAssistantChannelPayload } from "../types";
 import { usePageRefreshToken } from "../pageRefreshContext";
 
-type FormValues = {
+type FieldKind = "text" | "password" | "number" | "switch" | "select" | "list";
+
+type FieldDef = {
+  name: string;
+  label: string;
+  kind?: FieldKind;
+  secret?: boolean;
+  options?: { value: string; label: string }[];
+  placeholder?: string;
+  default?: string | number | boolean;
+};
+
+// Field definitions mirror the config models in doyoutrade/assistant/channels/config.py.
+// `secret` fields are collected into payload.secrets, the rest into payload.config.
+const CHANNEL_FIELDS: Record<string, FieldDef[]> = {
+  feishu: [
+    { name: "app_id", label: "App ID" },
+    {
+      name: "domain",
+      label: "Domain",
+      kind: "select",
+      options: [{ value: "feishu", label: "feishu" }, { value: "lark", label: "lark" }],
+      default: "feishu",
+    },
+    { name: "thinking_card_id", label: "Thinking Card ID", placeholder: "预注册的 CardKit Card ID for thinking 卡片" },
+    { name: "tool_call_card_id", label: "Tool Call Card ID", placeholder: "预注册的 CardKit Card ID for 工具调用卡片" },
+    { name: "rich_text_card_id", label: "Rich Text Card ID", placeholder: "预注册的 CardKit Card ID for 富文本卡片" },
+    { name: "app_secret", label: "App Secret", kind: "password", secret: true },
+    { name: "encrypt_key", label: "Encrypt Key", kind: "password", secret: true },
+    { name: "verification_token", label: "Verification Token", kind: "password", secret: true },
+  ],
+  http: [],
+  websocket: [],
+  email: [
+    { name: "smtp_host", label: "SMTP Host" },
+    { name: "smtp_port", label: "SMTP Port", kind: "number", default: 465 },
+    { name: "use_tls", label: "Use TLS (SMTPS, port 465)", kind: "switch", default: true },
+    { name: "use_starttls", label: "Use STARTTLS (port 587)", kind: "switch", default: false },
+    { name: "from_addr", label: "From Address" },
+    { name: "to_addrs", label: "To Addresses", kind: "list", placeholder: "comma separated" },
+    { name: "subject_prefix", label: "Subject Prefix", default: "[Doyoutrade]" },
+    { name: "username", label: "SMTP Username", secret: true },
+    { name: "password", label: "SMTP Password", kind: "password", secret: true },
+  ],
+  wecom: [
+    {
+      name: "msg_type",
+      label: "Message Type",
+      kind: "select",
+      options: [{ value: "markdown", label: "markdown" }, { value: "text", label: "text" }],
+      default: "markdown",
+    },
+    { name: "webhook_url", label: "Webhook URL", kind: "password", secret: true },
+  ],
+  dingtalk: [
+    {
+      name: "msg_type",
+      label: "Message Type",
+      kind: "select",
+      options: [{ value: "markdown", label: "markdown" }, { value: "text", label: "text" }],
+      default: "markdown",
+    },
+    { name: "webhook_url", label: "Webhook URL", kind: "password", secret: true },
+    { name: "sign_secret", label: "Sign Secret", kind: "password", secret: true },
+  ],
+  telegram: [
+    { name: "chat_id", label: "Chat ID" },
+    { name: "message_thread_id", label: "Message Thread ID" },
+    { name: "api_base", label: "API Base", default: "https://api.telegram.org" },
+    { name: "bot_token", label: "Bot Token", kind: "password", secret: true },
+  ],
+  slack: [
+    { name: "channel_id", label: "Channel ID" },
+    { name: "api_base", label: "API Base", default: "https://slack.com/api" },
+    { name: "webhook_url", label: "Webhook URL", kind: "password", secret: true },
+    { name: "bot_token", label: "Bot Token", kind: "password", secret: true },
+  ],
+};
+
+const CHANNEL_TYPE_OPTIONS = [
+  { value: "feishu", label: "Feishu" },
+  { value: "websocket", label: "WebSocket" },
+  { value: "http", label: "HTTP" },
+  { value: "email", label: "Email" },
+  { value: "wecom", label: "WeCom (企业微信)" },
+  { value: "dingtalk", label: "DingTalk (钉钉)" },
+  { value: "telegram", label: "Telegram" },
+  { value: "slack", label: "Slack" },
+];
+
+type FormValues = Record<string, unknown> & {
   name: string;
   type: string;
   agent_id: string;
   enabled: boolean;
-  app_id?: string;
-  domain?: string;
-  app_secret?: string;
-  encrypt_key?: string;
-  verification_token?: string;
-  thinking_card_id?: string;
-  tool_call_card_id?: string;
-  rich_text_card_id?: string;
 };
 
+function fieldsForType(type: string): FieldDef[] {
+  return CHANNEL_FIELDS[type] ?? [];
+}
+
 function buildPayload(values: FormValues, originalSecrets: Record<string, string>): CreateAssistantChannelPayload {
+  const config: Record<string, unknown> = {};
   const secrets: Record<string, string> = {};
-  for (const key of ["app_secret", "encrypt_key", "verification_token"] as const) {
-    const value = values[key]?.trim();
-    // Only include if non-empty AND different from original (user actually changed it)
-    if (value && value !== originalSecrets[key]) {
-      secrets[key] = value;
+  for (const field of fieldsForType(values.type)) {
+    const raw = values[field.name];
+    if (field.secret) {
+      const value = typeof raw === "string" ? raw.trim() : raw;
+      // Only include if non-empty AND different from original (user actually changed it)
+      if (value && value !== originalSecrets[field.name]) {
+        secrets[field.name] = value as string;
+      }
+      continue;
+    }
+    if (field.kind === "list") {
+      config[field.name] = typeof raw === "string"
+        ? raw.split(",").map((part) => part.trim()).filter(Boolean)
+        : [];
+    } else if (typeof raw === "string") {
+      config[field.name] = raw.trim();
+    } else {
+      config[field.name] = raw ?? (field.kind === "switch" ? false : "");
     }
   }
   return {
@@ -42,13 +142,7 @@ function buildPayload(values: FormValues, originalSecrets: Record<string, string
     type: values.type,
     enabled: Boolean(values.enabled),
     agent_id: values.agent_id,
-    config: {
-      app_id: values.app_id?.trim() || "",
-      domain: values.domain || "feishu",
-      thinking_card_id: values.thinking_card_id?.trim() || "",
-      tool_call_card_id: values.tool_call_card_id?.trim() || "",
-      rich_text_card_id: values.rich_text_card_id?.trim() || "",
-    },
+    config,
     secrets,
   };
 }
@@ -61,6 +155,7 @@ export function ChannelsPage() {
   const [editing, setEditing] = React.useState<AssistantChannel | null>(null);
   const [open, setOpen] = React.useState(false);
   const [form] = Form.useForm<FormValues>();
+  const currentType = Form.useWatch("type", form) ?? "feishu";
   // Stores fetched secrets when editing, so we only send changed values to backend
   const originalSecretsRef = React.useRef<Record<string, string>>({});
 
@@ -85,36 +180,40 @@ export function ChannelsPage() {
   const openCreate = () => {
     setEditing(null);
     originalSecretsRef.current = {};
-    form.setFieldsValue({
-      type: "feishu",
-      enabled: true,
-      domain: "feishu",
-      agent_id: agents[0]?.id,
-    });
+    form.resetFields();
+    const defaults: Record<string, unknown> = { type: "feishu", enabled: true, agent_id: agents[0]?.id };
+    for (const field of fieldsForType("feishu")) {
+      if (field.default !== undefined) defaults[field.name] = field.default;
+    }
+    form.setFieldsValue(defaults);
     setOpen(true);
   };
 
   const openEdit = async (channel: AssistantChannel) => {
     setEditing(channel);
     setOpen(true);
+    form.resetFields();
+    const fields = fieldsForType(channel.type);
+    const configValues: Record<string, unknown> = {};
+    for (const field of fields) {
+      if (field.secret) continue;
+      const raw = channel.config[field.name];
+      if (field.kind === "list") {
+        configValues[field.name] = Array.isArray(raw) ? raw.join(", ") : "";
+      } else {
+        configValues[field.name] = raw ?? (field.kind === "switch" ? false : "");
+      }
+    }
     form.setFieldsValue({
       name: channel.name,
       type: channel.type,
       enabled: channel.enabled,
       agent_id: channel.agent_id,
-      app_id: String(channel.config.app_id ?? ""),
-      domain: String(channel.config.domain ?? "feishu"),
-      app_secret: "",
-      encrypt_key: "",
-      verification_token: "",
-      thinking_card_id: String(channel.config.thinking_card_id ?? ""),
-      tool_call_card_id: String(channel.config.tool_call_card_id ?? ""),
-      rich_text_card_id: String(channel.config.rich_text_card_id ?? ""),
+      ...configValues,
     });
-    // Reset original secrets
+    // Reset original secrets, then fetch existing ones so the user sees them masked
     originalSecretsRef.current = {};
-    // Fetch existing secrets so user can see them masked and click eye to reveal
-    const secretKeys = ["app_secret", "encrypt_key", "verification_token"] as const;
+    const secretKeys = fields.filter((field) => field.secret).map((field) => field.name);
     await Promise.all(
       secretKeys.map(async (key) => {
         try {
@@ -127,6 +226,16 @@ export function ChannelsPage() {
         }
       }),
     );
+  };
+
+  const handleValuesChange = (changed: Partial<FormValues>) => {
+    if (!editing && typeof changed.type === "string") {
+      const defaults: Record<string, unknown> = {};
+      for (const field of fieldsForType(changed.type)) {
+        if (field.default !== undefined) defaults[field.name] = field.default;
+      }
+      form.setFieldsValue(defaults);
+    }
   };
 
   const save = async () => {
@@ -165,6 +274,42 @@ export function ChannelsPage() {
   const stopChannel = async (channel: AssistantChannel) => {
     await stopAssistantChannel(channel.id);
     await load();
+  };
+
+  const renderField = (field: FieldDef) => {
+    if (field.kind === "switch") {
+      return (
+        <Form.Item key={field.name} label={field.label} name={field.name} valuePropName="checked">
+          <Switch />
+        </Form.Item>
+      );
+    }
+    if (field.kind === "select") {
+      return (
+        <Form.Item key={field.name} label={field.label} name={field.name}>
+          <Select options={field.options} />
+        </Form.Item>
+      );
+    }
+    if (field.kind === "number") {
+      return (
+        <Form.Item key={field.name} label={field.label} name={field.name}>
+          <InputNumber style={{ width: "100%" }} />
+        </Form.Item>
+      );
+    }
+    if (field.kind === "password" || field.secret) {
+      return (
+        <Form.Item key={field.name} label={field.label} name={field.name}>
+          <Input.Password placeholder={editing ? "Leave blank to keep unchanged" : field.placeholder} />
+        </Form.Item>
+      );
+    }
+    return (
+      <Form.Item key={field.name} label={field.label} name={field.name}>
+        <Input placeholder={field.placeholder} />
+      </Form.Item>
+    );
   };
 
   return (
@@ -249,12 +394,17 @@ export function ChannelsPage() {
         onOk={() => void save()}
         okText="Save"
       >
-        <Form form={form} layout="vertical" initialValues={{ type: "feishu", enabled: true, domain: "feishu" }}>
+        <Form
+          form={form}
+          layout="vertical"
+          initialValues={{ type: "feishu", enabled: true, domain: "feishu" }}
+          onValuesChange={handleValuesChange}
+        >
           <Form.Item label="Name" name="name" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
           <Form.Item label="Type" name="type" rules={[{ required: true }]}>
-            <Select options={[{ value: "feishu", label: "Feishu" }, { value: "websocket", label: "WebSocket" }, { value: "http", label: "HTTP" }]} />
+            <Select options={CHANNEL_TYPE_OPTIONS} disabled={Boolean(editing)} />
           </Form.Item>
           <Form.Item label="Agent" name="agent_id" rules={[{ required: true }]}>
             <Select options={agents.map((agent) => ({ value: agent.id, label: agent.name }))} />
@@ -262,30 +412,7 @@ export function ChannelsPage() {
           <Form.Item label="Enabled" name="enabled" valuePropName="checked">
             <Switch />
           </Form.Item>
-          <Form.Item label="App ID" name="app_id">
-            <Input />
-          </Form.Item>
-          <Form.Item label="Domain" name="domain">
-            <Select options={[{ value: "feishu", label: "feishu" }, { value: "lark", label: "lark" }]} />
-          </Form.Item>
-          <Form.Item label="Thinking Card ID" name="thinking_card_id">
-            <Input placeholder="预注册的 CardKit Card ID for thinking 卡片" />
-          </Form.Item>
-          <Form.Item label="Tool Call Card ID" name="tool_call_card_id">
-            <Input placeholder="预注册的 CardKit Card ID for 工具调用卡片" />
-          </Form.Item>
-          <Form.Item label="Rich Text Card ID" name="rich_text_card_id">
-            <Input placeholder="预注册的 CardKit Card ID for 富文本卡片" />
-          </Form.Item>
-          <Form.Item label="App Secret" name="app_secret">
-            <Input.Password placeholder={editing ? "Leave blank to keep unchanged" : ""} />
-          </Form.Item>
-          <Form.Item label="Encrypt Key" name="encrypt_key">
-            <Input.Password placeholder={editing ? "Leave blank to keep unchanged" : ""} />
-          </Form.Item>
-          <Form.Item label="Verification Token" name="verification_token">
-            <Input.Password placeholder={editing ? "Leave blank to keep unchanged" : ""} />
-          </Form.Item>
+          {fieldsForType(currentType).map(renderField)}
         </Form>
       </Modal>
     </div>

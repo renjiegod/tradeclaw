@@ -108,6 +108,30 @@ describe("ChannelsPage", () => {
     });
   });
 
+  it("creates a Slack channel with type-specific fields", async () => {
+    vi.mocked(createAssistantChannel).mockResolvedValue(channel);
+    render(<ChannelsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /New Channel/i }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Slack Alerts" } });
+    fireEvent.mouseDown(screen.getByLabelText("Type"));
+    fireEvent.click(await screen.findByText("Slack"));
+    fireEvent.change(screen.getByLabelText("Channel ID"), { target: { value: "C123" } });
+    fireEvent.change(screen.getByLabelText("Webhook URL"), { target: { value: "https://hooks.slack.com/x" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(createAssistantChannel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "Slack Alerts",
+          type: "slack",
+          config: expect.objectContaining({ channel_id: "C123", api_base: "https://slack.com/api" }),
+          secrets: expect.objectContaining({ webhook_url: "https://hooks.slack.com/x" }),
+        }),
+      );
+    });
+  });
+
   it("updates a channel without sending blank secrets", async () => {
     vi.mocked(updateAssistantChannel).mockResolvedValue(channel);
     render(<ChannelsPage />);
