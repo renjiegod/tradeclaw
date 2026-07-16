@@ -22,11 +22,11 @@ import {
   useNavigate,
 } from "react-router-dom";
 
-import { getHealth, getRuntimeStatus, getSystemState, listTasks, listPendingApprovals } from "./api";
+import { getHealth, getRuntimeStatus, getSystemState, getVersion, listTasks, listPendingApprovals } from "./api";
 import { UpdateBanner } from "./components/UpdateFlow";
 import { type ConsoleOutletContext, useConsoleOutlet } from "./consoleOutletContext";
 import { PageRefreshContext } from "./pageRefreshContext";
-import type { ConsolePageKey, TaskStatus, PendingApproval, RuntimeStatus, SystemState } from "./types";
+import type { ConsolePageKey, TaskStatus, PendingApproval, RuntimeStatus, SystemState, VersionInfo } from "./types";
 import { menuKeyFromPathname } from "./utils/menuKeyFromPathname";
 
 // Lazy-loaded route pages
@@ -258,6 +258,50 @@ function ApiHealthHeaderStatus({ health }: { health: string }) {
   );
 }
 
+function useVersionInfo() {
+  const [version, setVersion] = useState<VersionInfo | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void getVersion()
+      .then((result) => {
+        if (alive) setVersion(result);
+      })
+      .catch(() => {
+        if (alive) setVersion(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return version;
+}
+
+function SidebarVersionBadge() {
+  const version = useVersionInfo();
+  if (!version) return null;
+
+  const display = version.git_tag ?? version.git_commit_short ?? version.package_version;
+  const fullInfo = [
+    `package: ${version.package_version}`,
+    `engine: ${version.engine_version}`,
+    version.git_tag ? `tag: ${version.git_tag}` : null,
+    version.git_commit ? `commit: ${version.git_commit}` : null,
+    version.git_dirty ? "工作区含未提交改动 (dirty)" : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return (
+    <div
+      className="mx-3 mt-1 flex items-center justify-between gap-2 rounded-xl border border-shell-line/60 bg-white/40 px-3 py-1.5 text-[11px] leading-snug text-shell-muted"
+      title={fullInfo}
+    >
+      <span className="truncate font-mono">{display}</span>
+      {version.git_dirty ? <span className="shrink-0 text-amber-600">dirty</span> : null}
+    </div>
+  );
+}
+
 function TasksOutlet() {
   const { refresh } = useConsoleOutlet();
   return <TasksPage onMutated={() => void refresh()} />;
@@ -359,6 +403,7 @@ function ConsoleShell() {
         <div className="mx-3 mt-1 rounded-xl border border-shell-line/60 bg-white/40 px-3 py-2 text-[11px] leading-snug text-shell-muted">
           仅供研究 / 教育用途，不构成投资建议；不荐股、不预测涨跌，据此操作风险自负。
         </div>
+        <SidebarVersionBadge />
       </Layout.Sider>
       <Layout>
         <Layout.Header className="flex h-auto items-center justify-between gap-2 border-b border-shell-line bg-transparent px-5 py-3">

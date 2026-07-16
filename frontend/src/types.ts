@@ -311,6 +311,16 @@ export interface DeliveryTarget {
   channel_type?: string;
 }
 
+/** Backend `/version` response — package + git provenance of the running build, so issue reports can state exactly which build was hit. */
+export interface VersionInfo {
+  package_version: string;
+  engine_version: string;
+  git_tag?: string | null;
+  git_commit?: string | null;
+  git_commit_short?: string | null;
+  git_dirty?: boolean | null;
+}
+
 /** One selectable Feishu push target = (bot × group it belongs to).
  * Returned by ``GET /assistant/feishu/chats`` to populate the trigger channel
  * picker. ``error`` is set (with empty chat_id) when a bot's chat listing failed
