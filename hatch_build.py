@@ -14,9 +14,11 @@ Set ``DOYOUTRADE_SKIP_FRONTEND_BUILD=1`` to force API-only and skip the npm step
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
@@ -27,6 +29,7 @@ class CustomBuildHook(BuildHookInterface):
         root = Path(self.root)
         self._include_frontend(root, build_data)
         self._include_qmt_proxy(root, build_data)
+        self._write_git_version(root, build_data)
 
     def _include_frontend(self, root: Path, build_data: dict) -> None:
         dist = root / "frontend" / "dist"
@@ -80,6 +83,39 @@ class CustomBuildHook(BuildHookInterface):
         web_dist = proxy / "web" / "dist"
         if (web_dist / "index.html").is_file():
             force_include[str(web_dist)] = "doyoutrade/_qmt_proxy/web/dist"
+
+    def _write_git_version(self, root: Path, build_data: dict) -> None:
+        """Freezes ``git describe``/``rev-parse`` into the wheel at
+        ``doyoutrade/_git_version.json`` so installed packages (no ``.git``
+        checkout) can still report their build provenance via
+        ``doyoutrade.version_info`` (used by the ``/version`` API endpoint /
+        frontend version badge, so issue reporters can state their exact build).
+        """
+        info = {
+            "tag": self._git(root, ["describe", "--tags", "--always", "--dirty"]),
+            "commit": self._git(root, ["rev-parse", "HEAD"]),
+            "commit_short": self._git(root, ["rev-parse", "--short", "HEAD"]),
+            "dirty": bool(self._git(root, ["status", "--porcelain"]) or ""),
+        }
+        if info["commit"] is None:
+            self.app.display_warning(
+                "could not resolve git commit for this build (not a git checkout, "
+                "or git unavailable) — /version will report unknown provenance"
+            )
+
+        out_dir = Path(tempfile.mkdtemp(prefix="doyoutrade-git-version-"))
+        out_file = out_dir / "_git_version.json"
+        out_file.write_text(json.dumps(info))
+        build_data.setdefault("force_include", {})[str(out_file)] = "doyoutrade/_git_version.json"
+
+    def _git(self, root: Path, args: list[str]) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", *args], cwd=root, capture_output=True, text=True, timeout=5, check=True
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return None
+        return result.stdout.strip() or None
 
     def _try_build_frontend(self, root: Path, dist: Path) -> None:
         if os.environ.get("DOYOUTRADE_SKIP_FRONTEND_BUILD") == "1":

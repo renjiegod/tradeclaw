@@ -864,6 +864,21 @@ def create_app(
     async def health():
         return {"status": "ok"}
 
+    @app.get("/version")
+    async def get_version():
+        from doyoutrade import __version__, engine_version
+        from doyoutrade.version_info import get_git_version_info
+
+        git_info = get_git_version_info()
+        return {
+            "package_version": __version__,
+            "engine_version": engine_version(),
+            "git_tag": git_info["tag"],
+            "git_commit": git_info["commit"],
+            "git_commit_short": git_info["commit_short"],
+            "git_dirty": git_info["dirty"],
+        }
+
     @app.get("/runtime/health")
     async def runtime_health():
         return await runtime_control_plane.health()

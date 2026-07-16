@@ -1221,6 +1221,22 @@ class ApiAppTests(unittest.TestCase):
             len(build_default_tool_registry().list_tools()),
         )
 
+    def test_version_endpoint_reports_package_and_git_provenance(self):
+        service = _FakeService()
+        app = create_app(service, _FakeApprovalGate(), assistant_service=_FakeAssistantService())
+
+        with TestClient(app) as client:
+            response = client.get("/version")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        from doyoutrade import __version__, engine_version
+
+        self.assertEqual(body["package_version"], __version__)
+        self.assertEqual(body["engine_version"], engine_version())
+        for key in ("git_tag", "git_commit", "git_commit_short", "git_dirty"):
+            self.assertIn(key, body)
+
     def test_accounts_crud_set_default_and_in_use(self):
         service = _FakeService()
         app = create_app(service, _FakeApprovalGate(), assistant_service=_FakeAssistantService())

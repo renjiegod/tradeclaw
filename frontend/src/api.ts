@@ -88,6 +88,7 @@ import type {
   RuntimeStatus,
   SwarmPresetSummary,
   SwarmRun,
+  VersionInfo,
 } from "./types";
 
 export type {
@@ -493,6 +494,10 @@ function normalizeAssistantSession(raw: unknown): AssistantSession {
 
 export async function getHealth(): Promise<{ status: string }> {
   return request("/health");
+}
+
+export async function getVersion(): Promise<VersionInfo> {
+  return request("/version");
 }
 
 export async function getRuntimeStatus(): Promise<RuntimeStatus> {
