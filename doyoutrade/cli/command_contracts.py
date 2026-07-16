@@ -1220,9 +1220,13 @@ _CONTRACTS: dict[str, dict[str, Any]] = {
             {"name": "broker", "maps_to": "broker", "type": "string", "required": True,
              "description": "Broker slug used as the knowledge partition "
              "(trades/<broker>/<YYYY-MM>.csv), e.g. huatai."},
+            {"name": "dry-run", "maps_to": "dry_run", "type": "boolean", "required": False,
+             "description": "Rehearse only: report would-append / duplicate "
+             "counts without writing files or refreshing the index."},
         ],
         "examples": [
             "doyoutrade-cli portfolio import-csv --file ./交割单.csv --broker huatai",
+            "doyoutrade-cli portfolio import-csv --file ./交割单.csv --broker huatai --dry-run",
         ],
     },
     "portfolio.import-image": {

@@ -52,17 +52,32 @@ Minimal valid payload:
 {"file_path": "/home/user/.doyoutrade/knowledge/uploads/交割单.csv", "broker": "huatai"}
 ```
 
+Optional `"dry_run": true` (also accepts `"true"`/`"1"` strings) rehearses the
+import: identical dedupe counts, but nothing is written (no files, no index
+refresh); the result carries `"dry_run": true` and `"review": null`.
+
+```json
+{"file_path": "/home/user/.doyoutrade/knowledge/uploads/交割单.csv", "broker": "huatai", "dry_run": true}
+```
+
 Writes canonical monthly files `trades/<broker>/<YYYY-MM>.csv` under the
 knowledge base, dedupes re-imports on `date+symbol+side+price+qty`, refreshes
 `_index.md`, and smoke-checks readability (`attribution_readable`). Success
 data: `written{rel_path: appended}`, `appended_total`, `duplicates_skipped`,
 `fills_total`, `unparsed[]` (every skipped file/row with a reason — surface
-these to the user, they are never silently dropped).
+these to the user, they are never silently dropped), `dry_run`, and — on a real
+(non-dry) import — a `review` block for immediate 复盘:
+`{"affected_months": [...], "attribution_summary": <attribution summary:
+round_trips / win_rate / total_realized_pnl / ...>, "attribution_error":
+str|null}`. When attribution reading fails the import still succeeds:
+`attribution_summary` is `null` and `attribution_error` carries the
+type + message — tell the user instead of ignoring it.
 
 ## CLI
 
 ```bash
 doyoutrade-cli portfolio import-csv --file ~/Downloads/交割单.csv --broker huatai
+doyoutrade-cli portfolio import-csv --file ~/Downloads/交割单.csv --broker huatai --dry-run
 ```
 
 Same envelope contract as other commands (`ok` / `data` / `error.error_code`).
@@ -73,7 +88,8 @@ use the in-process tool.
 
 | error_code | Meaning | Repair |
 |---|---|---|
-| `unknown_arguments` | Top-level kwarg not in the schema | Use only `file_path` / `mime_type` (image) or `file_path` / `broker` (csv) |
+| `unknown_arguments` | Top-level kwarg not in the schema | Use only `file_path` / `mime_type` (image) or `file_path` / `broker` / `dry_run` (csv) |
+| `invalid_dry_run_json` | `dry_run` neither boolean nor 'true'/'false'/'1'/'0' | Send a native boolean |
 | `validation_error` | Bad field shape (e.g. empty `file_path`) | Fix the field per the message |
 | `sandbox_violation` | File is outside every registered sandbox root | Copy the file under `~/.doyoutrade/knowledge` first |
 | `file_not_found` | No file at the resolved path | Check the path |

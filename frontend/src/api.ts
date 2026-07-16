@@ -38,6 +38,9 @@ import type {
   KnowledgeFile,
   KnowledgeIndex,
   Playbook,
+  PortfolioImportBrokersResponse,
+  PortfolioImportCommitResponse,
+  PortfolioImportParseResponse,
   SentimentTimeline,
   SymbolRoles,
   TradeAttribution,
@@ -2110,4 +2113,72 @@ export async function uploadFile(file: File): Promise<import("./types").UploadRe
     throw error;
   }
   return response.json() as Promise<import("./types").UploadResult>;
+}
+
+// ---- 券商交割单 CSV 导入 (portfolio statement imports) ----
+
+/**
+ * List the brokers selectable for a statement import
+ * (``GET /portfolio/imports/brokers``) — known parser presets plus any broker
+ * directories that already exist under the knowledge base's ``trades/``
+ * partition (``existing: true``).
+ */
+export async function listPortfolioImportBrokers(): Promise<PortfolioImportBrokersResponse> {
+  return request("/portfolio/imports/brokers");
+}
+
+/**
+ * POST a multipart form without the JSON ``Content-Type`` header that
+ * {@link request} always sets (the browser must set the multipart boundary
+ * itself). Error handling mirrors {@link uploadFile}: non-2xx bodies go through
+ * {@link parseErrorResponse} and surface as {@link ApiError}.
+ */
+async function postMultipart<T>(path: string, form: FormData): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    const rawText = await response.text();
+    const parsed = parseErrorResponse(rawText, response.status);
+    const error = new ApiError(parsed.message, response.status, parsed);
+    rememberApiError(error);
+    throw error;
+  }
+  return (await response.json()) as T;
+}
+
+/**
+ * Parse (but do not persist) an uploaded broker settlement CSV
+ * (``POST /portfolio/imports/csv/parse``, multipart ``file`` + ``broker``).
+ * Returns the previewed fills with duplicate marks plus honest counts of
+ * duplicates / unparsed lines.
+ */
+export async function parseTradesCsv(
+  file: File,
+  broker: string,
+): Promise<PortfolioImportParseResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("broker", broker);
+  return postMultipart("/portfolio/imports/csv/parse", form);
+}
+
+/**
+ * Commit an uploaded broker settlement CSV into the knowledge base's
+ * ``trades/<broker>/<month>.csv`` files (``POST /portfolio/imports/csv/commit``,
+ * multipart ``file`` + ``broker`` + ``dry_run``). ``dryRun: true`` reports what
+ * would be appended without writing anything (``review`` comes back null);
+ * ``dryRun: false`` writes and returns a post-import attribution ``review``.
+ */
+export async function commitTradesCsv(
+  file: File,
+  broker: string,
+  dryRun: boolean,
+): Promise<PortfolioImportCommitResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("broker", broker);
+  form.append("dry_run", dryRun ? "true" : "false");
+  return postMultipart("/portfolio/imports/csv/commit", form);
 }
