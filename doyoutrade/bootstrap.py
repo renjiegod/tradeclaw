@@ -617,7 +617,8 @@ def _build_worker_from_config(
 
 async def _build_quote_stream_service(account_repository, data_cfg=None):
     """Construct the realtime quote stream service from the default account's
-    QMT proxy connection (data source: qmt-proxy only, per the watchlist spec).
+    QMT proxy connection, with a non-QMT polling fallback chain for when no
+    QMT account is connected (e.g. after QMT is banned).
 
     The service runs in **dynamic mode**: it holds the default-account
     resolver + a connection factory and re-resolves on every client register
@@ -633,17 +634,23 @@ async def _build_quote_stream_service(account_repository, data_cfg=None):
     """
     from doyoutrade.data.quote_stream import QuoteStreamService
     from doyoutrade.data.mootdx_provider import MootdxRealtimeQuoteProvider
+    from doyoutrade.data.akshare_provider import AkshareRealtimeQuoteProvider
+    from doyoutrade.data.fallback_provider import FallbackRealtimeQuoteProvider
 
-    # Polling fallback for realtime quotes when no qmt account is connected
-    # (e.g. after QMT is banned). Construction never imports mootdx (lazy
-    # client), and a missing install / upstream failure degrades to visible
-    # no_data placeholders inside fetch_quotes rather than raising.
-    mootdx_fallback = MootdxRealtimeQuoteProvider()
+    # Polling fallback chain for realtime quotes when no qmt account is
+    # connected: mootdx (通达信, per-symbol L1) first, akshare (em -> sina ->
+    # tencent cascade) second for whatever mootdx leaves unanswered. Neither
+    # constructor touches the network (lazy clients); a missing install /
+    # upstream failure on one leg degrades visibly (debug event + warning)
+    # and the chain tries the next, rather than blanking the watchlist.
+    mootdx_fallback = FallbackRealtimeQuoteProvider(
+        [MootdxRealtimeQuoteProvider(), AkshareRealtimeQuoteProvider()]
+    )
 
     if account_repository is None:
         logger.info(
             "quote stream: no account repository; serving realtime quotes via "
-            "mootdx polling fallback"
+            "mootdx/akshare polling fallback chain"
         )
         return QuoteStreamService(
             quote_provider=mootdx_fallback, ws_subscribe=None, has_connection=True

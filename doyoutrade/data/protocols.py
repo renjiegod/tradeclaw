@@ -411,7 +411,7 @@ class FundFlowProvider(Protocol):
 
 @runtime_checkable
 class RealtimeQuoteProvider(Protocol):
-    """Structural type for a one-shot realtime quote source (qmt only today).
+    """Structural type for a one-shot realtime quote source (qmt, mootdx, akshare today).
 
     Realtime quotes are a separate axis from OHLCV history — ``fetch_quotes``
     takes a list of canonical symbols and returns a

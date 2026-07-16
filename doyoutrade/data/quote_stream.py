@@ -565,8 +565,8 @@ class QuoteStreamService:
                     "mode": "fallback_polling",
                     "prev_connected": prev_connected,
                     "hint": "no qmt account; serving realtime L1 snapshots via the "
-                    "polling fallback provider (mootdx) — REST /market/quotes + "
-                    "register snapshots resolve real quotes, no WS push",
+                    "polling fallback provider chain (mootdx -> akshare) — REST "
+                    "/market/quotes + register snapshots resolve real quotes, no WS push",
                 },
             )
             self._log.info(

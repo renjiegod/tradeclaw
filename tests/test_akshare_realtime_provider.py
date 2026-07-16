@@ -23,6 +23,7 @@ import pandas as pd
 from doyoutrade.data.akshare_provider import (
     AkshareDataProvider,
     AkshareRealtimeProvider,
+    AkshareRealtimeQuoteProvider,
     _to_market_prefixed_symbol,
 )
 
@@ -31,6 +32,37 @@ _EM_DF = pd.DataFrame(
         {"代码": "000636", "名称": "风华高科", "最新价": 59.41},
         {"代码": "600519", "名称": "贵州茅台", "最新价": 1866.0},
         {"代码": "000002", "名称": "万科A", "最新价": float("nan")},
+    ]
+)
+
+_EM_DF_FULL = pd.DataFrame(
+    [
+        {
+            "代码": "000636",
+            "名称": "风华高科",
+            "最新价": 59.41,
+            "涨跌幅": 2.5,
+            "涨跌额": 1.45,
+            "成交量": 12345.0,
+            "成交额": 987654.0,
+            "最高": 60.0,
+            "最低": 57.0,
+            "今开": 58.0,
+            "昨收": 57.96,
+        },
+        {
+            "代码": "000002",
+            "名称": "万科A",
+            "最新价": float("nan"),
+            "涨跌幅": float("nan"),
+            "涨跌额": float("nan"),
+            "成交量": float("nan"),
+            "成交额": float("nan"),
+            "最高": float("nan"),
+            "最低": float("nan"),
+            "今开": float("nan"),
+            "昨收": float("nan"),
+        },
     ]
 )
 
@@ -193,6 +225,120 @@ class GetMarketContextBatchTests(unittest.IsolatedAsyncioTestCase):
         # NaN in the em snapshot, then unanswered by sina/tencent too, degrades
         # to the documented 0.0 sentinel rather than silently propagating NaN.
         self.assertEqual(ctx.symbol_to_price["000002.SZ"], 0.0)
+
+
+class AkshareRealtimeQuoteProviderTests(unittest.IsolatedAsyncioTestCase):
+    """Tests for AkshareRealtimeQuoteProvider — the full-QuoteSnapshot sibling
+    of AkshareRealtimeProvider, used as a non-QMT watchlist realtime source.
+    """
+
+    async def test_em_snapshot_builds_full_quote_snapshot(self) -> None:
+        with patch(
+            "doyoutrade.data.akshare_provider.ak.stock_zh_a_spot_em",
+            return_value=_EM_DF_FULL.copy(),
+        ):
+            provider = AkshareRealtimeQuoteProvider()
+            quotes = await provider.fetch_quotes(["000636.SZ"])
+
+        q = quotes["000636.SZ"]
+        self.assertEqual(q.status, "ok")
+        self.assertAlmostEqual(q.price, 59.41)
+        self.assertAlmostEqual(q.prev_close, 57.96)
+        self.assertAlmostEqual(q.change, 1.45)
+        self.assertAlmostEqual(q.change_pct, 2.5)
+        self.assertAlmostEqual(q.open, 58.0)
+        self.assertAlmostEqual(q.high, 60.0)
+        self.assertAlmostEqual(q.low, 57.0)
+        self.assertAlmostEqual(q.volume, 1234500.0)  # 手 -> 股
+        self.assertAlmostEqual(q.amount, 987654.0)
+
+    async def test_nan_em_row_falls_through_to_sina(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "hq.sinajs.cn" in str(request.url):
+                return _gbk_response(
+                    200,
+                    'var hq_str_sz000002="万科A,7.10,7.05,7.20,7.25,7.00,0,0,0,0";\n',
+                )
+            raise AssertionError(f"tencent should not be called: {request.url}")
+
+        with patch(
+            "doyoutrade.data.akshare_provider.ak.stock_zh_a_spot_em",
+            return_value=_EM_DF_FULL.copy(),
+        ), patch(
+            "doyoutrade.data.akshare_provider._make_realtime_http_client",
+            _mock_client(handler),
+        ):
+            provider = AkshareRealtimeQuoteProvider()
+            quotes = await provider.fetch_quotes(["000002.SZ"])
+
+        q = quotes["000002.SZ"]
+        self.assertEqual(q.status, "ok")
+        self.assertAlmostEqual(q.price, 7.20)
+        self.assertAlmostEqual(q.prev_close, 7.05)
+        self.assertAlmostEqual(q.open, 7.10)
+        self.assertAlmostEqual(q.high, 7.25)
+        self.assertAlmostEqual(q.low, 7.00)
+        # sina has no volume/amount in this cascade — must not be fabricated.
+        self.assertIsNone(q.volume)
+        self.assertIsNone(q.amount)
+
+    async def test_sina_empty_falls_through_to_tencent(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "hq.sinajs.cn" in str(request.url):
+                return _gbk_response(200, 'var hq_str_sz000636="";\n')
+            if "qt.gtimg.cn" in str(request.url):
+                return _gbk_response(
+                    200,
+                    'v_sz000636="51~风华高科~000636~59.41~57.96~58.0~1330266~745314~584952";\n',
+                )
+            raise AssertionError(f"unexpected host: {request.url}")
+
+        with patch(
+            "doyoutrade.data.akshare_provider.ak.stock_zh_a_spot_em",
+            side_effect=RuntimeError("em down"),
+        ), patch(
+            "doyoutrade.data.akshare_provider._make_realtime_http_client",
+            _mock_client(handler),
+        ):
+            provider = AkshareRealtimeQuoteProvider()
+            quotes = await provider.fetch_quotes(["000636.SZ"])
+
+        q = quotes["000636.SZ"]
+        self.assertEqual(q.status, "ok")
+        self.assertAlmostEqual(q.price, 59.41)
+        self.assertAlmostEqual(q.prev_close, 57.96)
+
+    async def test_all_sources_exhausted_returns_no_data_placeholder(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _gbk_response(200, 'var hq_str_sz000636="";\n')
+
+        with patch(
+            "doyoutrade.data.akshare_provider.ak.stock_zh_a_spot_em",
+            side_effect=RuntimeError("em down"),
+        ), patch(
+            "doyoutrade.data.akshare_provider._make_realtime_http_client",
+            _mock_client(handler),
+        ):
+            provider = AkshareRealtimeQuoteProvider()
+            quotes = await provider.fetch_quotes(["000636.SZ"])
+
+        self.assertEqual(quotes["000636.SZ"].status, "no_data")
+
+    async def test_bj_symbol_skips_http_cascade_stays_no_data(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError(f"BJ symbol must not hit sina/tencent: {request.url}")
+
+        with patch(
+            "doyoutrade.data.akshare_provider.ak.stock_zh_a_spot_em",
+            side_effect=RuntimeError("em down"),
+        ), patch(
+            "doyoutrade.data.akshare_provider._make_realtime_http_client",
+            _mock_client(handler),
+        ):
+            provider = AkshareRealtimeQuoteProvider()
+            quotes = await provider.fetch_quotes(["430047.BJ"])
+
+        self.assertEqual(quotes["430047.BJ"].status, "no_data")
 
 
 if __name__ == "__main__":  # pragma: no cover

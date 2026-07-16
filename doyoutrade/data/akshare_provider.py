@@ -31,7 +31,7 @@ from doyoutrade.data.constants import DEFAULT_BAR_ADJUST
 logger = logging.getLogger(__name__)
 from doyoutrade.data.instrumentation import data_span
 from doyoutrade.data.protocols import PROVIDER_NAME_AKSHARE, ProviderCapabilities
-from doyoutrade.core.models import Bar, MarketContext
+from doyoutrade.core.models import Bar, MarketContext, QuoteSnapshot
 
 
 # ─── Interval mapping ────────────────────────────────────────────────────────
@@ -334,6 +334,239 @@ class AkshareRealtimeProvider:
             if full is not None and price is not None and price == price:  # exclude NaN
                 out[full] = price
         return out, None
+
+
+class AkshareRealtimeQuoteProvider:
+    """RealtimeQuoteProvider (full ``QuoteSnapshot``) via the em -> sina -> tencent cascade.
+
+    Companion to :class:`AkshareRealtimeProvider` (which only returns a bare
+    price for ``get_market_context``): this class serves the watchlist's
+    ``RealtimeQuoteProvider`` protocol (see :mod:`doyoutrade.data.protocols`)
+    so akshare can act as a non-QMT realtime quote source — chained behind
+    mootdx in :func:`doyoutrade.bootstrap._build_quote_stream_service` via
+    :class:`doyoutrade.data.fallback_provider.FallbackRealtimeQuoteProvider`.
+
+    The em snapshot (``stock_zh_a_spot_em``) carries the full field set
+    (涨跌幅/涨跌额/成交量/成交额/最高/最低/今开/昨收) in one call. Symbols it
+    misses (NaN price or absent from the snapshot — 北交所 sometimes, or a
+    transient em outage) fall through to the single-symbol sina/tencent HTTP
+    endpoints, which only expose price/prev_close/open (+ high/low for sina);
+    those symbols' ``volume``/``amount`` stay ``None`` rather than fabricated.
+    A symbol every source fails to answer comes back as a ``status="no_data"``
+    placeholder — never silently dropped (per CLAUDE.md §错误可见性).
+    """
+
+    def __init__(self):
+        pass
+
+    async def fetch_quotes(self, symbols: List[str]) -> Dict[str, QuoteSnapshot]:
+        with data_span("akshare", "fetch_quotes"):
+            return await self._fetch_quotes(symbols)
+
+    async def _fetch_quotes(self, symbols: List[str]) -> Dict[str, QuoteSnapshot]:
+        requested = list(dict.fromkeys(symbols))
+        result: Dict[str, QuoteSnapshot] = {
+            s: QuoteSnapshot(symbol=s, status="no_data") for s in requested
+        }
+        if not requested:
+            return result
+
+        em_quotes, em_error = await asyncio.to_thread(self._sync_fetch_em_quotes, requested)
+        if em_error is not None:
+            logger.warning(
+                "akshare em realtime snapshot failed (%d symbols pending sina/tencent fallback): %s: %s",
+                len(requested), type(em_error).__name__, em_error,
+            )
+        result.update(em_quotes)
+        source_used: Dict[str, str] = {s: "em" for s in em_quotes}
+        missing = [s for s in requested if s not in em_quotes]
+
+        if missing:
+            async with _make_realtime_http_client() as client:
+                for symbol in list(missing):
+                    quote, source = await self._fetch_single_symbol_quote_cascade(client, symbol)
+                    if quote is not None:
+                        result[symbol] = quote
+                        source_used[symbol] = source
+                        missing.remove(symbol)
+
+        if missing:
+            logger.warning("akshare realtime quote (snapshot): no source answered for %s", missing)
+
+        _emit_realtime_quote_snapshot_event(
+            requested=requested, source_used=source_used, missing=missing, em_error=em_error,
+        )
+        return result
+
+    def _sync_fetch_em_quotes(
+        self, symbols: List[str]
+    ) -> tuple[Dict[str, QuoteSnapshot], Optional[Exception]]:
+        """Sync helper — one full-market snapshot, filtered to the requested symbols."""
+        try:
+            df = ak.stock_zh_a_spot_em()
+        except Exception as exc:
+            return {}, exc
+
+        bare_to_full = {
+            s.replace(".SH", "").replace(".SZ", "").replace(".BJ", ""): s for s in symbols
+        }
+        matched = df[df["代码"].isin(bare_to_full.keys())]
+        out: Dict[str, QuoteSnapshot] = {}
+        for _, row in matched.iterrows():
+            full = bare_to_full.get(row["代码"])
+            if full is None:
+                continue
+            price = _try_float(row.get("最新价"))
+            if price is None or price != price:  # exclude NaN
+                continue
+            vol_lots = _try_float(row.get("成交量"))
+            out[full] = QuoteSnapshot(
+                symbol=full,
+                price=price,
+                prev_close=_try_float(row.get("昨收")),
+                change=_try_float(row.get("涨跌额")),
+                change_pct=_try_float(row.get("涨跌幅")),
+                open=_try_float(row.get("今开")),
+                high=_try_float(row.get("最高")),
+                low=_try_float(row.get("最低")),
+                volume=vol_lots * 100.0 if vol_lots is not None else None,  # 手 -> 股
+                amount=_try_float(row.get("成交额")),
+                status="ok",
+            )
+        return out, None
+
+    async def _fetch_single_symbol_quote_cascade(
+        self, client: "httpx.AsyncClient", symbol: str
+    ) -> tuple[Optional[QuoteSnapshot], str]:
+        prefixed = _to_market_prefixed_symbol(symbol)
+        if prefixed is None:
+            logger.info(
+                "akshare realtime quote: %s has no sina/tencent feed (北交所 not covered by these endpoints)",
+                symbol,
+            )
+            return None, "unsupported"
+
+        quote = await self._fetch_sina_quote(client, symbol, prefixed)
+        if quote is not None:
+            return quote, "sina"
+
+        quote = await self._fetch_tencent_quote(client, symbol, prefixed)
+        if quote is not None:
+            return quote, "tencent"
+
+        return None, "none"
+
+    async def _fetch_sina_quote(
+        self, client: "httpx.AsyncClient", symbol: str, prefixed: str
+    ) -> Optional[QuoteSnapshot]:
+        # var hq_str_sh600519="名称,今开,昨收,当前价,最高,最低,...";
+        try:
+            resp = await client.get(_SINA_QUOTE_URL.format(symbol=prefixed))
+            resp.encoding = "gbk"
+            text = resp.text.strip()
+        except Exception as exc:
+            logger.info(
+                "akshare realtime quote fallback: sina request failed for %s: %s: %s",
+                symbol, type(exc).__name__, exc,
+            )
+            return None
+        fields = _parse_quote_payload(text, quote_char='"', sep=",")
+        if fields is None or len(fields) < 4:
+            return None
+        return _quote_from_sina_fields(symbol, fields)
+
+    async def _fetch_tencent_quote(
+        self, client: "httpx.AsyncClient", symbol: str, prefixed: str
+    ) -> Optional[QuoteSnapshot]:
+        # v_sh600519="未知~名称~代码~当前价~昨收~今开~...";
+        try:
+            resp = await client.get(_TENCENT_QUOTE_URL.format(symbol=prefixed))
+            resp.encoding = "gbk"
+            text = resp.text.strip()
+        except Exception as exc:
+            logger.info(
+                "akshare realtime quote fallback: tencent request failed for %s: %s: %s",
+                symbol, type(exc).__name__, exc,
+            )
+            return None
+        fields = _parse_quote_payload(text, quote_char='"', sep="~")
+        if fields is None or len(fields) < 4:
+            return None
+        return _quote_from_tencent_fields(symbol, fields)
+
+
+def _quote_from_sina_fields(symbol: str, fields: List[str]) -> Optional[QuoteSnapshot]:
+    price = _try_float(fields[3])
+    if price is None:
+        return None
+    prev_close = _try_float(fields[2]) if len(fields) > 2 else None
+    open_ = _try_float(fields[1]) if len(fields) > 1 else None
+    high = _try_float(fields[4]) if len(fields) > 4 else None
+    low = _try_float(fields[5]) if len(fields) > 5 else None
+    change = change_pct = None
+    if prev_close is not None and prev_close > 0:
+        change = price - prev_close
+        change_pct = change / prev_close * 100.0
+    return QuoteSnapshot(
+        symbol=symbol,
+        price=price,
+        prev_close=prev_close,
+        change=change,
+        change_pct=change_pct,
+        open=open_,
+        high=high,
+        low=low,
+        status="ok",
+    )
+
+
+def _quote_from_tencent_fields(symbol: str, fields: List[str]) -> Optional[QuoteSnapshot]:
+    price = _try_float(fields[3])
+    if price is None:
+        return None
+    prev_close = _try_float(fields[4]) if len(fields) > 4 else None
+    open_ = _try_float(fields[5]) if len(fields) > 5 else None
+    change = change_pct = None
+    if prev_close is not None and prev_close > 0:
+        change = price - prev_close
+        change_pct = change / prev_close * 100.0
+    return QuoteSnapshot(
+        symbol=symbol,
+        price=price,
+        prev_close=prev_close,
+        change=change,
+        change_pct=change_pct,
+        open=open_,
+        status="ok",
+    )
+
+
+def _emit_realtime_quote_snapshot_event(
+    *,
+    requested: List[str],
+    source_used: Dict[str, str],
+    missing: List[str],
+    em_error: Optional[Exception],
+) -> None:
+    _fire_event(
+        "data_provider.get_realtime_quote_snapshot",
+        {
+            "provider": "akshare",
+            "method": "fetch_quotes",
+            "symbols_requested": requested,
+            # per-symbol source that actually answered: "em" | "sina" | "tencent"
+            "source_used": source_used,
+            "missing": missing,
+            "em_error_type": type(em_error).__name__ if em_error is not None else None,
+            "em_error_message": str(em_error) if em_error is not None else None,
+            "hint": (
+                "some symbols got no quote from em/sina/tencent; check network "
+                "reachability, or the symbol is 北交所 (unsupported by sina/tencent)"
+                if missing
+                else None
+            ),
+        },
+    )
 
 
 # ─── Composite data provider ────────────────────────────────────────────────

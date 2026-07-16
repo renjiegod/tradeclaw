@@ -27,7 +27,7 @@ import asyncio
 import logging
 from typing import Any
 
-from doyoutrade.core.models import Bar, MarketContext
+from doyoutrade.core.models import Bar, MarketContext, QuoteSnapshot
 from doyoutrade.data.constants import DEFAULT_BAR_ADJUST
 from doyoutrade.data.protocols import ProviderCapabilities
 from doyoutrade.debug import emit_debug_event
@@ -254,4 +254,119 @@ class FallbackHistoricalDataProvider:
             raise last_error
 
 
-__all__ = ["FallbackHistoricalDataProvider"]
+def _quote_provider_name(provider: Any) -> str:
+    return type(provider).__name__
+
+
+class FallbackRealtimeQuoteProvider:
+    """Chains ``RealtimeQuoteProvider`` sources per-symbol (mootdx -> akshare today).
+
+    ``QuoteStreamService``'s ``fallback_provider`` seam expects a single
+    ``RealtimeQuoteProvider`` that answers every requested symbol (per-symbol
+    placeholders for the unknown, never a silent drop — see
+    :class:`doyoutrade.data.protocols.RealtimeQuoteProvider`). This wrapper
+    tries the first provider for the full symbol set, then retries only the
+    symbols that came back ``status != "ok"`` (or that a provider raised on)
+    against the next provider in the chain, so one source's outage or partial
+    coverage does not blank the whole watchlist.
+
+    Every skip is visible per CLAUDE.md §错误可见性: a provider raising, or
+    leaving symbols unanswered, emits ``realtime_quote_provider_skipped`` with
+    the provider name, reason, and the still-missing symbols. Symbols no
+    provider in the chain can answer keep the last provider's ``status`` (by
+    default ``"no_data"``) rather than being dropped.
+    """
+
+    def __init__(self, providers: list[Any]):
+        if not providers:
+            raise ValueError(
+                "FallbackRealtimeQuoteProvider needs at least one inner provider"
+            )
+        self.providers = list(providers)
+
+    async def fetch_quotes(self, symbols: list[str]) -> dict[str, QuoteSnapshot]:
+        requested = list(dict.fromkeys(symbols))
+        result: dict[str, QuoteSnapshot] = {}
+        pending = list(requested)
+
+        for provider in self.providers:
+            if not pending:
+                break
+            name = _quote_provider_name(provider)
+            try:
+                answered = await provider.fetch_quotes(pending)
+            except Exception as exc:
+                logger.warning(
+                    "realtime_quote fallback: %s.fetch_quotes raised %s — trying next provider",
+                    name, type(exc).__name__, exc_info=True,
+                )
+                await emit_debug_event(
+                    "realtime_quote_provider_skipped",
+                    {
+                        "provider": name,
+                        "reason": "exception",
+                        "symbols": list(pending),
+                        "exc_type": type(exc).__name__,
+                        "exc_message": str(exc),
+                        "hint": "provider raised; trying next provider in the fallback chain",
+                    },
+                )
+                continue
+
+            still_missing: list[str] = []
+            for sym in pending:
+                snap = answered.get(sym)
+                if snap is not None and getattr(snap, "status", None) == "ok":
+                    result[sym] = snap
+                else:
+                    still_missing.append(sym)
+                    if snap is not None:
+                        # Keep the best placeholder seen so far (e.g. a real
+                        # "suspended" beats a later "no_data").
+                        result.setdefault(sym, snap)
+
+            if still_missing:
+                await emit_debug_event(
+                    "realtime_quote_provider_skipped",
+                    {
+                        "provider": name,
+                        "reason": "partial_result",
+                        "symbols": still_missing,
+                        "hint": "provider left these symbols unanswered; trying next provider in the fallback chain",
+                    },
+                )
+            pending = still_missing
+
+        for sym in pending:
+            result.setdefault(sym, QuoteSnapshot(symbol=sym, status="no_data"))
+
+        return result
+
+    async def aclose(self) -> None:
+        """Close every inner provider that has an ``aclose``; surface failures.
+
+        Mirrors :meth:`FallbackHistoricalDataProvider.aclose` — errors are
+        downgraded to a warning per provider but the last one still raises so
+        a leaked connection does not go unnoticed.
+        """
+        last_error: Exception | None = None
+        for provider in self.providers:
+            close = getattr(provider, "aclose", None)
+            if close is None:
+                continue
+            try:
+                await close()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "realtime_quote fallback aclose: %s.aclose raised %s",
+                    _quote_provider_name(provider), type(exc).__name__,
+                    exc_info=True,
+                )
+        if last_error is not None:
+            raise last_error
+
+
+__all__ = ["FallbackHistoricalDataProvider", "FallbackRealtimeQuoteProvider"]

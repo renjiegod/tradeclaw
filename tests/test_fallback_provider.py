@@ -9,8 +9,11 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from doyoutrade.core.models import Bar, MarketContext
-from doyoutrade.data.fallback_provider import FallbackHistoricalDataProvider
+from doyoutrade.core.models import Bar, MarketContext, QuoteSnapshot
+from doyoutrade.data.fallback_provider import (
+    FallbackHistoricalDataProvider,
+    FallbackRealtimeQuoteProvider,
+)
 from doyoutrade.data.protocols import ProviderCapabilities
 from doyoutrade.infra.qmt_proxy_client import QmtRealtimeKlineUnsupportedError
 
@@ -223,6 +226,100 @@ class FallbackHistoricalDataProviderTests(unittest.IsolatedAsyncioTestCase):
     def test_constructor_requires_at_least_one_provider(self):
         with self.assertRaises(ValueError):
             FallbackHistoricalDataProvider([])
+
+
+class _StubQuoteProvider:
+    """Minimal RealtimeQuoteProvider double: canned answers or a raised exception."""
+
+    def __init__(self, name: str, *, answers: dict[str, QuoteSnapshot] | None = None, raise_on_fetch: Exception | None = None):
+        self.name = name
+        self._answers = dict(answers or {})
+        self._raise = raise_on_fetch
+        self.fetch_calls: list[list[str]] = []
+
+    async def fetch_quotes(self, symbols: list[str]) -> dict[str, QuoteSnapshot]:
+        self.fetch_calls.append(list(symbols))
+        if self._raise is not None:
+            raise self._raise
+        return {
+            s: self._answers.get(s, QuoteSnapshot(symbol=s, status="no_data"))
+            for s in symbols
+        }
+
+
+class FallbackRealtimeQuoteProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_primary_answers_everything_secondary_not_called(self):
+        primary = _StubQuoteProvider(
+            "mootdx",
+            answers={"600000.SH": QuoteSnapshot(symbol="600000.SH", price=10.0, status="ok")},
+        )
+        secondary = _StubQuoteProvider("akshare")
+        wrapper = FallbackRealtimeQuoteProvider([primary, secondary])
+
+        with patch(
+            "doyoutrade.data.fallback_provider.emit_debug_event", new_callable=AsyncMock
+        ):
+            quotes = await wrapper.fetch_quotes(["600000.SH"])
+
+        self.assertEqual(quotes["600000.SH"].status, "ok")
+        self.assertAlmostEqual(quotes["600000.SH"].price, 10.0)
+        self.assertEqual(secondary.fetch_calls, [])
+
+    async def test_secondary_answers_symbols_primary_missed(self):
+        primary = _StubQuoteProvider(
+            "mootdx",
+            answers={"600000.SH": QuoteSnapshot(symbol="600000.SH", price=10.0, status="ok")},
+        )
+        secondary = _StubQuoteProvider(
+            "akshare",
+            answers={"430047.BJ": QuoteSnapshot(symbol="430047.BJ", price=5.0, status="ok")},
+        )
+        wrapper = FallbackRealtimeQuoteProvider([primary, secondary])
+
+        with patch(
+            "doyoutrade.data.fallback_provider.emit_debug_event", new_callable=AsyncMock
+        ) as emit_mock:
+            quotes = await wrapper.fetch_quotes(["600000.SH", "430047.BJ"])
+
+        self.assertEqual(quotes["600000.SH"].status, "ok")
+        self.assertEqual(quotes["430047.BJ"].status, "ok")
+        self.assertAlmostEqual(quotes["430047.BJ"].price, 5.0)
+        # secondary must only have been asked about the symbol primary missed
+        self.assertEqual(secondary.fetch_calls, [["430047.BJ"]])
+        emit_mock.assert_awaited()
+
+    async def test_primary_raises_falls_through_to_secondary(self):
+        primary = _StubQuoteProvider("mootdx", raise_on_fetch=RuntimeError("mootdx not installed"))
+        secondary = _StubQuoteProvider(
+            "akshare",
+            answers={"600000.SH": QuoteSnapshot(symbol="600000.SH", price=11.0, status="ok")},
+        )
+        wrapper = FallbackRealtimeQuoteProvider([primary, secondary])
+
+        with patch(
+            "doyoutrade.data.fallback_provider.emit_debug_event", new_callable=AsyncMock
+        ):
+            quotes = await wrapper.fetch_quotes(["600000.SH"])
+
+        self.assertEqual(quotes["600000.SH"].status, "ok")
+        self.assertAlmostEqual(quotes["600000.SH"].price, 11.0)
+
+    async def test_all_providers_exhausted_symbol_is_no_data_not_dropped(self):
+        primary = _StubQuoteProvider("mootdx")
+        secondary = _StubQuoteProvider("akshare")
+        wrapper = FallbackRealtimeQuoteProvider([primary, secondary])
+
+        with patch(
+            "doyoutrade.data.fallback_provider.emit_debug_event", new_callable=AsyncMock
+        ):
+            quotes = await wrapper.fetch_quotes(["999999.SH"])
+
+        self.assertIn("999999.SH", quotes)
+        self.assertEqual(quotes["999999.SH"].status, "no_data")
+
+    def test_constructor_requires_at_least_one_provider_for_quotes(self):
+        with self.assertRaises(ValueError):
+            FallbackRealtimeQuoteProvider([])
 
 
 if __name__ == "__main__":
