@@ -1746,6 +1746,113 @@ export type TradeAttribution = {
   unparsed: TradeAttributionUnparsed[];
 };
 
+// ---------------------------------------------------------------------------
+// 券商交割单 CSV 导入 (portfolio statement imports) — upload a broker-exported
+// settlement CSV, preview the parsed fills (with duplicate detection), then
+// commit into the knowledge base's ``trades/<broker>/<month>.csv`` partition.
+// Money / price / qty fields are decimal strings, same discipline as the trade
+// attribution types above.
+// ---------------------------------------------------------------------------
+
+/** One selectable broker from ``GET /portfolio/imports/brokers``. */
+export type PortfolioImportBrokerItem = {
+  /** Broker key used as the ``broker`` form field on parse / commit. */
+  broker: string;
+  /** Human-readable broker name shown in the picker. */
+  display_name: string;
+  /** True when this broker already has imported statements on disk. */
+  existing: boolean;
+};
+
+/** Response of ``GET /portfolio/imports/brokers``. */
+export type PortfolioImportBrokersResponse = {
+  items: PortfolioImportBrokerItem[];
+};
+
+/**
+ * One parsed fill row previewed from the uploaded CSV
+ * (``POST /portfolio/imports/csv/parse`` → ``records[]``). ``price`` / ``qty``
+ * / ``amount`` are decimal strings; ``duplicate`` marks rows already present in
+ * the knowledge base (they would be skipped on commit).
+ */
+export type PortfolioImportParseRecord = {
+  /** Trade date, ``YYYY-MM-DD``. */
+  date: string;
+  /** Trade time, ``HH:MM:SS``. */
+  time: string;
+  /** Canonical symbol, e.g. ``600519.SH``. */
+  symbol: string;
+  /** Instrument display name, e.g. ``贵州茅台``. */
+  name: string;
+  /** Fill direction. */
+  side: "buy" | "sell";
+  /** Fill price as a decimal string. */
+  price: string;
+  /** Fill quantity as a decimal string. */
+  qty: string;
+  /** Fill amount as a decimal string. */
+  amount: string;
+  /** Target month partition, ``YYYY-MM``. */
+  month: string;
+  /** True when this fill already exists in the knowledge base. */
+  duplicate: boolean;
+};
+
+/** Response of ``POST /portfolio/imports/csv/parse`` (multipart file+broker). */
+export type PortfolioImportParseResponse = {
+  status: string;
+  /** Broker key the rows were parsed as. */
+  broker: string;
+  /** Total parsed fills in the file. */
+  fills_total: number;
+  /** Fills that would be newly appended on commit. */
+  new_count: number;
+  /** Fills already present in the knowledge base (skipped on commit). */
+  duplicate_count: number;
+  /** Lines the parser could not understand. */
+  unparsed_count: number;
+  records: PortfolioImportParseRecord[];
+  /** True when ``records`` was truncated for preview (counts stay complete). */
+  records_truncated: boolean;
+  /** Unparsed entries, same honest path+reason shape as trade attribution. */
+  unparsed: TradeAttributionUnparsed[];
+};
+
+/**
+ * Post-commit review block (``POST /portfolio/imports/csv/commit`` →
+ * ``review``; null on ``dry_run``) — which months were touched and the
+ * refreshed attribution summary over them.
+ */
+export type PortfolioImportReview = {
+  /** ``YYYY-MM`` months whose trade files were appended to. */
+  affected_months: string[];
+  /** Refreshed attribution summary (same shape as the 交割单归因 board). */
+  attribution_summary: TradeAttributionSummary | null;
+  /** Non-null when re-running attribution after the import failed. */
+  attribution_error: string | null;
+};
+
+/** Response of ``POST /portfolio/imports/csv/commit`` (multipart file+broker+dry_run). */
+export type PortfolioImportCommitResponse = {
+  status: string;
+  broker: string;
+  /** Echo of the requested ``dry_run`` flag. */
+  dry_run: boolean;
+  /** Fills actually (or, on dry-run, would-be) appended. */
+  appended_total: number;
+  /** Fills skipped because they already existed. */
+  duplicates_skipped: number;
+  /** Total parsed fills in the file. */
+  fills_total: number;
+  /** Rows appended per target file, e.g. ``{"trades/huatai/2026-06.csv": 10}``. */
+  written: Record<string, number>;
+  unparsed_count: number;
+  /** Unparsed entries, same honest path+reason shape as trade attribution. */
+  unparsed: TradeAttributionUnparsed[];
+  /** Post-import review; null when ``dry_run`` is true. */
+  review: PortfolioImportReview | null;
+};
+
 export type InstrumentUniverseItem = {
   symbol: string;
   name: string;

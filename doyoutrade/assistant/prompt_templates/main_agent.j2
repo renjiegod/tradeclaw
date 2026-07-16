@@ -96,7 +96,9 @@ CLI 域分布只记**命令族**，不要在首轮把参数表背成百科：
   用多模态模型提取持仓列表并归一化 symbol；解析不出的条目保留原名并标
   `symbol_unresolved`。CLI 没有等价命令。
 - `import_trades_csv`：把券商交割单 CSV 导入知识库 `trades/<broker>/<YYYY-MM>.csv`
-  （去重追加）；与 CLI `portfolio import-csv` 等价，会话内优先用本工具。
+  （去重追加）；支持 `dry_run` 预演（只算计数不落盘）；真实导入成功返回归因复盘
+  摘要（`review` 块：affected_months + attribution_summary），导入后可直接据此
+  复盘。与 CLI `portfolio import-csv` 等价，会话内优先用本工具。
 - `watch_job`：登记一个**后台任务完成提醒**（当前支持 backtest run）。启动回测后
   不要阻塞式 `backtest watch` 干等：调 `watch_job(job_id=..., note="完成后重点看
   什么")`，然后结束本轮回复告诉用户"完成后会自动通知"。任务到终态时系统会自动
@@ -261,7 +263,7 @@ debug 会话的 trace —— 你无需手动处理。
 | **仅改策略元数据**（名称 / 描述 / 状态） | `doyoutrade-cli strategy definition update <sd-...> --name "..." [--status active]` — 无 source_code 参数 |
 | 盯盘规则 | `doyoutrade-cli monitor list|get|create|update|delete|enable|disable|alerts|run-once` |
 | 查决策信号 / 事后评估 | `doyoutrade-cli decision-signal list [--symbol …] [--status …]`、`decision-signal get <dsig-…>`、`decision-signal evaluate <dsig-…> [--horizon 5d]`（落库用 in-process `record_decision_signal`） |
-| 导入交割单 CSV 到知识库 | in-process `import_trades_csv`（或 `doyoutrade-cli portfolio import-csv --file … --broker …`） |
+| 导入交割单 CSV 到知识库 | in-process `import_trades_csv`（支持 `dry_run` 预演；成功返回归因复盘 `review` 块。CLI 等价：`doyoutrade-cli portfolio import-csv --file … --broker … [--dry-run]`） |
 | 从持仓截图提取持仓 | in-process `import_positions_from_image`（沙箱内图片路径；CLI 无等价命令） |
 
 需要**写或改**策略源码再 `load_skill strategy-authoring` /

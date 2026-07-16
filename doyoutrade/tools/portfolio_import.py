@@ -24,6 +24,7 @@ from typing import Any
 from doyoutrade.debug import emit_debug_event
 from doyoutrade.persistence.strategy_storage import SandboxViolation
 from doyoutrade.tools import OperationHandler, ToolResult
+from doyoutrade.tools._coercion import SchemaCoercion
 from doyoutrade.tools._prose import append_json_payload, format_error_text, format_unknown_args
 from doyoutrade.tools._sandbox import register_knowledge_sandbox, resolve_path
 
@@ -294,7 +295,7 @@ class ImportTradesCsvTool(_PortfolioImportToolBase):
     description = (
         "导入券商交割单 CSV（沙盒内路径）到私有知识库 trades/<broker>/<YYYY-MM>.csv，"
         "自动识别华泰/国君等券商列名、按月分文件、重复成交去重追加，"
-        "并刷新知识库索引。"
+        "并刷新知识库索引；支持 dry_run 预演，真实导入成功后返回归因复盘摘要（review 块）。"
     )
     parameters = {
         "type": "object",
@@ -308,9 +309,16 @@ class ImportTradesCsvTool(_PortfolioImportToolBase):
                 "type": "string",
                 "description": "券商名（作为 trades/ 下的目录名，如 'huatai' / '华泰'）。",
             },
+            "dry_run": {
+                "type": "boolean",
+                "description": "只预演不落盘，返回将新增/重复的计数。",
+            },
         },
         "required": ["file_path", "broker"],
     }
+    coercion_rules = (
+        SchemaCoercion(field="dry_run", declared_type="boolean"),
+    )
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         await emit_debug_event(
@@ -332,7 +340,10 @@ class ImportTradesCsvTool(_PortfolioImportToolBase):
 
         from doyoutrade.portfolio_import.csv_import import import_trades_csv
 
-        result = import_trades_csv(resolved, broker=str(kwargs2.get("broker") or ""))
+        dry_run = bool(kwargs2.get("dry_run") or False)
+        result = import_trades_csv(
+            resolved, broker=str(kwargs2.get("broker") or ""), dry_run=dry_run
+        )
         if result.get("status") != "ok":
             return await self._fail(
                 str(result.get("error_code") or "csv_import_failed"),
@@ -340,6 +351,16 @@ class ImportTradesCsvTool(_PortfolioImportToolBase):
                 unparsed_count=len(result.get("unparsed") or []),
             )
 
+        review = result.get("review")
+        if isinstance(review, dict):
+            affected_months = list(review.get("affected_months") or [])
+        else:
+            # dry_run has no review block; months come from the write plan keys
+            # (trades/<broker>/<YYYY-MM>.csv).
+            affected_months = sorted(
+                rel.rsplit("/", 1)[-1].removesuffix(".csv")
+                for rel in (result.get("written") or {})
+            )
         await emit_debug_event(
             f"operation_{self.name}.created",
             {
@@ -349,13 +370,34 @@ class ImportTradesCsvTool(_PortfolioImportToolBase):
                 "duplicates_skipped": result.get("duplicates_skipped"),
                 "unparsed_count": len(result.get("unparsed") or []),
                 "attribution_readable": result.get("attribution_readable"),
+                "dry_run": dry_run,
+                "affected_months": affected_months,
             },
         )
-        summary = (
-            f"已导入 {result['appended_total']} 条成交到 {', '.join(result['written']) or '（无新文件）'}；"
-            f"重复跳过 {result['duplicates_skipped']} 条，"
-            f"未解析 {len(result.get('unparsed') or [])} 条。"
-        )
+        if dry_run:
+            summary = (
+                f"预演：将导入 {result['appended_total']} 条成交到 "
+                f"{', '.join(result['written']) or '（无新文件）'}；"
+                f"重复跳过 {result['duplicates_skipped']} 条，"
+                f"未解析 {len(result.get('unparsed') or [])} 条。未落盘。"
+            )
+        else:
+            summary = (
+                f"已导入 {result['appended_total']} 条成交到 {', '.join(result['written']) or '（无新文件）'}；"
+                f"重复跳过 {result['duplicates_skipped']} 条，"
+                f"未解析 {len(result.get('unparsed') or [])} 条。"
+            )
+            attribution_summary = (
+                review.get("attribution_summary") if isinstance(review, dict) else None
+            )
+            if isinstance(attribution_summary, dict):
+                summary += (
+                    f"归因复盘：共 {attribution_summary.get('round_trips')} 个回合，"
+                    f"总盈亏 {attribution_summary.get('total_realized_pnl')}，"
+                    f"胜率 {attribution_summary.get('win_rate')}。"
+                )
+            elif isinstance(review, dict) and review.get("attribution_error"):
+                summary += f"归因复盘读取失败：{review['attribution_error']}。"
         return ToolResult(text=append_json_payload(summary, result))
 
 

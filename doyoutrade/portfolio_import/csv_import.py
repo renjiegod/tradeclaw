@@ -119,10 +119,158 @@ def _fill_row(fill: _Fill) -> list[str]:
     ]
 
 
+def _validate_broker(broker: str) -> str | dict[str, Any]:
+    """Return the cleaned broker name, or a structured ``invalid_broker`` error."""
+    broker_clean = str(broker or "").strip()
+    if not _BROKER_RE.match(broker_clean):
+        logger.warning("csv_import: invalid broker name %r", broker)
+        return _error(
+            "invalid_broker",
+            "broker must be 1-64 chars of letters/digits/_-/中文 (used as a "
+            f"directory name); got {broker!r}",
+        )
+    return broker_clean
+
+
+def _group_by_month(fills: list[_Fill]) -> dict[str, list[_Fill]]:
+    """Group fills by ``YYYY-MM``; loud contract violation on an unbucketable date."""
+    by_month: dict[str, list[_Fill]] = {}
+    for fill in fills:
+        month = _month_of(fill.date)
+        if month is None:
+            raise ValueError(
+                f"fill date {fill.date!r} passed parsing but failed month "
+                "bucketing — attribution parser contract violated"
+            )
+        by_month.setdefault(month, []).append(fill)
+    return by_month
+
+
+def _existing_dedupe_keys(
+    target: Path, root: Path, rel: str, unparsed: list[dict[str, str]]
+) -> set[str]:
+    """Dedupe keys of the parseable rows already on disk at ``target``.
+
+    Rows the attribution parser cannot parse cannot be dedupe-compared; they are
+    surfaced into *unparsed* (never silently dropped). Missing file → empty set.
+    """
+    if not target.is_file():
+        return set()
+    existing_fills, existing_unparsed = _parse_file(target, root)
+    if existing_unparsed:
+        unparsed.extend(existing_unparsed)
+        logger.warning(
+            "csv_import: existing %s has %d unparseable rows; dedupe "
+            "only covers parseable rows",
+            rel, len(existing_unparsed),
+        )
+    return {_fill_dedupe_key(f) for f in existing_fills}
+
+
+#: analyze_trades_csv preview ceilings — the preview is for a UI confirm step,
+#: not a bulk export; counts always cover the full file.
+_ANALYZE_RECORDS_LIMIT = 500
+_ANALYZE_UNPARSED_LIMIT = 20
+
+
+def analyze_trades_csv(
+    path_or_bytes: str | Path | bytes,
+    *,
+    broker: str,
+) -> dict[str, Any]:
+    """Pure preview of a broker-statement CSV import — parses and marks each
+    fill as duplicate/new against the on-disk monthly files, with ZERO writes
+    (no file writes, no directory creation, no index refresh).
+
+    Dedupe semantics are identical to :func:`import_trades_csv` (same
+    ``sha1(date|symbol|side|price|qty)`` key, batch-internal duplicates count
+    as duplicates too).
+
+    Returns ``{"status": "ok", "broker", "fills_total", "new_count",
+    "duplicate_count", "unparsed_count", "records": [...], "records_truncated",
+    "unparsed": [...]}``. ``records`` is capped at 500 entries
+    (``records_truncated`` set), ``unparsed`` at 20 (``unparsed_count`` is the
+    full count). Errors reuse the import error envelope
+    (``invalid_broker`` / ``csv_no_fills`` / ``file_not_found``).
+    """
+    broker_clean = _validate_broker(broker)
+    if isinstance(broker_clean, dict):
+        return broker_clean
+
+    parsed = _parse_input(path_or_bytes)
+    if isinstance(parsed, dict):
+        return parsed
+    fills, unparsed = parsed
+
+    if not fills:
+        logger.warning(
+            "csv_import: analyze found no fills (broker=%s, unparsed=%d)",
+            broker_clean, len(unparsed),
+        )
+        return _error(
+            "csv_no_fills",
+            "no buy/sell fills could be parsed from the CSV; see `unparsed` "
+            "for per-file/per-row reasons",
+            unparsed=unparsed[:_ANALYZE_UNPARSED_LIMIT],
+            unparsed_count=len(unparsed),
+        )
+
+    by_month = _group_by_month(fills)
+    root = knowledge_root()
+
+    records: list[dict[str, Any]] = []
+    new_count = 0
+    duplicate_count = 0
+    for month in sorted(by_month):
+        rel = f"trades/{broker_clean}/{month}.csv"
+        target = root / "trades" / broker_clean / f"{month}.csv"
+        seen_keys = _existing_dedupe_keys(target, root, rel, unparsed)
+        for fill in by_month[month]:
+            key = _fill_dedupe_key(fill)
+            duplicate = key in seen_keys
+            if duplicate:
+                duplicate_count += 1
+            else:
+                new_count += 1
+                seen_keys.add(key)  # batch-internal dedupe, same as import
+            records.append(
+                {
+                    "date": fill.date,
+                    "time": fill.time or "",
+                    "symbol": fill.symbol,
+                    "name": fill.name or "",
+                    "side": fill.side,
+                    "price": _decimal_str(fill.price),
+                    "qty": _decimal_str(fill.qty),
+                    "amount": _decimal_str(fill.amount),
+                    "month": month,
+                    "duplicate": duplicate,
+                }
+            )
+
+    records_truncated = len(records) > _ANALYZE_RECORDS_LIMIT
+    logger.info(
+        "csv_import: analyze broker=%s fills_total=%d new=%d duplicate=%d unparsed=%d",
+        broker_clean, len(fills), new_count, duplicate_count, len(unparsed),
+    )
+    return {
+        "status": "ok",
+        "broker": broker_clean,
+        "fills_total": len(fills),
+        "new_count": new_count,
+        "duplicate_count": duplicate_count,
+        "unparsed_count": len(unparsed),
+        "records": records[:_ANALYZE_RECORDS_LIMIT],
+        "records_truncated": records_truncated,
+        "unparsed": unparsed[:_ANALYZE_UNPARSED_LIMIT],
+    }
+
+
 def import_trades_csv(
     path_or_bytes: str | Path | bytes,
     *,
     broker: str,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Import a broker-statement CSV into ``knowledge/trades/<broker>/<YYYY-MM>.csv``.
 
@@ -139,18 +287,24 @@ def import_trades_csv(
     4. Refresh the knowledge index (``_index.md``) and smoke-check the result
        is readable through :func:`read_trade_attribution`.
 
+    ``dry_run=True`` computes the exact same ``written`` / ``duplicates_skipped``
+    plan (batch-internal dedupe included) but writes nothing — no files, no
+    index refresh, no attribution smoke check. The result then carries
+    ``"dry_run": true`` and ``"review": null``.
+
+    A real (non-dry) success additionally carries a ``"review"`` block for
+    post-import 复盘: ``{"affected_months": [...], "attribution_summary":
+    <read_trade_attribution summary>, "attribution_error": str | None}``.
+    Attribution failure never fails the import — ``attribution_summary`` is
+    ``None`` and ``attribution_error`` carries type + message (logged loudly).
+
     Returns ``{"status": "ok", "written": {rel_path: appended_count},
     "duplicates_skipped": N, "fills_total": N, "unparsed": [...],
-    "attribution_readable": bool}``.
+    "attribution_readable": bool, "dry_run": bool, "review": dict | None}``.
     """
-    broker_clean = str(broker or "").strip()
-    if not _BROKER_RE.match(broker_clean):
-        logger.warning("csv_import: invalid broker name %r", broker)
-        return _error(
-            "invalid_broker",
-            "broker must be 1-64 chars of letters/digits/_-/中文 (used as a "
-            f"directory name); got {broker!r}",
-        )
+    broker_clean = _validate_broker(broker)
+    if isinstance(broker_clean, dict):
+        return broker_clean
 
     parsed = _parse_input(path_or_bytes)
     if isinstance(parsed, dict):
@@ -171,40 +325,26 @@ def import_trades_csv(
 
     # Group by month; a fill whose date fails month bucketing is impossible
     # here (dates are already ISO-validated by the parser) but guarded loudly.
-    by_month: dict[str, list[_Fill]] = {}
-    for fill in fills:
-        month = _month_of(fill.date)
-        if month is None:
-            raise ValueError(
-                f"fill date {fill.date!r} passed parsing but failed month "
-                "bucketing — attribution parser contract violated"
-            )
-        by_month.setdefault(month, []).append(fill)
+    by_month = _group_by_month(fills)
 
-    register_knowledge_sandbox()  # idempotent; ensures the KB dir + writable sandbox
     root = knowledge_root()
-    broker_dir = root / "trades" / broker_clean
-    broker_dir.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        register_knowledge_sandbox()  # idempotent; ensures the KB dir + writable sandbox
+        broker_dir = root / "trades" / broker_clean
+        broker_dir.mkdir(parents=True, exist_ok=True)
 
     written: dict[str, int] = {}
     duplicates_skipped = 0
     for month in sorted(by_month):
         rel = f"trades/{broker_clean}/{month}.csv"
-        target = resolve_path(str(root / rel))  # raises SandboxViolation on escape
+        if dry_run:
+            # Read-only plan: no sandbox registration, no directory creation.
+            target = root / "trades" / broker_clean / f"{month}.csv"
+        else:
+            target = resolve_path(str(root / rel))  # raises SandboxViolation on escape
 
-        existing_keys: set[str] = set()
         file_exists = target.is_file()
-        if file_exists:
-            existing_fills, existing_unparsed = _parse_file(target, root)
-            existing_keys = {_fill_dedupe_key(f) for f in existing_fills}
-            if existing_unparsed:
-                # Rows we can't parse can't be dedup-compared — surface them.
-                unparsed.extend(existing_unparsed)
-                logger.warning(
-                    "csv_import: existing %s has %d unparseable rows; dedupe "
-                    "only covers parseable rows",
-                    rel, len(existing_unparsed),
-                )
+        existing_keys = _existing_dedupe_keys(target, root, rel, unparsed)
 
         new_rows: list[list[str]] = []
         for fill in by_month[month]:
@@ -214,6 +354,10 @@ def import_trades_csv(
                 continue
             existing_keys.add(key)  # also dedupes duplicates within the input itself
             new_rows.append(_fill_row(fill))
+
+        if dry_run:
+            written[rel] = len(new_rows)
+            continue
 
         if not new_rows and file_exists:
             written[rel] = 0
@@ -237,6 +381,25 @@ def import_trades_csv(
             rel, len(new_rows), duplicates_skipped, broker_clean,
         )
 
+    if dry_run:
+        logger.info(
+            "csv_import: dry_run broker=%s would_append=%d duplicates_skipped=%d",
+            broker_clean, sum(written.values()), duplicates_skipped,
+        )
+        return {
+            "status": "ok",
+            "broker": broker_clean,
+            "written": written,
+            "appended_total": sum(written.values()),
+            "duplicates_skipped": duplicates_skipped,
+            "fills_total": len(fills),
+            "unparsed": unparsed,
+            "index_path": None,
+            "attribution_readable": None,
+            "dry_run": True,
+            "review": None,
+        }
+
     # Refresh the knowledge index so the new monthly files show up in _index.md.
     index_path: str | None = None
     try:
@@ -248,17 +411,19 @@ def import_trades_csv(
             type(exc).__name__, exc,
         )
 
-    # Smoke check: the written partition must be readable by the attribution
-    # read side. A failure here means the import produced unreadable data.
+    # 复盘融合: after a real import, read back the attribution summary so the
+    # caller gets an immediate post-import review. Doubles as the smoke check —
+    # the written partition MUST be readable by the attribution read side.
     attribution_readable = True
     attribution_error: str | None = None
+    attribution_summary: dict[str, Any] | None = None
     try:
-        read_trade_attribution(root=root)
+        attribution_summary = read_trade_attribution(root=root)["summary"]
     except Exception as exc:
         attribution_readable = False
         attribution_error = f"{type(exc).__name__}: {exc}"
         logger.warning(
-            "csv_import: read_trade_attribution smoke check failed (%s): %s",
+            "csv_import: read_trade_attribution after import failed (%s): %s",
             type(exc).__name__, exc,
         )
 
@@ -272,10 +437,16 @@ def import_trades_csv(
         "unparsed": unparsed,
         "index_path": index_path,
         "attribution_readable": attribution_readable,
+        "dry_run": False,
+        "review": {
+            "affected_months": sorted(by_month),
+            "attribution_summary": attribution_summary,
+            "attribution_error": attribution_error,
+        },
     }
     if attribution_error is not None:
         result["attribution_error"] = attribution_error
     return result
 
 
-__all__ = ["import_trades_csv"]
+__all__ = ["analyze_trades_csv", "import_trades_csv"]

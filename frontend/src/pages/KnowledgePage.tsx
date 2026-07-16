@@ -1,4 +1,5 @@
 import { Alert, Space } from "antd";
+import { useState } from "react";
 
 import { KnowledgeBrowserPanel } from "../components/KnowledgeBrowserPanel";
 import { PageIntro } from "../components/PageIntro";
@@ -6,6 +7,7 @@ import { PlaybookPanel } from "../components/PlaybookPanel";
 import { SentimentTimeline } from "../components/SentimentTimeline";
 import { SymbolRoleCards } from "../components/SymbolRoleCards";
 import { TradeAttributionPanel } from "../components/TradeAttributionPanel";
+import { TradeImportCard } from "../components/TradeImportCard";
 
 const INTRO = {
   title: "知识库",
@@ -25,6 +27,11 @@ const PRIVACY_MESSAGE =
  * sidebar "知识库" entry under ``/knowledge``.
  */
 export function KnowledgePage() {
+  // Bump on every successful statement import so the attribution board
+  // remounts and refetches (the panel loads on mount; a key bump is the least
+  // invasive way to trigger its existing load path).
+  const [attributionRefreshKey, setAttributionRefreshKey] = useState(0);
+
   return (
     <Space direction="vertical" size={16} className="w-full">
       <PageIntro title={INTRO.title} description={INTRO.description} />
@@ -36,7 +43,8 @@ export function KnowledgePage() {
       />
       <SentimentTimeline months={3} />
       <SymbolRoleCards />
-      <TradeAttributionPanel months={6} />
+      <TradeImportCard onImported={() => setAttributionRefreshKey((k) => k + 1)} />
+      <TradeAttributionPanel key={attributionRefreshKey} months={6} />
       <PlaybookPanel />
       <KnowledgeBrowserPanel />
     </Space>

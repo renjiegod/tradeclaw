@@ -787,6 +787,12 @@ def create_app(
 
     app.include_router(build_knowledge_router(knowledge_root))
 
+    # 交割单 CSV 导入（multipart 预览 / 提交 + 券商目录建议）——写入知识库
+    # trades/ 分区（无 DB 表；`import_trades_csv` 是唯一写路径）。
+    from doyoutrade.api.portfolio_import_routes import build_portfolio_import_router
+
+    app.include_router(build_portfolio_import_router())
+
     # Swarm 多智能体编排：复用 assistant_service 作为 worker 引擎，持久化复用其
     # agent_repo 的 session_factory（SqlAlchemy）。只有当依赖齐备时才挂载。
     try:

@@ -12,7 +12,7 @@ from unittest import mock
 
 from doyoutrade.models.base import MAX_IMAGE_BYTES, ModelAdapter, ModelRequest, ModelResponse
 from doyoutrade.portfolio_import import image_extractor
-from doyoutrade.portfolio_import.csv_import import import_trades_csv
+from doyoutrade.portfolio_import.csv_import import analyze_trades_csv, import_trades_csv
 from doyoutrade.portfolio_import.image_extractor import extract_positions_from_image
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"fake"
@@ -285,6 +285,142 @@ class CsvImportTests(unittest.TestCase):
         result = import_trades_csv(self.root / "nope.csv", broker="huatai")
         self.assertEqual(result["error_code"], "file_not_found")
 
+    # ------------------------------------------------------------------
+    # analyze_trades_csv (pure preview, zero writes)
+    # ------------------------------------------------------------------
+
+    def test_analyze_new_file_all_new_and_zero_write(self) -> None:
+        result = analyze_trades_csv(
+            (_CSV_HEADER + _CSV_ROWS).encode("utf-8"), broker="huatai"
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["broker"], "huatai")
+        self.assertEqual(result["fills_total"], 3)
+        self.assertEqual(result["new_count"], 3)
+        self.assertEqual(result["duplicate_count"], 0)
+        self.assertEqual(result["unparsed_count"], 0)
+        self.assertFalse(result["records_truncated"])
+        self.assertEqual(len(result["records"]), 3)
+        rec = result["records"][0]
+        for key in ("date", "time", "symbol", "name", "side", "price", "qty",
+                    "amount", "month", "duplicate"):
+            self.assertIn(key, rec)
+        self.assertFalse(rec["duplicate"])
+        # Zero writes: the KB tree (in fact anything under DOYOUTRADE_HOME
+        # except our own input file) must not have been created.
+        self.assertFalse((self.root / "knowledge").exists())
+
+    def test_analyze_marks_duplicates_against_existing_files(self) -> None:
+        path = self._write_input(_CSV_HEADER + _CSV_ROWS)
+        import_trades_csv(path, broker="huatai")
+        extra = _CSV_HEADER + _CSV_ROWS + (
+            "2026-07-03,09:40:00,000002,万科A,买入,8.88,500,4440.00\n"
+        )
+        result = analyze_trades_csv(extra.encode("utf-8"), broker="huatai")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["new_count"], 1)
+        self.assertEqual(result["duplicate_count"], 3)
+        dup_flags = {r["symbol"]: r["duplicate"] for r in result["records"]}
+        self.assertFalse(dup_flags["000002"])
+        self.assertTrue(dup_flags["600519"])
+        # Preview must not have appended anything.
+        july = self.root / "knowledge" / "trades" / "huatai" / "2026-07.csv"
+        lines = [l for l in july.read_text(encoding="utf-8").splitlines() if l.strip()]
+        self.assertEqual(len(lines), 3)  # header + 2 rows, unchanged
+
+    def test_analyze_batch_internal_duplicate(self) -> None:
+        row = "2026-07-01,09:31:00,600519,贵州茅台,买入,1650.50,100,165050.00\n"
+        result = analyze_trades_csv(
+            (_CSV_HEADER + row + row).encode("utf-8"), broker="huatai"
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["new_count"], 1)
+        self.assertEqual(result["duplicate_count"], 1)
+        self.assertEqual(
+            [r["duplicate"] for r in result["records"]], [False, True]
+        )
+
+    def test_analyze_invalid_broker(self) -> None:
+        result = analyze_trades_csv(b"x", broker="../evil")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_code"], "invalid_broker")
+
+    def test_analyze_no_fills(self) -> None:
+        result = analyze_trades_csv(b"foo,bar\n1,2\n", broker="huatai")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error_code"], "csv_no_fills")
+        self.assertEqual(result["unparsed_count"], 1)
+
+    # ------------------------------------------------------------------
+    # import_trades_csv dry_run
+    # ------------------------------------------------------------------
+
+    def test_dry_run_writes_nothing_and_counts_match_real_import(self) -> None:
+        data = (_CSV_HEADER + _CSV_ROWS).encode("utf-8")
+        dry = import_trades_csv(data, broker="huatai", dry_run=True)
+        self.assertEqual(dry["status"], "ok")
+        self.assertTrue(dry["dry_run"])
+        self.assertIsNone(dry["review"])
+        self.assertIsNone(dry["index_path"])
+        self.assertFalse((self.root / "knowledge" / "trades").exists())
+
+        real = import_trades_csv(data, broker="huatai")
+        self.assertFalse(real["dry_run"])
+        self.assertEqual(dry["written"], real["written"])
+        self.assertEqual(dry["appended_total"], real["appended_total"])
+        self.assertEqual(dry["duplicates_skipped"], real["duplicates_skipped"])
+
+    def test_dry_run_batch_dedupe_matches_real_semantics(self) -> None:
+        row = "2026-07-01,09:31:00,600519,贵州茅台,买入,1650.50,100,165050.00\n"
+        data = (_CSV_HEADER + row + row).encode("utf-8")
+        dry = import_trades_csv(data, broker="huatai", dry_run=True)
+        self.assertEqual(dry["appended_total"], 1)
+        self.assertEqual(dry["duplicates_skipped"], 1)
+
+    def test_dry_run_against_existing_files(self) -> None:
+        data = (_CSV_HEADER + _CSV_ROWS).encode("utf-8")
+        import_trades_csv(data, broker="huatai")
+        dry = import_trades_csv(data, broker="huatai", dry_run=True)
+        self.assertEqual(dry["appended_total"], 0)
+        self.assertEqual(dry["duplicates_skipped"], 3)
+
+    # ------------------------------------------------------------------
+    # review block (复盘融合)
+    # ------------------------------------------------------------------
+
+    def test_real_import_review_block(self) -> None:
+        result = import_trades_csv(
+            (_CSV_HEADER + _CSV_ROWS).encode("utf-8"), broker="huatai"
+        )
+        self.assertEqual(result["status"], "ok")
+        review = result["review"]
+        self.assertIsInstance(review, dict)
+        self.assertEqual(review["affected_months"], ["2026-06", "2026-07"])
+        self.assertIsNone(review["attribution_error"])
+        summary = review["attribution_summary"]
+        self.assertIsInstance(summary, dict)
+        # One flat 600519 round-trip (buy 100 @1650.50, sell 100 @1700.00).
+        self.assertEqual(summary["round_trips"], 1)
+        self.assertEqual(summary["open_positions"], 1)  # 000001 still open
+
+    def test_review_attribution_failure_is_visible(self) -> None:
+        from doyoutrade.portfolio_import import csv_import as mod
+
+        def _boom(**kwargs: Any):
+            raise RuntimeError("attribution exploded")
+
+        with mock.patch.object(mod, "read_trade_attribution", _boom):
+            result = import_trades_csv(
+                (_CSV_HEADER + _CSV_ROWS).encode("utf-8"), broker="huatai"
+            )
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["attribution_readable"])
+        review = result["review"]
+        self.assertIsNone(review["attribution_summary"])
+        self.assertIn("RuntimeError", review["attribution_error"])
+        self.assertIn("attribution exploded", review["attribution_error"])
+        self.assertEqual(result["attribution_error"], review["attribution_error"])
+
 
 class PortfolioImportToolTests(unittest.TestCase):
     """Contract-level tests for the assistant tools (unwired / happy CSV path)."""
@@ -351,9 +487,55 @@ class PortfolioImportToolTests(unittest.TestCase):
         result = asyncio.run(tool.execute(file_path=str(csv_path), broker="huatai"))
         self.assertFalse(result.is_error, result.text)
         self.assertIn("duplicates_skipped", result.text)
+        # 复盘融合: the JSON payload carries the review block.
+        self.assertIn("affected_months", result.text)
+        self.assertIn("attribution_summary", result.text)
+        self.assertIn("归因复盘", result.text)
         self.assertTrue(
             (self.root / "knowledge" / "trades" / "huatai" / "2026-07.csv").is_file()
         )
+
+    def test_csv_tool_dry_run(self) -> None:
+        from doyoutrade.tools._sandbox import register_knowledge_sandbox
+        from doyoutrade.tools.portfolio_import import ImportTradesCsvTool
+
+        kb = register_knowledge_sandbox()
+        csv_path = kb / "uploads" / "statement.csv"
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        csv_path.write_text(_CSV_HEADER + _CSV_ROWS, encoding="utf-8")
+
+        tool = ImportTradesCsvTool()
+        result = asyncio.run(
+            tool.execute(file_path=str(csv_path), broker="huatai", dry_run=True)
+        )
+        self.assertFalse(result.is_error, result.text)
+        self.assertIn("预演", result.text)
+        self.assertFalse(
+            (self.root / "knowledge" / "trades" / "huatai").exists()
+        )
+
+    def test_csv_tool_dry_run_string_coercion(self) -> None:
+        from doyoutrade.tools._sandbox import register_knowledge_sandbox
+        from doyoutrade.tools.portfolio_import import ImportTradesCsvTool
+
+        kb = register_knowledge_sandbox()
+        csv_path = kb / "uploads" / "statement.csv"
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        csv_path.write_text(_CSV_HEADER + _CSV_ROWS, encoding="utf-8")
+
+        tool = ImportTradesCsvTool()
+        result = asyncio.run(
+            tool.execute(file_path=str(csv_path), broker="huatai", dry_run="true")
+        )
+        self.assertFalse(result.is_error, result.text)
+        self.assertIn("预演", result.text)
+        self.assertFalse((self.root / "knowledge" / "trades" / "huatai").exists())
+        # A non-boolean value is a structured coercion error, not a crash.
+        bad = asyncio.run(
+            tool.execute(file_path=str(csv_path), broker="huatai", dry_run="maybe")
+        )
+        self.assertTrue(bad.is_error)
+        self.assertIn("invalid_dry_run_json", bad.text)
 
     def test_csv_tool_no_fills(self) -> None:
         from doyoutrade.tools._sandbox import register_knowledge_sandbox

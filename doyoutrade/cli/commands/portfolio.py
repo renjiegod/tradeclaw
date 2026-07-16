@@ -49,7 +49,14 @@ def portfolio() -> None:
 @portfolio.command("import-csv")
 @click.option("--file", "file_path", required=True, help="交割单 CSV 文件路径。")
 @click.option("--broker", "broker", required=True, help="券商名（作为 trades/ 下目录名）。")
-def portfolio_import_csv(file_path: str, broker: str) -> None:
+@click.option(
+    "--dry-run",
+    "dry_run",
+    is_flag=True,
+    default=False,
+    help="只预演不落盘：返回将新增 / 重复的计数，不写文件、不刷新索引。",
+)
+def portfolio_import_csv(file_path: str, broker: str, dry_run: bool) -> None:
     """Import a broker-statement CSV into knowledge ``trades/<broker>/<YYYY-MM>.csv``.
 
     Reuses the attribution parser (multi-broker column aliases), dedupes on
@@ -67,7 +74,7 @@ def portfolio_import_csv(file_path: str, broker: str) -> None:
     from doyoutrade.portfolio_import.csv_import import import_trades_csv
 
     try:
-        result = import_trades_csv(file_path, broker=broker)
+        result = import_trades_csv(file_path, broker=broker, dry_run=dry_run)
     except Exception as exc:
         envelope = error_envelope(
             error_code="csv_import_failed",
@@ -95,8 +102,9 @@ def portfolio_import_csv(file_path: str, broker: str) -> None:
         ctx.exit(exit_code_for_error(error_code))
         return
 
+    verb = "dry-run: would import" if dry_run else "imported"
     summary = (
-        f"imported {result['appended_total']} fill(s), "
+        f"{verb} {result['appended_total']} fill(s), "
         f"skipped {result['duplicates_skipped']} duplicate(s), "
         f"{len(result.get('unparsed') or [])} unparsed row(s)"
     )
