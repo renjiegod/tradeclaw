@@ -41,7 +41,9 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupLogging=yes
 
 [Languages]
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; 简体中文属于 Inno Setup「非官方翻译」，官方安装包不自带，故随仓库 vendored
+; 一份 ChineseSimplified.isl（与本 .iss 同目录），用相对路径引用，避免依赖 CI 联网下载。
+Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加图标:"; Flags: unchecked

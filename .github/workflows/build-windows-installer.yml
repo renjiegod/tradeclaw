@@ -34,16 +34,6 @@ jobs:
       - name: 安装 Inno Setup
         run: choco install innosetup --no-progress -y
 
-      - name: 安装简体中文语言文件
-        shell: pwsh
-        run: |
-          # 简体中文属于 Inno Setup「非官方翻译」，官方安装包不自带，需从 issrc 仓库下载。
-          $dest = "C:\Program Files (x86)\Inno Setup 6\Languages\ChineseSimplified.isl"
-          $url = "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/ChineseSimplified.isl"
-          Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
-          if (-not (Test-Path $dest)) { throw "下载 ChineseSimplified.isl 失败" }
-          Write-Host "已安装简体中文语言文件到 $dest"
-
       - name: 编译安装包
         shell: cmd
         run: |
