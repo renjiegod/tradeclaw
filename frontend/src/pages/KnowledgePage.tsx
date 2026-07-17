@@ -2,6 +2,7 @@ import { Tabs } from "antd";
 import { useState } from "react";
 
 import { KnowledgeBrowserPanel } from "../components/KnowledgeBrowserPanel";
+import { KnowledgeGraphPanel } from "../components/KnowledgeGraphPanel";
 import { PageIntro } from "../components/PageIntro";
 import { PlaybookPanel } from "../components/PlaybookPanel";
 import { SentimentTimeline } from "../components/SentimentTimeline";
@@ -19,8 +20,9 @@ const INTRO = {
  * Top-level Knowledge page — a 复盘 (review) workbench over the private
  * knowledge base, organised as tabs so the page stays short: 周期与角色
  * ({@link SentimentTimeline} + {@link SymbolRoleCards}), 交割单
- * ({@link TradeImportCard} + {@link TradeAttributionPanel}), 打板模式库
- * ({@link PlaybookPanel}) and 全库文件 ({@link KnowledgeBrowserPanel}).
+ * ({@link TradeImportCard} + {@link TradeAttributionPanel}), 图谱
+ * ({@link KnowledgeGraphPanel}), 打板模式库 ({@link PlaybookPanel}) and
+ * 全库文件 ({@link KnowledgeBrowserPanel}).
  * Reached from the sidebar "知识库" entry under ``/knowledge``.
  */
 export function KnowledgePage() {
@@ -57,6 +59,11 @@ export function KnowledgePage() {
                 <TradeAttributionPanel key={attributionRefreshKey} months={6} />
               </div>
             ),
+          },
+          {
+            key: "graph",
+            label: "图谱",
+            children: <KnowledgeGraphPanel />,
           },
           {
             key: "playbook",
