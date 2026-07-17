@@ -44,6 +44,8 @@ import type {
   PortfolioImportParseResponse,
   SentimentTimeline,
   SymbolRoles,
+  KnowledgeGraphNeighborhood,
+  KnowledgeGraphSyncResult,
   TradeAttribution,
   WatchlistEntry,
   WatchlistListResponse,
@@ -1958,6 +1960,35 @@ export async function getSentimentTimeline(months?: number): Promise<SentimentTi
  */
 export async function getSymbolRoles(): Promise<SymbolRoles> {
   return request("/knowledge/symbol-roles");
+}
+
+/**
+ * Resolve an entity (代码 / 名称 / 角色词 / ``YYYY-MM`` / 信号 id) and fetch
+ * its N-hop knowledge-graph neighborhood (``GET /knowledge/graph``). 404 =
+ * no node matches (the projection may simply be stale — offer a sync);
+ * ``include_expired`` adds superseded bi-temporal history edges.
+ */
+export async function getKnowledgeGraph(
+  entity: string,
+  opts?: { hops?: number; includeExpired?: boolean },
+): Promise<KnowledgeGraphNeighborhood> {
+  const qs = buildQueryString({
+    entity,
+    hops: opts?.hops,
+    include_expired: opts?.includeExpired ?? false,
+  });
+  return request(`/knowledge/graph${qs}`);
+}
+
+/**
+ * Idempotently re-project the deterministic sources (角色卡 / 情绪时间线 /
+ * 交割单归因 / 决策信号) into the knowledge graph
+ * (``POST /knowledge/graph/sync``). Cheap when nothing changed
+ * (``skipped: true``); ``force`` bypasses the content-hash watermarks.
+ */
+export async function syncKnowledgeGraph(force?: boolean): Promise<KnowledgeGraphSyncResult> {
+  const qs = buildQueryString({ force: force ?? false });
+  return request(`/knowledge/graph/sync${qs}`, { method: "POST" });
 }
 
 /**

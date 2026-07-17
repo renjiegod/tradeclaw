@@ -1622,6 +1622,91 @@ export type SymbolRoles = {
 };
 
 // ---------------------------------------------------------------------------
+// 知识图谱 (knowledge graph) — the entity-relation layer projected over the
+// private knowledge base (kg_nodes / kg_edges). Facts are bi-temporal: a
+// superseded judgment survives as an *expired* edge, so the UI can show "当时
+// 怎么看" without polluting the current view. This is descriptive long-term
+// memory, never a prediction / buy-sell recommendation.
+// ---------------------------------------------------------------------------
+
+/**
+ * One knowledge-graph entity node. Identity is the natural key
+ * ``(node_type, name)`` — for ``symbol`` nodes ``name`` is the canonical
+ * symbol code and ``display_name`` the instrument name; for ``cycle`` nodes
+ * ``name`` is the ``YYYY-MM`` month.
+ */
+export type KgNode = {
+  id: string;
+  /** ``symbol`` / ``theme`` / ``role`` / ``cycle`` / ``playbook`` / ``signal``. */
+  node_type: string;
+  name: string;
+  display_name: string | null;
+  attrs: Record<string, unknown> | null;
+};
+
+/**
+ * One knowledge-graph fact edge. ``provenance`` grades the fact:
+ * ``deterministic`` = hard-data projection (roles / trades / signals),
+ * ``llm`` = 观点候选 extracted from 复盘 journals (weight by ``confidence``).
+ * ``expired_at`` non-null = superseded history (bi-temporal), shown only when
+ * the user asks for it.
+ */
+export type KgEdge = {
+  id: string;
+  src_id: string;
+  dst_id: string;
+  relation: string;
+  /** Natural-language fact sentence — the primary display text. */
+  fact: string;
+  attrs: Record<string, unknown> | null;
+  provenance: "deterministic" | "llm";
+  confidence: number | null;
+  /** Where the fact came from: ``kb:<relpath>`` or ``db:<table>/<id>``. */
+  source_ref: string | null;
+  valid_at: string | null;
+  invalid_at: string | null;
+  created_at: string | null;
+  expired_at: string | null;
+};
+
+/**
+ * Response of ``GET /knowledge/graph?entity=...`` — the resolved center node,
+ * other same-name candidates, and its N-hop neighborhood subgraph.
+ */
+export type KnowledgeGraphNeighborhood = {
+  center: KgNode;
+  candidates: KgNode[];
+  nodes: KgNode[];
+  edges: KgEdge[];
+};
+
+/**
+ * Response of ``POST /knowledge/graph/sync`` — one idempotent deterministic
+ * re-projection pass. ``skipped: true`` means every source's content hash was
+ * unchanged since the last sync (nothing to do).
+ */
+export type KnowledgeGraphSyncResult = {
+  skipped: boolean;
+  forced?: boolean;
+  changed_sources: string[];
+  projected_nodes?: number;
+  projected_edges?: number;
+  warnings?: unknown[];
+  apply?: {
+    nodes_created: number;
+    nodes_updated: number;
+    edges_created: number;
+    edges_unchanged: number;
+    edges_expired: number;
+  } | null;
+  counts?: {
+    nodes: number;
+    active_edges: number;
+    expired_edges: number;
+  };
+};
+
+// ---------------------------------------------------------------------------
 // 打板模式库 (playbook) — the user's own 战法 / 打法 summaries kept in the
 // private knowledge base's ``playbook`` partition (e.g. "把这个打法记进模式
 // 库"). Each entry is authored text — the UI never fabricates a value: missing
