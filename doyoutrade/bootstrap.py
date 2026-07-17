@@ -61,6 +61,7 @@ from doyoutrade.persistence.repositories import (
     SqlAlchemyModelRouteRepository,
     SqlAlchemyMonitorAlertRepository,
     SqlAlchemyDecisionSignalRepository,
+    SqlAlchemyKnowledgeGraphRepository,
     SqlAlchemyMonitorRuleRepository,
     SqlAlchemySystemStateRepository,
     SqlAlchemyTradeFillRepository,
@@ -839,6 +840,7 @@ async def build_platform_runtime(
     task_trigger_repository = SqlAlchemyTaskTriggerRepository(session_factory)
     monitor_rule_repository = SqlAlchemyMonitorRuleRepository(session_factory)
     decision_signal_repository = SqlAlchemyDecisionSignalRepository(session_factory)
+    knowledge_graph_repository = SqlAlchemyKnowledgeGraphRepository(session_factory)
     monitor_alert_repository = SqlAlchemyMonitorAlertRepository(session_factory)
     account_repository = SqlAlchemyAccountRepository(session_factory)
     # Stateless data tools (data run / screen / sector / fundamentals) resolve
@@ -1078,6 +1080,7 @@ async def build_platform_runtime(
         run_repository=run_repository,
         decision_signal_repository=decision_signal_repository,
         instrument_catalog_repository=instrument_catalog_repository,
+        knowledge_graph_repository=knowledge_graph_repository,
     )
     assistant_service.channel_repo = channel_repository
 
@@ -1253,6 +1256,7 @@ async def build_platform_runtime(
         "task_trigger_repository": task_trigger_repository,
         "monitor_rule_repository": monitor_rule_repository,
         "decision_signal_repository": decision_signal_repository,
+        "knowledge_graph_repository": knowledge_graph_repository,
         "monitor_alert_repository": monitor_alert_repository,
         "account_repository": account_repository,
         "watchlist_repository": watchlist_repository,

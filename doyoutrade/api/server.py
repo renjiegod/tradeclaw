@@ -270,6 +270,7 @@ async def build_api_with_runtime(tick_interval_seconds: float | None = None):
         compiler=runtime.get("compiler"),
         quote_stream_service=runtime.get("quote_stream_service"),
         update_service=update_service,
+        knowledge_graph_repository=runtime.get("knowledge_graph_repository"),
     )
     initialize_observability(
         service_name=cfg.observability.service_name,

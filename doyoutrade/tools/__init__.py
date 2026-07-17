@@ -1074,6 +1074,7 @@ def build_default_tool_registry(
     run_repository: _Any | None = None,
     decision_signal_repository: _Any | None = None,
     instrument_catalog_repository: _Any | None = None,
+    knowledge_graph_repository: _Any | None = None,
     model_adapter_factory: _Any | None = None,
 ) -> OperationRegistry:
     """Return the agent's tool registry.
@@ -1117,6 +1118,7 @@ def build_default_tool_registry(
         ListFilesTool as _ListFilesTool,
     )
     from doyoutrade.tools.knowledge_index import KnowledgeIndexTool as _KnowledgeIndexTool
+    from doyoutrade.tools.knowledge_graph import KnowledgeGraphTool as _KnowledgeGraphTool
     from doyoutrade.tools._sandbox import register_knowledge_sandbox
 
     # Standing writable area: ``~/.doyoutrade/knowledge`` is permanently
@@ -1167,6 +1169,10 @@ def build_default_tool_registry(
         _EditFileTool(),
         _ListFilesTool(),
         _KnowledgeIndexTool(),
+        # 图谱与索引同属知识库检索面：index 是文件导航地图，graph 是实体
+        # 关系层（bi-temporal 事实）。repository 未装配的 runtime 里工具仍
+        # 注册，调用时返回结构化 knowledge_graph_unwired（不静默消失）。
+        _KnowledgeGraphTool(knowledge_graph_repository=knowledge_graph_repository),
         ExecuteBashTool(task_manager=bash_task_manager),
         ManageBashTasksTool(task_manager=bash_task_manager),
     ]

@@ -118,6 +118,31 @@ resolves it; honour `DOYOUTRADE_HOME` if set.)
 > `list_files(directory="<KB>/<partition>")` then `read_file` — but the index is
 > the default and cheaper path.
 
+### Step 0（可选加速）— `knowledge_graph`（实体关系图谱）
+
+When the question is **relational** — "这只票什么来头 / 我做过它几次、各赚亏多少 /
+那轮周期我怎么操作的 / 龙头都当过谁" — query the graph **before** the two-step
+file retrieval. It returns compact facts (with time windows + provenance +
+`source_ref`) instead of prose, then you drill into the referenced file via
+`knowledge_index` + `read_file`:
+
+```
+knowledge_graph(entity="300059")                        # 代码 / 名称 / 角色词 / YYYY-MM / 信号 id
+knowledge_graph(entity="龙头", hops=2)                   # 2 跳：谁当过龙头 + 它们的交易
+knowledge_graph(entity="2026-03", include_expired=true) # 周期月视角 + 已失效历史认知
+knowledge_graph(action="sync")                          # 数据刚更新后先同步再查
+```
+
+Facts are **bi-temporal**: a superseded judgment (角色从 龙头 变 杂毛) is kept as
+an *expired* edge, so `include_expired=true` answers "我当时怎么看" without
+polluting the current view. The graph is a **projection** of `roles.jsonl` /
+`_sentiment.jsonl` / `trades/` attribution / `decision_signals` — it never
+replaces reading the source file for detail; follow `source_ref`
+(`kb:...` → the KB file, `db:decision_signals/<id>` → CLI `decision-signal`).
+`entity_not_found` right after new data is written usually just means the
+projection is stale — run `knowledge_graph(action="sync")` once and retry.
+CLI equivalents: `doyoutrade-cli knowledge graph <entity>` / `knowledge graph-sync`.
+
 ### 交割单归因 (trade attribution over `trades/`)
 
 The `trades/` CSVs feed a **归因看板** (attribution dashboard) served at
@@ -328,6 +353,17 @@ Don't push the directory to a remote even if `~/.doyoutrade` is symlinked.
 | `unknown_partition` | `partition` not one of the six. | Use `cycles` / `symbols` / `trades` / `journal` / `playbook` / `backtests`. |
 | `knowledge_root_missing` | `~/.doyoutrade/knowledge` does not exist (fresh env). | Not a hard error — the tool returns guidance. Create partition dirs with `write_file` as needed. |
 | `index_build_failed` | Could not walk the base. | Check that `~/.doyoutrade/knowledge` is readable. |
+
+`knowledge_graph` (the entity-relation graph):
+
+| `error_code` | Meaning | Fix |
+|---|---|---|
+| `unknown_arguments` | Kwarg outside `action` / `entity` / `hops` / `include_expired` / `force`. | Stick to the declared schema. |
+| `validation_error` | Bad value (e.g. `hops` outside 1..3, unknown `action`). | Fix the value; `hops` is 1-3. |
+| `missing_entity` | `action="query"` without a non-empty `entity`. | Pass 代码 / 名称 / 角色词 / `YYYY-MM` / 信号 id. |
+| `entity_not_found` | No graph node matches. | `knowledge_graph(action="sync")` once, then retry with the canonical symbol or full name. |
+| `knowledge_graph_unwired` | Runtime has no graph repository wired. | Not fixable in-session; use the two-step file retrieval instead. |
+| `knowledge_graph_failed` | Underlying read/write failed (type + message included). | Read the message; typically DB / KB filesystem issues. |
 
 `write_file` / `edit_file` share the file-primitive error codes:
 

@@ -212,11 +212,21 @@ def _parse_playbook_frontmatter(text: str, rel: str) -> dict[str, Any]:
     return out
 
 
-def build_knowledge_router(kb_root_resolver: KnowledgeRootResolver) -> APIRouter:
-    """Build the read-only ``/knowledge`` router.
+def build_knowledge_router(
+    kb_root_resolver: KnowledgeRootResolver,
+    *,
+    knowledge_graph_repository=None,
+) -> APIRouter:
+    """Build the ``/knowledge`` router.
 
     ``kb_root_resolver`` returns the absolute KB root (``knowledge_root`` from
     ``doyoutrade.tools._sandbox``); the journal partition is ``<root>/journal``.
+
+    文件面保持只读（KB 写入一律走 agent 沙箱）。``knowledge_graph_repository``
+    （可选，``SqlAlchemyKnowledgeGraphRepository``）装配后追加图谱面：
+    ``GET /knowledge/graph``（实体邻域查询）与 ``POST /knowledge/graph/sync``
+    （确定性投影重建——写的是 DB 派生层，不是 KB 文件，不破坏只读边界）。
+    未装配时两个端点返回 503（结构化拒绝，不静默消失）。
     """
 
     router = APIRouter()
@@ -615,5 +625,91 @@ def build_knowledge_router(kb_root_resolver: KnowledgeRootResolver) -> APIRouter
             )
         items.sort(key=lambda it: str(it["updated_at"] or ""), reverse=True)
         return {"items": items}
+
+    # ---- knowledge graph（kg_nodes / kg_edges 之上的实体关系面） ----------
+
+    def _require_graph_repo():
+        if knowledge_graph_repository is None:
+            raise HTTPException(
+                status_code=503,
+                detail="knowledge graph repository is not wired in this runtime",
+            )
+        return knowledge_graph_repository
+
+    def _iso_or_none(value) -> str | None:
+        return value.isoformat() if value is not None else None
+
+    def _node_payload(node) -> dict:
+        return {
+            "id": node.id,
+            "node_type": node.node_type,
+            "name": node.name,
+            "display_name": node.display_name,
+            "attrs": node.attrs,
+        }
+
+    def _edge_payload(edge) -> dict:
+        return {
+            "id": edge.id,
+            "src_id": edge.src_id,
+            "dst_id": edge.dst_id,
+            "relation": edge.relation,
+            "fact": edge.fact,
+            "attrs": edge.attrs,
+            "provenance": edge.provenance,
+            "confidence": edge.confidence,
+            "source_ref": edge.source_ref,
+            "valid_at": _iso_or_none(edge.valid_at),
+            "invalid_at": _iso_or_none(edge.invalid_at),
+            "created_at": _iso_or_none(edge.created_at),
+            "expired_at": _iso_or_none(edge.expired_at),
+        }
+
+    @router.get("/knowledge/graph")
+    async def graph_neighborhood(
+        entity: str = Query(..., min_length=1, description="实体：代码/名称/角色/YYYY-MM/信号 id"),
+        hops: int = Query(1, ge=1, le=3),
+        include_expired: bool = Query(False),
+    ) -> dict:
+        """Resolve ``entity`` and return its N-hop neighborhood subgraph."""
+        repo = _require_graph_repo()
+        try:
+            matches = await repo.find_nodes(entity.strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not matches:
+            raise HTTPException(status_code=404, detail=f"no graph node matches {entity!r}")
+        center = matches[0]
+        nodes, edges = await repo.neighborhood(
+            center.id, hops=hops, include_expired=include_expired
+        )
+        return {
+            "center": _node_payload(center),
+            "candidates": [_node_payload(m) for m in matches[1:]],
+            "nodes": [_node_payload(n) for n in nodes],
+            "edges": [_edge_payload(e) for e in edges],
+        }
+
+    @router.post("/knowledge/graph/sync")
+    async def graph_sync(force: bool = Query(False)) -> dict:
+        """Idempotently re-project deterministic sources into the graph."""
+        from datetime import datetime, timezone
+
+        from doyoutrade.knowledge.graph import sync_deterministic_projection
+
+        repo = _require_graph_repo()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        try:
+            result = await sync_deterministic_projection(
+                repo, kb_root_resolver(), now=now, force=force
+            )
+        except Exception as exc:
+            logger.warning(
+                "knowledge graph sync failed (%s): %s", type(exc).__name__, exc
+            )
+            raise HTTPException(
+                status_code=500, detail=f"graph sync failed: {type(exc).__name__}"
+            ) from exc
+        return result
 
     return router

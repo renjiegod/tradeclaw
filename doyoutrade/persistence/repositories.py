@@ -37,6 +37,9 @@ from doyoutrade.persistence.models import (
     DecisionSignalOutcomeRecord,
     DecisionSignalRecord,
     InstrumentCatalog,
+    KnowledgeGraphEdgeRecord,
+    KnowledgeGraphNodeRecord,
+    KnowledgeGraphSourceStateRecord,
     MarketBarRecord,
     MarketBarSyncStateRecord,
     ModelInvocationRecord,
@@ -4958,3 +4961,597 @@ class SqlAlchemyDecisionSignalRepository:
                 .order_by(DecisionSignalOutcomeRecord.created_at.asc())
             )
             return [_decision_signal_outcome_snapshot(r) for r in result.scalars().all()]
+
+
+# ---------------------------------------------------------------------------
+# Knowledge graph — kg_nodes / kg_edges / kg_source_state
+# ---------------------------------------------------------------------------
+
+_KG_PROVENANCES = frozenset({"deterministic", "llm"})
+
+#: apply_projection 一次 IN 查询的分片大小（SQLite 变量上限保守值）。
+_KG_IN_CHUNK = 400
+
+
+@dataclass(frozen=True)
+class KnowledgeGraphNodeSpec:
+    """投影层产出的节点意图 — 自然键 ``(node_type, name)`` 定身份。"""
+
+    node_type: str
+    name: str
+    display_name: str | None = None
+    attrs: dict | None = None
+
+
+@dataclass(frozen=True)
+class KnowledgeGraphEdgeSpec:
+    """投影层产出的边意图。``src`` / ``dst`` 是 ``(node_type, name)`` 自然键。
+
+    ``dedupe_key`` 是事实身份（幂等键）；``state_key`` 非空时表示该边属于
+    单值状态组：apply 时同组内 dedupe_key 不在本次投影里的 active 边会被
+    置为 expired（角色变更即由此产生失效历史）。
+    """
+
+    src: tuple[str, str]
+    dst: tuple[str, str]
+    relation: str
+    fact: str
+    dedupe_key: str
+    state_key: str | None = None
+    attrs: dict | None = None
+    provenance: str = "deterministic"
+    confidence: float | None = None
+    source_ref: str | None = None
+    valid_at: datetime | None = None
+    invalid_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class KnowledgeGraphNodeSnapshot:
+    """Immutable view of a ``kg_nodes`` row."""
+
+    id: str
+    node_type: str
+    name: str
+    display_name: str | None
+    attrs: dict | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class KnowledgeGraphEdgeSnapshot:
+    """Immutable view of a ``kg_edges`` row."""
+
+    id: str
+    src_id: str
+    dst_id: str
+    relation: str
+    fact: str
+    attrs: dict | None
+    dedupe_key: str
+    state_key: str | None
+    provenance: str
+    confidence: float | None
+    source_ref: str | None
+    valid_at: datetime | None
+    invalid_at: datetime | None
+    created_at: datetime
+    expired_at: datetime | None
+
+
+@dataclass(frozen=True)
+class KnowledgeGraphSourceStateSnapshot:
+    """Immutable view of a ``kg_source_state`` row."""
+
+    source: str
+    content_hash: str
+    synced_at: datetime
+    stats: dict | None
+
+
+def _kg_node_snapshot(record: KnowledgeGraphNodeRecord) -> KnowledgeGraphNodeSnapshot:
+    return KnowledgeGraphNodeSnapshot(
+        id=record.id,
+        node_type=record.node_type,
+        name=record.name,
+        display_name=record.display_name,
+        attrs=record.attrs,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _kg_edge_snapshot(record: KnowledgeGraphEdgeRecord) -> KnowledgeGraphEdgeSnapshot:
+    return KnowledgeGraphEdgeSnapshot(
+        id=record.id,
+        src_id=record.src_id,
+        dst_id=record.dst_id,
+        relation=record.relation,
+        fact=record.fact,
+        attrs=record.attrs,
+        dedupe_key=record.dedupe_key,
+        state_key=record.state_key,
+        provenance=record.provenance,
+        confidence=record.confidence,
+        source_ref=record.source_ref,
+        valid_at=record.valid_at,
+        invalid_at=record.invalid_at,
+        created_at=record.created_at,
+        expired_at=record.expired_at,
+    )
+
+
+def _chunked(values: list, size: int = _KG_IN_CHUNK):
+    for i in range(0, len(values), size):
+        yield values[i : i + size]
+
+
+class SqlAlchemyKnowledgeGraphRepository:
+    """CRUD + 幂等投影写入 for ``kg_nodes`` / ``kg_edges`` / ``kg_source_state``.
+
+    Dumb persistence with strict-shape guards（CLAUDE.md §错误可见性 —— 非法
+    provenance / 缺失端点节点直接 ``ValueError`` 带实际类型与值，不静默
+    coercion）。核心入口 :meth:`apply_projection` 是幂等的：
+
+    - 节点按自然键 ``(node_type, name)`` upsert（display_name / attrs 变更
+      时原地更新）。
+    - 边按 ``dedupe_key`` 幂等：内容未变 → 不动；内容变了 → 旧边置
+      ``expired_at`` + 插入新边（保留历史，支持时点回溯）。
+    - ``state_key`` 单值状态组：本次投影覆盖到的组里，dedupe_key 不在
+      本次集合中的 active 边一律置 expired（个股角色变更的失效语义）。
+
+    ``now`` 由调用方显式传入（库内不调 ``datetime.now()``，与 roles.py 的
+    纪律一致），测试传固定值。
+    """
+
+    def __init__(self, session_factory):
+        self.session_factory = session_factory
+
+    # -- projection write ------------------------------------------------
+
+    async def apply_projection(
+        self,
+        nodes: list[KnowledgeGraphNodeSpec],
+        edges: list[KnowledgeGraphEdgeSpec],
+        *,
+        now: datetime,
+    ) -> dict[str, int]:
+        """Idempotently apply one projection batch. Returns mutation stats."""
+
+        for spec in nodes:
+            if not isinstance(spec, KnowledgeGraphNodeSpec):
+                raise ValueError(
+                    f"nodes must be KnowledgeGraphNodeSpec, got {type(spec).__name__}: {spec!r}"
+                )
+            if not spec.node_type or not spec.name:
+                raise ValueError(
+                    f"node spec requires non-empty node_type and name, got "
+                    f"({spec.node_type!r}, {spec.name!r})"
+                )
+        node_keys = {(s.node_type, s.name) for s in nodes}
+        for spec in edges:
+            if not isinstance(spec, KnowledgeGraphEdgeSpec):
+                raise ValueError(
+                    f"edges must be KnowledgeGraphEdgeSpec, got {type(spec).__name__}: {spec!r}"
+                )
+            if spec.provenance not in _KG_PROVENANCES:
+                raise ValueError(
+                    f"edge provenance must be one of {sorted(_KG_PROVENANCES)}, "
+                    f"got {type(spec.provenance).__name__}: {spec.provenance!r}"
+                )
+            for endpoint, label in ((spec.src, "src"), (spec.dst, "dst")):
+                if endpoint not in node_keys:
+                    # 端点必须随批携带节点 spec —— 缺失说明投影层漏了实体，
+                    # 这是编程错误，必须炸而不是静默丢边。
+                    raise ValueError(
+                        f"edge {spec.dedupe_key!r} references {label} node "
+                        f"{endpoint!r} that is not part of this projection batch"
+                    )
+            if not spec.dedupe_key or not spec.relation or not spec.fact:
+                raise ValueError(
+                    f"edge spec requires non-empty dedupe_key/relation/fact, got "
+                    f"dedupe_key={spec.dedupe_key!r} relation={spec.relation!r}"
+                )
+
+        dedupe_keys = [s.dedupe_key for s in edges]
+        if len(set(dedupe_keys)) != len(dedupe_keys):
+            seen: set[str] = set()
+            dup = next(k for k in dedupe_keys if k in seen or seen.add(k))  # type: ignore[func-returns-value]
+            raise ValueError(f"projection batch contains duplicate dedupe_key: {dup!r}")
+
+        stats = {
+            "nodes_created": 0,
+            "nodes_updated": 0,
+            "edges_created": 0,
+            "edges_unchanged": 0,
+            "edges_expired": 0,
+        }
+
+        async with self.session_factory() as session:
+            # ---- nodes: upsert by natural key --------------------------------
+            id_by_key: dict[tuple[str, str], str] = {}
+            existing_nodes: dict[tuple[str, str], KnowledgeGraphNodeRecord] = {}
+            key_list = sorted(node_keys)
+            for chunk in _chunked(key_list):
+                result = await session.execute(
+                    select(KnowledgeGraphNodeRecord).where(
+                        or_(
+                            *[
+                                and_(
+                                    KnowledgeGraphNodeRecord.node_type == t,
+                                    KnowledgeGraphNodeRecord.name == n,
+                                )
+                                for (t, n) in chunk
+                            ]
+                        )
+                    )
+                )
+                for record in result.scalars().all():
+                    existing_nodes[(record.node_type, record.name)] = record
+
+            for spec in nodes:
+                key = (spec.node_type, spec.name)
+                record = existing_nodes.get(key)
+                if record is None:
+                    record = KnowledgeGraphNodeRecord(
+                        id=f"kgn-{uuid.uuid4().hex[:12]}",
+                        node_type=spec.node_type,
+                        name=spec.name,
+                        display_name=spec.display_name,
+                        attrs=spec.attrs,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(record)
+                    existing_nodes[key] = record
+                    stats["nodes_created"] += 1
+                else:
+                    changed = False
+                    if spec.display_name is not None and spec.display_name != record.display_name:
+                        record.display_name = spec.display_name
+                        changed = True
+                    if spec.attrs is not None and spec.attrs != record.attrs:
+                        record.attrs = spec.attrs
+                        changed = True
+                    if changed:
+                        record.updated_at = now
+                        stats["nodes_updated"] += 1
+                id_by_key[key] = record.id
+
+            # ---- edges: dedupe-keyed idempotent write -------------------------
+            active_by_dedupe: dict[str, KnowledgeGraphEdgeRecord] = {}
+            for chunk in _chunked(dedupe_keys):
+                result = await session.execute(
+                    select(KnowledgeGraphEdgeRecord).where(
+                        KnowledgeGraphEdgeRecord.dedupe_key.in_(chunk),
+                        KnowledgeGraphEdgeRecord.expired_at.is_(None),
+                    )
+                )
+                for record in result.scalars().all():
+                    prior = active_by_dedupe.get(record.dedupe_key)
+                    if prior is not None:
+                        # 同 dedupe_key 出现两条 active 边：历史 bug 留下的
+                        # 脏状态。修复动作（expire 较旧一条）必须可见。
+                        _LOG.warning(
+                            "kg apply_projection found duplicate active edges "
+                            "dedupe_key=%r ids=(%s, %s); expiring the older one",
+                            record.dedupe_key, prior.id, record.id,
+                        )
+                        older, newer = (
+                            (prior, record)
+                            if prior.created_at <= record.created_at
+                            else (record, prior)
+                        )
+                        older.expired_at = now
+                        stats["edges_expired"] += 1
+                        active_by_dedupe[record.dedupe_key] = newer
+                    else:
+                        active_by_dedupe[record.dedupe_key] = record
+
+            def _edge_content(spec: KnowledgeGraphEdgeSpec) -> tuple:
+                return (
+                    id_by_key[spec.src],
+                    id_by_key[spec.dst],
+                    spec.relation,
+                    spec.fact,
+                    spec.attrs,
+                    spec.state_key,
+                    spec.provenance,
+                    spec.confidence,
+                    spec.source_ref,
+                    spec.valid_at,
+                    spec.invalid_at,
+                )
+
+            def _record_content(record: KnowledgeGraphEdgeRecord) -> tuple:
+                return (
+                    record.src_id,
+                    record.dst_id,
+                    record.relation,
+                    record.fact,
+                    record.attrs,
+                    record.state_key,
+                    record.provenance,
+                    record.confidence,
+                    record.source_ref,
+                    record.valid_at,
+                    record.invalid_at,
+                )
+
+            for spec in edges:
+                existing = active_by_dedupe.get(spec.dedupe_key)
+                if existing is not None and _record_content(existing) == _edge_content(spec):
+                    stats["edges_unchanged"] += 1
+                    continue
+                if existing is not None:
+                    existing.expired_at = now
+                    stats["edges_expired"] += 1
+                session.add(
+                    KnowledgeGraphEdgeRecord(
+                        id=f"kge-{uuid.uuid4().hex[:12]}",
+                        src_id=id_by_key[spec.src],
+                        dst_id=id_by_key[spec.dst],
+                        relation=spec.relation,
+                        fact=spec.fact,
+                        attrs=spec.attrs,
+                        dedupe_key=spec.dedupe_key,
+                        state_key=spec.state_key,
+                        provenance=spec.provenance,
+                        confidence=spec.confidence,
+                        source_ref=spec.source_ref,
+                        valid_at=spec.valid_at,
+                        invalid_at=spec.invalid_at,
+                        created_at=now,
+                        expired_at=None,
+                    )
+                )
+                stats["edges_created"] += 1
+
+            # ---- state groups: expire superseded single-value edges ----------
+            incoming_dedupe = set(dedupe_keys)
+            state_keys = sorted({s.state_key for s in edges if s.state_key})
+            for chunk in _chunked(state_keys):
+                result = await session.execute(
+                    select(KnowledgeGraphEdgeRecord).where(
+                        KnowledgeGraphEdgeRecord.state_key.in_(chunk),
+                        KnowledgeGraphEdgeRecord.expired_at.is_(None),
+                    )
+                )
+                for record in result.scalars().all():
+                    if record.dedupe_key in incoming_dedupe:
+                        continue
+                    # 单值状态组里出现了不在本次投影中的旧状态（如角色已
+                    # 从 龙头 变为 杂毛）——按 bi-temporal 语义置 expired，
+                    # 保留历史行。
+                    record.expired_at = now
+                    stats["edges_expired"] += 1
+                    _LOG.info(
+                        "kg apply_projection expired superseded state edge "
+                        "state_key=%r dedupe_key=%r", record.state_key, record.dedupe_key,
+                    )
+
+            await session.commit()
+        return stats
+
+    # -- source watermarks ------------------------------------------------
+
+    async def get_source_state(self, source: str) -> KnowledgeGraphSourceStateSnapshot | None:
+        async with self.session_factory() as session:
+            record = await session.get(KnowledgeGraphSourceStateRecord, source)
+            if record is None:
+                return None
+            return KnowledgeGraphSourceStateSnapshot(
+                source=record.source,
+                content_hash=record.content_hash,
+                synced_at=record.synced_at,
+                stats=record.stats,
+            )
+
+    async def set_source_state(
+        self,
+        source: str,
+        content_hash: str,
+        *,
+        now: datetime,
+        stats: dict | None = None,
+    ) -> None:
+        if not source or not content_hash:
+            raise ValueError(
+                f"source and content_hash must be non-empty, got "
+                f"source={source!r} content_hash={content_hash!r}"
+            )
+        async with self.session_factory() as session:
+            record = await session.get(KnowledgeGraphSourceStateRecord, source)
+            if record is None:
+                session.add(
+                    KnowledgeGraphSourceStateRecord(
+                        source=source,
+                        content_hash=content_hash,
+                        synced_at=now,
+                        stats=stats,
+                    )
+                )
+            else:
+                record.content_hash = content_hash
+                record.synced_at = now
+                record.stats = stats
+            await session.commit()
+
+    # -- reads -------------------------------------------------------------
+
+    async def find_nodes(self, query: str, *, limit: int = 8) -> list[KnowledgeGraphNodeSnapshot]:
+        """Resolve an entity by exact name / display_name first, LIKE fallback.
+
+        精确命中排最前（symbol 代码 / 全名），其余按 LIKE 模糊补足到
+        ``limit``。空 query 直接 ``ValueError``（可见错误优于全表扫）。
+        """
+        text = (query or "").strip()
+        if not text:
+            raise ValueError(f"query must be a non-empty string, got {query!r}")
+        async with self.session_factory() as session:
+            exact = await session.execute(
+                select(KnowledgeGraphNodeRecord)
+                .where(
+                    or_(
+                        KnowledgeGraphNodeRecord.name == text,
+                        KnowledgeGraphNodeRecord.display_name == text,
+                    )
+                )
+                .order_by(KnowledgeGraphNodeRecord.node_type, KnowledgeGraphNodeRecord.name)
+                .limit(limit)
+            )
+            rows = list(exact.scalars().all())
+            if len(rows) < limit:
+                like = f"%{text}%"
+                seen_ids = {r.id for r in rows}
+                fuzzy = await session.execute(
+                    select(KnowledgeGraphNodeRecord)
+                    .where(
+                        or_(
+                            KnowledgeGraphNodeRecord.name.like(like),
+                            KnowledgeGraphNodeRecord.display_name.like(like),
+                        )
+                    )
+                    .order_by(KnowledgeGraphNodeRecord.node_type, KnowledgeGraphNodeRecord.name)
+                    .limit(limit)
+                )
+                for record in fuzzy.scalars().all():
+                    if record.id not in seen_ids and len(rows) < limit:
+                        rows.append(record)
+            return [_kg_node_snapshot(r) for r in rows]
+
+    async def neighborhood(
+        self,
+        node_id: str,
+        *,
+        hops: int = 1,
+        include_expired: bool = False,
+        edge_limit: int = 200,
+    ) -> tuple[list[KnowledgeGraphNodeSnapshot], list[KnowledgeGraphEdgeSnapshot]]:
+        """N-hop 邻域子图（迭代扩张，非通用 BFS —— hops 只支持 1..3）。
+
+        返回 ``(nodes, edges)``；``include_expired=True`` 时包含已失效边
+        （历史回溯视角）。``edge_limit`` 是硬上限，超限即截断并由调用方
+        在渲染层明示截断（不静默）。
+        """
+        if not isinstance(hops, int) or not 1 <= hops <= 3:
+            raise ValueError(f"hops must be an int in 1..3, got {hops!r}")
+        async with self.session_factory() as session:
+            center = await session.get(KnowledgeGraphNodeRecord, node_id)
+            if center is None:
+                raise RecordNotFoundError(f"kg node not found: {node_id}")
+
+            frontier = {node_id}
+            visited_nodes = {node_id}
+            edges_by_id: dict[str, KnowledgeGraphEdgeRecord] = {}
+            for _ in range(hops):
+                if not frontier or len(edges_by_id) >= edge_limit:
+                    break
+                conditions = [
+                    or_(
+                        KnowledgeGraphEdgeRecord.src_id.in_(sorted(frontier)),
+                        KnowledgeGraphEdgeRecord.dst_id.in_(sorted(frontier)),
+                    )
+                ]
+                if not include_expired:
+                    conditions.append(KnowledgeGraphEdgeRecord.expired_at.is_(None))
+                result = await session.execute(
+                    select(KnowledgeGraphEdgeRecord)
+                    .where(*conditions)
+                    .order_by(KnowledgeGraphEdgeRecord.created_at.desc())
+                    .limit(edge_limit)
+                )
+                next_frontier: set[str] = set()
+                for record in result.scalars().all():
+                    if len(edges_by_id) >= edge_limit:
+                        break
+                    edges_by_id.setdefault(record.id, record)
+                    for endpoint in (record.src_id, record.dst_id):
+                        if endpoint not in visited_nodes:
+                            visited_nodes.add(endpoint)
+                            next_frontier.add(endpoint)
+                frontier = next_frontier
+
+            node_rows: list[KnowledgeGraphNodeRecord] = []
+            for chunk in _chunked(sorted(visited_nodes)):
+                result = await session.execute(
+                    select(KnowledgeGraphNodeRecord).where(
+                        KnowledgeGraphNodeRecord.id.in_(chunk)
+                    )
+                )
+                node_rows.extend(result.scalars().all())
+            node_rows.sort(key=lambda r: (r.id != node_id, r.node_type, r.name))
+            edge_rows = sorted(
+                edges_by_id.values(),
+                key=lambda r: (r.expired_at is not None, r.relation, r.created_at),
+            )
+            return (
+                [_kg_node_snapshot(r) for r in node_rows],
+                [_kg_edge_snapshot(r) for r in edge_rows],
+            )
+
+    async def counts(self) -> dict[str, int]:
+        """Graph size snapshot for diagnostics / sync summaries."""
+        async with self.session_factory() as session:
+            nodes = await session.execute(select(func.count(KnowledgeGraphNodeRecord.id)))
+            active = await session.execute(
+                select(func.count(KnowledgeGraphEdgeRecord.id)).where(
+                    KnowledgeGraphEdgeRecord.expired_at.is_(None)
+                )
+            )
+            expired = await session.execute(
+                select(func.count(KnowledgeGraphEdgeRecord.id)).where(
+                    KnowledgeGraphEdgeRecord.expired_at.is_not(None)
+                )
+            )
+            return {
+                "nodes": int(nodes.scalar_one()),
+                "active_edges": int(active.scalar_one()),
+                "expired_edges": int(expired.scalar_one()),
+            }
+
+    # -- decision-signal projection feed -----------------------------------
+
+    async def list_decision_signal_projection_rows(self) -> list[dict[str, Any]]:
+        """Read ``decision_signals`` (+outcomes) as plain dicts for projection.
+
+        知识图谱投影只需要一个只读快照；放在本 repo 里避免把
+        ``SqlAlchemyDecisionSignalRepository`` 再接进工具装配线。
+        """
+        async with self.session_factory() as session:
+            signals = await session.execute(
+                select(DecisionSignalRecord).order_by(DecisionSignalRecord.created_at.asc())
+            )
+            outcome_rows = await session.execute(
+                select(DecisionSignalOutcomeRecord).order_by(
+                    DecisionSignalOutcomeRecord.created_at.asc()
+                )
+            )
+            outcomes_by_signal: dict[str, list[dict[str, Any]]] = {}
+            for record in outcome_rows.scalars().all():
+                outcomes_by_signal.setdefault(record.signal_id, []).append(
+                    {
+                        "horizon": record.horizon,
+                        "outcome": record.outcome,
+                        "return_pct": record.return_pct,
+                        "anchor_date": record.anchor_date,
+                    }
+                )
+            rows: list[dict[str, Any]] = []
+            for record in signals.scalars().all():
+                rows.append(
+                    {
+                        "id": record.id,
+                        "symbol": record.symbol,
+                        "action": record.action,
+                        "source": record.source,
+                        "confidence": record.confidence,
+                        "horizon": record.horizon,
+                        "reason": record.reason,
+                        "status": record.status,
+                        "created_at": record.created_at,
+                        "outcomes": outcomes_by_signal.get(record.id, []),
+                    }
+                )
+            return rows
