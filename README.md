@@ -173,6 +173,21 @@ doyoutrade
 > `uvx --from git+https://github.com/renjiegod/doyoutrade doyoutrade`（即跑即用，不持久安装）。
 > 从源码开发（改代码、跑测试）走下面的「梯度一：克隆源码本地开发」。
 
+### 完全不会命令行？图形化安装（Windows）
+
+**方式一：图形安装包（推荐）**
+
+去 [Releases 页](https://github.com/renjiegod/doyoutrade/releases/latest) 下载 `DoYouTrade-Setup.exe`，双击后跟平时装其他 Windows 软件一样「下一步 → 下一步 → 完成」即可：安装程序会自动装好 `doyoutrade` 命令，并在开始菜单 / 桌面创建「DoYouTrade」快捷方式。装完之后双击该快捷方式即可启动：会自动打开浏览器控制台，**首次使用直接在网页里的向导选一个大模型供应商、填 API Key 就行，不需要在黑窗口里操作**；启动后 Windows 系统托盘会出现一个图标，可以从里面「打开控制台」或「退出 DoYouTrade」。以后升级重新运行一遍安装包即可（内部会重新走一次安装流程）；想彻底卸载，「设置 → 应用」里卸载 DoYouTrade 会连带清掉 `doyoutrade` 命令本体。
+
+**方式二：两个双击脚本**
+
+不想下载安装包也行，用下面两个脚本代替敲命令，体验和图形安装包一致（网页首启向导 + 系统托盘图标）：
+
+1. 下载 [`安装DoYouTrade.bat`](https://raw.githubusercontent.com/renjiegod/doyoutrade/main/%E5%AE%89%E8%A3%85DoYouTrade.bat) 和 [`启动DoYouTrade.bat`](https://raw.githubusercontent.com/renjiegod/doyoutrade/main/%E5%90%AF%E5%8A%A8DoYouTrade.bat)，放进同一个文件夹（浏览器点开会直接显示脚本文本，右键「另存为」即可保存；Chrome 等浏览器下载 `.bat` 时会弹安全提示，选择「保留」/「仍然下载」即可 —— 脚本内容就是上面那条 `install.ps1` 一条命令，可放心点开源码审阅）。
+2. 双击「**安装DoYouTrade.bat**」，等窗口跑完显示"安装完成"。
+3. 双击「**启动DoYouTrade.bat**」，稍等片刻会自动弹出浏览器打开控制台；首次使用在网页向导里选一个大模型供应商、填 API Key 即可，黑窗口只是后台服务，不用管它。
+4. 以后每次使用只需双击「启动DoYouTrade.bat」；想停止服务，关掉这个窗口，或从系统托盘图标选「退出 DoYouTrade」都行。
+
 按需求选一个梯度即可，三个梯度层层递进、互不冲突。
 
 ### 环境要求
