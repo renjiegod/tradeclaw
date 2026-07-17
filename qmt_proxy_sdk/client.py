@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from qmt_proxy_sdk.data import DataApi
-from qmt_proxy_sdk.http import AsyncHttpTransport
+from qmt_proxy_sdk.http import (
+    DEFAULT_RATE_LIMIT_MAX_WAIT,
+    DEFAULT_RATE_LIMIT_RETRIES,
+    AsyncHttpTransport,
+)
 from qmt_proxy_sdk.system import SystemApi
 from qmt_proxy_sdk.trading import TradingApi
 
@@ -18,6 +22,8 @@ class AsyncQmtProxyClient:
         headers: dict[str, str] | None = None,
         terminal_id: str | None = None,
         transport: AsyncHttpTransport | None = None,
+        rate_limit_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
+        rate_limit_max_wait: float = DEFAULT_RATE_LIMIT_MAX_WAIT,
     ) -> None:
         if transport is None:
             transport = AsyncHttpTransport(
@@ -26,6 +32,8 @@ class AsyncQmtProxyClient:
                 timeout=timeout,
                 headers=headers,
                 terminal_id=terminal_id,
+                rate_limit_retries=rate_limit_retries,
+                rate_limit_max_wait=rate_limit_max_wait,
             )
             self._owns_transport = True
         else:

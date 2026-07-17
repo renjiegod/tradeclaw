@@ -10,6 +10,12 @@ from qmt_proxy_sdk.exceptions import ClientError
 from qmt_proxy_sdk.models.data import FullTickResponse, MarketDataResponse, TickData, TradingCalendarResponse
 from qmt_proxy_sdk.models.trading import AccountInfo, AccountType, ConnectResponse, PositionInfo
 
+from doyoutrade.data.cloud_profile import (
+    CloudPlan,
+    CloudProfile,
+    CloudQuota,
+    CloudRecommendations,
+)
 from doyoutrade.infra.qmt_proxy_client import QmtProxyRestClient
 
 
@@ -390,6 +396,160 @@ class QmtProxyClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sdk_client.data.market_calls, [True, False])
         self.assertEqual(len(bars), 1)
         self.assertEqual(bars[0]["close"], 10.2)
+
+    @staticmethod
+    def _cloud_profile(*, disable_download: bool = True) -> CloudProfile:
+        return CloudProfile(
+            service="doyoutrade-cloud",
+            protocol_version=1,
+            plan=CloudPlan(plan_name="free"),
+            quota=CloudQuota(),
+            capabilities=("rate_limit_headers",),
+            recommendations=CloudRecommendations(disable_download=disable_download),
+        )
+
+    async def test_cloud_disable_download_skips_fallback_and_emits_event(self):
+        """Cloud mode + rec.disable_download: no download-enabled retry."""
+        sdk_client = _FakeSdkClient()
+        sdk_client.data.empty_on_fast_read = True
+
+        async def _profile() -> CloudProfile:
+            return self._cloud_profile(disable_download=True)
+
+        client = QmtProxyRestClient(
+            base_url="http://cloud.example",
+            session_id="session-001",
+            sdk_client=sdk_client,
+            cloud_profile_provider=_profile,
+        )
+        with unittest.mock.patch(
+            "doyoutrade.debug.emit_debug_event",
+            new_callable=unittest.mock.AsyncMock,
+        ) as emit:
+            bars = await client.fetch_bars(
+                symbol="600000.SH",
+                start_time="2026-01-01",
+                end_time="2026-02-01",
+                interval="1d",
+            )
+        await client.aclose()
+        # Fast read only; the download-enabled retry was intentionally skipped.
+        self.assertEqual(sdk_client.data.market_calls, [True])
+        self.assertEqual(bars, [])
+        skip_calls = [
+            call
+            for call in emit.await_args_list
+            if call.args[0] == "qmt_market_download_fallback_skipped"
+        ]
+        self.assertEqual(len(skip_calls), 1)
+        payload = skip_calls[0].args[1]
+        self.assertEqual(payload["reason"], "cloud_disable_download")
+        self.assertEqual(payload["plan_name"], "free")
+        self.assertEqual(payload["symbol"], "600000.SH")
+        self.assertIn("hint", payload)
+
+    async def test_cloud_profile_without_disable_download_keeps_fallback(self):
+        """Cloud mode with disable_download=false keeps the classic retry."""
+        sdk_client = _FakeSdkClient()
+        sdk_client.data.empty_on_fast_read = True
+
+        async def _profile() -> CloudProfile:
+            return self._cloud_profile(disable_download=False)
+
+        client = QmtProxyRestClient(
+            base_url="http://cloud.example",
+            session_id="session-001",
+            sdk_client=sdk_client,
+            cloud_profile_provider=_profile,
+        )
+        bars = await client.fetch_bars(
+            symbol="600000.SH",
+            start_time="2026-01-01",
+            end_time="2026-02-01",
+            interval="1d",
+        )
+        await client.aclose()
+        self.assertEqual(sdk_client.data.market_calls, [True, False])
+        self.assertEqual(len(bars), 1)
+
+    async def test_classic_probe_none_keeps_fallback(self):
+        """Provider resolving to None (classic qmt-proxy) keeps the retry."""
+        sdk_client = _FakeSdkClient()
+        sdk_client.data.empty_on_fast_read = True
+
+        async def _profile() -> None:
+            return None
+
+        client = QmtProxyRestClient(
+            base_url="http://localhost:9000",
+            session_id="session-001",
+            sdk_client=sdk_client,
+            cloud_profile_provider=_profile,
+        )
+        bars = await client.fetch_bars(
+            symbol="600000.SH",
+            start_time="2026-01-01",
+            end_time="2026-02-01",
+            interval="1d",
+        )
+        await client.aclose()
+        self.assertEqual(sdk_client.data.market_calls, [True, False])
+        self.assertEqual(len(bars), 1)
+
+    async def test_cloud_probe_failure_keeps_fallback_and_is_logged(self):
+        """A raising cloud-profile provider degrades to classic behaviour."""
+        sdk_client = _FakeSdkClient()
+        sdk_client.data.empty_on_fast_read = True
+
+        async def _profile() -> None:
+            raise RuntimeError("hello probe blew up")
+
+        client = QmtProxyRestClient(
+            base_url="http://localhost:9000",
+            session_id="session-001",
+            sdk_client=sdk_client,
+            cloud_profile_provider=_profile,
+        )
+        with self.assertLogs("doyoutrade.infra.qmt_proxy_client", level="WARNING") as logs:
+            bars = await client.fetch_bars(
+                symbol="600000.SH",
+                start_time="2026-01-01",
+                end_time="2026-02-01",
+                interval="1d",
+            )
+        await client.aclose()
+        self.assertEqual(sdk_client.data.market_calls, [True, False])
+        self.assertEqual(len(bars), 1)
+        self.assertTrue(
+            any("cloud profile probe failed" in line for line in logs.output)
+        )
+
+    async def test_fast_read_hit_never_probes_cloud_profile(self):
+        """A non-empty fast read must not trigger the cloud probe at all."""
+        sdk_client = _FakeSdkClient()
+        probe_calls = 0
+
+        async def _profile() -> CloudProfile:
+            nonlocal probe_calls
+            probe_calls += 1
+            return self._cloud_profile(disable_download=True)
+
+        client = QmtProxyRestClient(
+            base_url="http://cloud.example",
+            session_id="session-001",
+            sdk_client=sdk_client,
+            cloud_profile_provider=_profile,
+        )
+        bars = await client.fetch_bars(
+            symbol="600000.SH",
+            start_time="2026-01-01",
+            end_time="2026-02-01",
+            interval="1d",
+        )
+        await client.aclose()
+        self.assertEqual(sdk_client.data.market_calls, [True])
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(probe_calls, 0)
 
     async def test_rest_client_forwards_get_trading_calendar(self):
         sdk_client = _FakeSdkClient()

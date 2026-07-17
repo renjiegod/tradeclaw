@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  Alert,
   Button,
   Checkbox,
   Form,
@@ -7,6 +8,7 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Radio,
   Select,
   Space,
   Switch,
@@ -26,6 +28,13 @@ import {
 import { ApiError } from "../api";
 import type { Account, AccountMockPosition } from "../types";
 import { usePageRefreshToken } from "../pageRefreshContext";
+
+/** DoYouTrade Cloud 官方云行情网关（占位地址，正式上线前替换）。
+ * 云网关只代理行情（/trading/* 一律 403），Cloud 账户永远是 mode=mock。 */
+const CLOUD_BASE_URL = "https://cloud.doyoutrade.com";
+const CLOUD_TOKEN_PREFIX = "dytc_";
+
+type AccountKind = "qmt" | "cloud";
 
 type AccountFormValues = {
   name: string;
@@ -64,6 +73,9 @@ export function AccountsPage() {
   const [submitting, setSubmitting] = React.useState(false);
   const [form] = Form.useForm<AccountFormValues>();
   const mode = Form.useWatch("mode", form);
+  const [accountKind, setAccountKind] = React.useState<AccountKind>("qmt");
+  // Cloud 快捷类型只在“新建”时提供；编辑走通用表单，避免误改既有账户。
+  const isCloud = !editingAccount && accountKind === "cloud";
 
   const loadAccounts = React.useCallback(async () => {
     setLoading(true);
@@ -83,6 +95,7 @@ export function AccountsPage() {
 
   const openCreate = () => {
     setEditingAccount(undefined);
+    setAccountKind("qmt");
     form.resetFields();
     form.setFieldsValue({
       mode: "mock",
@@ -93,8 +106,20 @@ export function AccountsPage() {
     setShowForm(true);
   };
 
+  const handleKindChange = (kind: AccountKind) => {
+    setAccountKind(kind);
+    if (kind === "cloud") {
+      // Cloud 账户：预填云网关地址，模式锁定 mock（云网关不代理交易）。
+      form.setFieldsValue({ base_url: CLOUD_BASE_URL, mode: "mock" });
+    } else if (form.getFieldValue("base_url") === CLOUD_BASE_URL) {
+      // 切回自建时清掉预填的云网关地址，避免误连。
+      form.setFieldsValue({ base_url: undefined });
+    }
+  };
+
   const openEdit = (account: Account) => {
     setEditingAccount(account);
+    setAccountKind("qmt");
     form.resetFields();
     form.setFieldsValue({
       name: account.name,
@@ -121,6 +146,16 @@ export function AccountsPage() {
     try {
       values = await form.validateFields();
     } catch {
+      return;
+    }
+
+    // 防呆：dytc_ 前缀是 DoYouTrade Cloud API key，云网关不代理交易
+    // （/trading/* 一律 403），不允许配成 live 实盘账户。
+    if ((values.token?.trim() ?? "").startsWith(CLOUD_TOKEN_PREFIX) && values.mode === "live") {
+      message.error(
+        `Token 是 ${CLOUD_TOKEN_PREFIX} 前缀的 DoYouTrade Cloud API key，Cloud 账户仅提供云端行情，` +
+          "不可用于实盘 live 交易。请把模式改为 mock；实盘需本地部署 qmt-proxy 并单独新建账户。",
+      );
       return;
     }
 
@@ -295,11 +330,37 @@ export function AccountsPage() {
         destroyOnHidden
       >
         <Form<AccountFormValues> layout="vertical" form={form}>
+          {!editingAccount ? (
+            <Form.Item label="账户类型">
+              <Radio.Group
+                value={accountKind}
+                onChange={(e) => handleKindChange(e.target.value as AccountKind)}
+              >
+                <Radio.Button value="qmt">自建 qmt-proxy</Radio.Button>
+                <Radio.Button value="cloud">DoYouTrade Cloud</Radio.Button>
+              </Radio.Group>
+            </Form.Item>
+          ) : null}
+          {isCloud ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="DoYouTrade Cloud：云端行情 + 本地模拟交易"
+              description="模式锁定为 mock。Cloud 账户不可用于实盘交易（云网关不代理交易请求）；实盘需本地部署 qmt-proxy 并单独新建账户。"
+            />
+          ) : null}
           <Form.Item name="name" label="名称" rules={[{ required: true, message: "请输入账户名称" }]}>
-            <Input placeholder="my-mock-account" />
+            <Input placeholder={isCloud ? "DoYouTrade Cloud" : "my-mock-account"} />
           </Form.Item>
-          <Form.Item name="mode" label="模式" rules={[{ required: true, message: "请选择模式" }]}>
+          <Form.Item
+            name="mode"
+            label="模式"
+            rules={[{ required: true, message: "请选择模式" }]}
+            extra={isCloud ? "Cloud 账户仅支持 mock 模式（云端行情 + 本地模拟交易）" : undefined}
+          >
             <Select
+              disabled={isCloud}
               options={[
                 { label: "模拟 mock", value: "mock" },
                 { label: "实盘 live", value: "live" },
@@ -307,21 +368,29 @@ export function AccountsPage() {
             />
           </Form.Item>
           <Form.Item name="base_url" label="Base URL">
-            <Input placeholder="http://127.0.0.1:8000" />
-          </Form.Item>
-          <Form.Item name="token" label="Token">
-            <Input placeholder="留空表示无 token" />
-          </Form.Item>
-          <Form.Item name="qmt_account_id" label="券商交易账号">
-            <Input placeholder="留空表示未绑定" />
+            <Input placeholder={isCloud ? CLOUD_BASE_URL : "http://127.0.0.1:8000"} />
           </Form.Item>
           <Form.Item
-            name="qmt_terminal_id"
-            label="QMT 终端 (X-QMT-Terminal)"
-            extra="多终端 qmt-proxy 部署时填该账户对应的 client_id；留空走代理默认终端"
+            name="token"
+            label={isCloud ? "API Key" : "Token"}
+            extra={isCloud ? "在 DoYouTrade Cloud 控制台创建 API key（dytc_ 前缀）" : undefined}
           >
-            <Input placeholder="留空表示使用默认终端" />
+            <Input placeholder={isCloud ? "dytc_xxxxxxxxxxxx" : "留空表示无 token"} />
           </Form.Item>
+          {!isCloud ? (
+            <>
+              <Form.Item name="qmt_account_id" label="券商交易账号">
+                <Input placeholder="留空表示未绑定" />
+              </Form.Item>
+              <Form.Item
+                name="qmt_terminal_id"
+                label="QMT 终端 (X-QMT-Terminal)"
+                extra="多终端 qmt-proxy 部署时填该账户对应的 client_id；留空走代理默认终端"
+              >
+                <Input placeholder="留空表示使用默认终端" />
+              </Form.Item>
+            </>
+          ) : null}
           <Form.Item name="timeout_seconds" label="超时（秒）">
             <InputNumber min={1} className="w-full" style={{ width: "100%" }} />
           </Form.Item>

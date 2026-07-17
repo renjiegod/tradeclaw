@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from decimal import Decimal
@@ -13,6 +14,7 @@ from qmt_proxy_sdk.exceptions import (
     AuthenticationError,
     ClientError,
     QmtProxyError,
+    RateLimitedError,
     RequestValidationError,
     ServerError,
     TransportError,
@@ -26,6 +28,21 @@ tracer = trace.get_tracer(__name__)
 # debug spans deserialize event payloads in the UI.
 _EVENT_PAYLOAD_JSON = "doyoutrade.event.payload_json"
 _MAX_BODY_CHARS = 32_000
+
+# 429 限流自动重试的缺省参数（云网关 doyoutrade-cloud 分钟限流 / 日配额）。
+DEFAULT_RATE_LIMIT_RETRIES = 3
+DEFAULT_RATE_LIMIT_MAX_WAIT = 120.0
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """把 ``Retry-After`` 头解析为非负秒数；无法解析时返回 ``None``。"""
+    if value is None:
+        return None
+    try:
+        seconds = float(value.strip())
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, seconds)
 
 
 def _json_default(obj: Any) -> Any:
@@ -87,7 +104,13 @@ class AsyncHttpTransport:
         terminal_id: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         client: httpx.AsyncClient | None = None,
+        rate_limit_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
+        rate_limit_max_wait: float = DEFAULT_RATE_LIMIT_MAX_WAIT,
     ) -> None:
+        # 429 限流韧性：最多自动重试 ``rate_limit_retries`` 次；``Retry-After``
+        # 超过 ``rate_limit_max_wait`` 秒时不等待、直接抛 RateLimitedError 让上层决定。
+        self._rate_limit_retries = rate_limit_retries
+        self._rate_limit_max_wait = rate_limit_max_wait
         merged_headers = dict(headers or {})
         if api_key:
             merged_headers.setdefault("Authorization", f"Bearer {api_key}")
@@ -110,6 +133,65 @@ class AsyncHttpTransport:
             self._owns_client = True
 
     async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: Any = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        """发起请求；对 429 限流自动退避重试。
+
+        这些端点均为数据读取（POST 也是幂等查询），统一重试是安全的。
+        重试节奏：优先服务端 ``Retry-After``，缺失时指数退避 1/2/4s；
+        ``Retry-After`` 超过 ``rate_limit_max_wait`` 时不等待、直接抛出。
+        """
+        attempt = 0
+        while True:
+            try:
+                return await self._request_once(
+                    method, path, params=params, json=json, headers=headers
+                )
+            except RateLimitedError as exc:
+                retry_after = exc.retry_after
+                if retry_after is not None and retry_after > self._rate_limit_max_wait:
+                    logger.warning(
+                        "qmt http rate limited, Retry-After=%.0fs exceeds max wait %.0fs, "
+                        "not retrying method=%s path=%s error_code=%s",
+                        retry_after,
+                        self._rate_limit_max_wait,
+                        method.upper(),
+                        path,
+                        exc.error_code,
+                    )
+                    raise
+                if attempt >= self._rate_limit_retries:
+                    logger.warning(
+                        "qmt http rate limited, retries exhausted after %d attempts "
+                        "method=%s path=%s error_code=%s",
+                        attempt,
+                        method.upper(),
+                        path,
+                        exc.error_code,
+                    )
+                    raise
+                attempt += 1
+                delay = retry_after if retry_after is not None else float(2 ** (attempt - 1))
+                logger.warning(
+                    "qmt http rate limited (429), retrying in %.1fs (attempt %d/%d) "
+                    "method=%s path=%s error_code=%s",
+                    delay,
+                    attempt,
+                    self._rate_limit_retries,
+                    method.upper(),
+                    path,
+                    exc.error_code,
+                )
+                logger.debug("qmt http rate limit payload=%r", exc.payload)
+                await asyncio.sleep(delay)
+
+    async def _request_once(
         self,
         method: str,
         path: str,
@@ -187,7 +269,11 @@ class AsyncHttpTransport:
             payload = self._decode_response(response)
 
             if response.is_error:
-                error = self._map_error(response.status_code, payload)
+                error = self._map_error(
+                    response.status_code,
+                    payload,
+                    retry_after=_parse_retry_after(response.headers.get("Retry-After")),
+                )
                 span.record_exception(error)
                 span.set_status(Status(StatusCode.ERROR, str(error)))
                 logger.warning(
@@ -227,7 +313,9 @@ class AsyncHttpTransport:
     def _looks_like_envelope(self, payload: dict[str, Any]) -> bool:
         return "success" in payload and "message" in payload and "code" in payload
 
-    def _map_error(self, status_code: int, payload: Any) -> QmtProxyError:
+    def _map_error(
+        self, status_code: int, payload: Any, *, retry_after: float | None = None
+    ) -> QmtProxyError:
         message = self._extract_message(payload)
         kwargs = {
             "status_code": status_code,
@@ -239,6 +327,13 @@ class AsyncHttpTransport:
             return AuthenticationError(message, **kwargs)
         if status_code == 422:
             return RequestValidationError(message, **kwargs)
+        if status_code == 429:
+            return RateLimitedError(
+                message,
+                retry_after=retry_after,
+                error_code=self._extract_error_code(payload),
+                **kwargs,
+            )
         if 400 <= status_code < 500:
             return ClientError(message, **kwargs)
         return ServerError(message, **kwargs)
@@ -255,6 +350,20 @@ class AsyncHttpTransport:
         if payload:
             return str(payload)
         return "Request failed"
+
+    def _extract_error_code(self, payload: Any) -> str | None:
+        """云网关 429 响应 JSON 的 ``error_code``（如 rate_limited / daily_quota_exceeded）。"""
+        if not isinstance(payload, dict):
+            return None
+        error_code = payload.get("error_code")
+        if isinstance(error_code, str) and error_code:
+            return error_code
+        detail = payload.get("detail")
+        if isinstance(detail, dict):
+            nested = detail.get("error_code")
+            if isinstance(nested, str) and nested:
+                return nested
+        return None
 
     def _extract_code(self, payload: Any) -> int | None:
         if not isinstance(payload, dict):

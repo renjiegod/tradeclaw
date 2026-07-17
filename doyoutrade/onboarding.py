@@ -35,6 +35,13 @@ logger = get_logger(__name__)
 
 DEFAULT_ROUTE_NAME = "default"
 
+# DoYouTrade Cloud —— 官方云行情网关（占位地址，正式上线前替换）。
+# 云网关只代理行情：/trading/* 一律 403，因此 Cloud 账户永远以 mode=mock 落库
+# （云端行情 + 本地模拟交易）；实盘必须本地部署 qmt-proxy 并使用单独账户。
+CLOUD_GATEWAY_DEFAULT_URL = "https://cloud.doyoutrade.com"
+CLOUD_CONSOLE_URL = "https://cloud.doyoutrade.com/console"
+CLOUD_TOKEN_PREFIX = "dytc_"
+
 
 @dataclass(frozen=True)
 class _Preset:
@@ -191,11 +198,12 @@ async def _run(runtime: dict, *, launch_mode: str = "doyoutrade") -> None:
 
 
 async def _maybe_prompt_qmt_proxy(runtime: dict) -> None:
-    """Interactively register a remote qmt-proxy address as the default account.
+    """Interactively register a QMT 级行情数据源 as the default account.
 
-    Skips silently when an account with a ``base_url`` already exists (so it
-    never nags on later runs) or when no account repository is wired. Leaving
-    the answer blank keeps the free data sources — not an error."""
+    Offers two sources: DoYouTrade Cloud（官方云行情网关，无需 Windows/QMT）或
+    自建 / 远程 qmt-proxy。Skips silently when an account with a ``base_url``
+    already exists (so it never nags on later runs) or when no account
+    repository is wired. 选择跳过则继续用免费行情源 — not an error."""
 
     repo = runtime.get("account_repository")
     if repo is None:
@@ -213,7 +221,76 @@ async def _maybe_prompt_qmt_proxy(runtime: dict) -> None:
         return
 
     print(
-        "\n实时行情 / 实盘走 QMT，需要一台已登录 miniQMT 的 Windows 机器运行 qmt-proxy。\n"
+        "\nQMT 级实时行情有两种接入方式（现在跳过也没关系，先用免费行情源）：",
+        flush=True,
+    )
+    choice = select_index(
+        "请选择行情数据接入方式（↑↓ 选择，Enter 确认；无方向键时输入编号）",
+        [
+            f"使用 DoYouTrade Cloud（云行情，无需 Windows/QMT，去 {CLOUD_CONSOLE_URL} 获取 API key）",
+            "自建 / 远程 qmt-proxy（需一台已登录 miniQMT 的 Windows 机器）",
+        ],
+        allow_skip=True,
+        skip_label="跳过（先用免费行情源）",
+        default=0,
+    )
+    if choice is None:
+        print(
+            "已跳过数据源配置。稍后可用 `doyoutrade-cli account create --base-url ...` 登记。",
+            flush=True,
+        )
+        return
+    if choice == 0:
+        await _register_cloud_account(repo)
+    else:
+        await _register_remote_proxy_account(repo)
+
+
+async def _register_cloud_account(repo) -> None:
+    """Register a DoYouTrade Cloud gateway account as the mock-mode default."""
+
+    print(
+        "\nDoYouTrade Cloud 提供 QMT 级行情；交易不经云端（云网关对 /trading/* 一律 403）。\n"
+        f"请先在控制台 {CLOUD_CONSOLE_URL} 创建 API key（{CLOUD_TOKEN_PREFIX} 前缀）。",
+        flush=True,
+    )
+    base_url = _ask("云网关地址", default=CLOUD_GATEWAY_DEFAULT_URL).strip() or CLOUD_GATEWAY_DEFAULT_URL
+    if not (base_url.startswith("http://") or base_url.startswith("https://")):
+        base_url = "https://" + base_url
+    token = _ask(f"DoYouTrade Cloud API key（{CLOUD_TOKEN_PREFIX} 前缀）", default="").strip() or None
+    if token is None or not token.startswith(CLOUD_TOKEN_PREFIX):
+        # 前缀不符只警告不阻断：key 体系可能演进，且网页 Accounts 页随时可改。
+        print(
+            f"警告：输入的 API key 不是 {CLOUD_TOKEN_PREFIX} 前缀"
+            f"（{'为空' if token is None else '与控制台签发格式不符'}），云网关可能拒绝鉴权。\n"
+            "仍继续登记，稍后可在网页 Accounts 页修改 token。",
+            flush=True,
+        )
+    await repo.upsert_account(
+        {
+            "name": "DoYouTrade Cloud",
+            "mode": "mock",
+            "base_url": base_url,
+            "token": token,
+            "is_default": True,
+            "enabled": True,
+        }
+    )
+    logger.info("setup: registered DoYouTrade Cloud default account -> %s", base_url)
+    print(
+        f"已登记默认账户，行情将连接 {base_url}（mode=mock：云端行情 + 本地模拟交易）。\n"
+        "注意：Cloud 账户不可用于实盘交易；要走真实下单，请本地部署 qmt-proxy 并另建 live 账户。",
+        flush=True,
+    )
+
+
+async def _register_remote_proxy_account(repo) -> None:
+    """Register a self-hosted / remote qmt-proxy address as the default account.
+
+    Leaving the address blank keeps the free data sources — not an error."""
+
+    print(
+        "\n自建方式需要一台已登录 miniQMT 的 Windows 机器运行 qmt-proxy。\n"
         "在那台 Windows 上跑 `doyoutrade`（默认已内置 qmt-proxy），记下它的地址即可。\n"
         "现在没有也没关系——直接回车跳过，先用免费行情源。",
         flush=True,

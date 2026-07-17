@@ -5,7 +5,7 @@ import logging
 import math
 import time as monotonic_time
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Sequence
 
 from opentelemetry import trace as trace_api
 
@@ -18,6 +18,9 @@ from doyoutrade.data.bar_timestamp import normalize_bar_timestamp
 from doyoutrade.data.constants import DEFAULT_BAR_ADJUST
 from doyoutrade.data.instrumentation import data_span
 from doyoutrade.debug import emit_debug_event
+
+if TYPE_CHECKING:
+    from doyoutrade.data.cloud_profile import CloudProfile
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +137,7 @@ class MarketDataSyncService:
         watchlist_repository: Any | None = None,
         sync_full_market: bool = False,
         today_fn: Callable[[], date] | None = None,
+        cloud_profile_provider: Callable[[], Awaitable["CloudProfile | None"]] | None = None,
     ) -> None:
         if concurrency <= 0:
             raise ValueError("market data sync concurrency must be > 0")
@@ -157,6 +161,14 @@ class MarketDataSyncService:
         self.concurrency = concurrency
         self.rate_limit_per_second = float(rate_limit_per_second)
         self.today_fn = today_fn or date.today
+        # Optional async ``() -> CloudProfile | None`` resolver (see
+        # doyoutrade/data/cloud_profile.py). When the default account points
+        # at doyoutrade-cloud, each run clamps lookback/rate to
+        # ``min(configured, recommended)``; ``None`` / probe failure keeps
+        # the configured (classic) values untouched.
+        self._cloud_profile_provider = cloud_profile_provider
+        self._effective_lookback_years = lookback_years
+        self._effective_rate_limit_per_second = float(rate_limit_per_second)
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._rate_limit_lock = asyncio.Lock()
@@ -204,6 +216,7 @@ class MarketDataSyncService:
                 continue
 
     async def run_once(self) -> dict[str, int]:
+        await self._apply_cloud_presets()
         symbols = await self._list_symbols()
         jobs = [
             (symbol, interval, listed_from)
@@ -251,6 +264,72 @@ class MarketDataSyncService:
             await self._close_provider(provider)
             await emit_debug_event("market_data.sync.finished", dict(result))
         return result
+
+    async def _apply_cloud_presets(self) -> None:
+        """Clamp this run's lookback/rate to the cloud plan recommendations.
+
+        Cloud mode (default account pointed at doyoutrade-cloud) converges the
+        sync workload conservatively: each limit becomes
+        ``min(configured, recommended)`` — never an unconditional override of
+        the user's config. Classic mode (provider absent, probe returned
+        ``None``, or probe raised) keeps the configured values bit-for-bit, so
+        a failed probe cannot change existing behaviour.
+        """
+        self._effective_lookback_years = self.lookback_years
+        self._effective_rate_limit_per_second = self.rate_limit_per_second
+        if self._cloud_profile_provider is None:
+            return
+        try:
+            profile = await self._cloud_profile_provider()
+        except Exception as exc:  # noqa: BLE001 — probe must not break the sync
+            logger.warning(
+                "market data sync cloud profile probe failed error_type=%s error=%s; "
+                "keeping configured lookback_years=%s rate_limit_per_second=%s",
+                type(exc).__name__,
+                exc,
+                self.lookback_years,
+                self.rate_limit_per_second,
+            )
+            return
+        if profile is None:
+            return
+        rec = profile.recommendations
+        rec_lookback = rec.sync_lookback_years
+        if rec_lookback is not None and rec_lookback > 0:
+            self._effective_lookback_years = min(self.lookback_years, int(rec_lookback))
+        rec_rate = rec.provider_rate_limit_per_second
+        if rec_rate is not None and math.isfinite(float(rec_rate)) and float(rec_rate) > 0:
+            self._effective_rate_limit_per_second = min(
+                self.rate_limit_per_second, float(rec_rate)
+            )
+        logger.info(
+            "market data sync cloud mode active plan=%s "
+            "lookback_years=%s (configured=%s recommended=%s) "
+            "rate_limit_per_second=%s (configured=%s recommended=%s)",
+            profile.plan.plan_name,
+            self._effective_lookback_years,
+            self.lookback_years,
+            rec_lookback,
+            self._effective_rate_limit_per_second,
+            self.rate_limit_per_second,
+            rec_rate,
+        )
+        await emit_debug_event(
+            "market_data.sync.cloud_preset_applied",
+            {
+                "plan_name": profile.plan.plan_name,
+                "configured_lookback_years": self.lookback_years,
+                "recommended_sync_lookback_years": rec_lookback,
+                "effective_lookback_years": self._effective_lookback_years,
+                "configured_rate_limit_per_second": self.rate_limit_per_second,
+                "recommended_provider_rate_limit_per_second": rec_rate,
+                "effective_rate_limit_per_second": self._effective_rate_limit_per_second,
+                "hint": (
+                    "default account points at doyoutrade-cloud; sync limits are "
+                    "clamped to min(configured, plan recommendation) for this run"
+                ),
+            },
+        )
 
     async def _list_symbols(self) -> list[tuple[str, date | None]]:
         # Determine the sync scope. With a watchlist repository injected, the
@@ -373,7 +452,7 @@ class MarketDataSyncService:
         listed_from: date | None = None,
     ) -> str:
         today = self.today_fn()
-        start_day = _subtract_years(today, self.lookback_years)
+        start_day = _subtract_years(today, self._effective_lookback_years)
         if listed_from is not None and listed_from > start_day:
             start_day = listed_from
         target_start = _utc_day_start(start_day)
@@ -1048,7 +1127,7 @@ class MarketDataSyncService:
             )
 
     async def _throttle(self) -> None:
-        min_interval = 1.0 / self.rate_limit_per_second
+        min_interval = 1.0 / self._effective_rate_limit_per_second
         async with self._rate_limit_lock:
             now = monotonic_time.monotonic()
             wait = self._last_fetch_at + min_interval - now
