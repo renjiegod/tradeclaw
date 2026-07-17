@@ -1,4 +1,10 @@
-import { DeleteOutlined, PlusOutlined, ReloadOutlined, SettingOutlined } from "@ant-design/icons";
+import {
+  DeleteOutlined,
+  PlusOutlined,
+  QuestionCircleOutlined,
+  ReloadOutlined,
+  SettingOutlined,
+} from "@ant-design/icons";
 import {
   Alert,
   Button,
@@ -13,6 +19,7 @@ import {
   Switch,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
@@ -131,10 +138,23 @@ function errorText(e: unknown): string {
 // Small presentational bits
 // --------------------------------------------------------------------------
 
-function FieldLabel({ text, restart }: { text: string; restart?: boolean }) {
+function FieldLabel({
+  text,
+  restart,
+  help,
+}: {
+  text: string;
+  restart?: boolean;
+  help?: string;
+}) {
   return (
     <span className="inline-flex items-center gap-1.5">
       {text}
+      {help ? (
+        <Tooltip title={help}>
+          <QuestionCircleOutlined className="text-shell-muted" />
+        </Tooltip>
+      ) : null}
       {restart ? (
         <Tag color="orange" className="!m-0 !text-[11px] !leading-4">
           需重启
@@ -564,15 +584,39 @@ function SystemConfigTab() {
               ),
               children: (
                 <>
-          <Form.Item name={["server", "host"]} label={<FieldLabel text="host" restart={isRestart("server.host")} />}>
+          <Form.Item
+            name={["server", "host"]}
+            label={
+              <FieldLabel
+                text="host"
+                restart={isRestart("server.host")}
+                help="API 服务监听的网卡地址；0.0.0.0 表示监听所有网卡，仅本机访问可填 127.0.0.1"
+              />
+            }
+          >
             <Input data-testid="cfg-server-host" placeholder="0.0.0.0" />
           </Form.Item>
-          <Form.Item name={["server", "port"]} label={<FieldLabel text="port" restart={isRestart("server.port")} />}>
+          <Form.Item
+            name={["server", "port"]}
+            label={
+              <FieldLabel
+                text="port"
+                restart={isRestart("server.port")}
+                help="API 服务监听端口"
+              />
+            }
+          >
             <InputNumber className="w-full" min={1} max={65535} />
           </Form.Item>
           <Form.Item
             name={["server", "tick_seconds"]}
-            label={<FieldLabel text="tick_seconds" restart={isRestart("server.tick_seconds")} />}
+            label={
+              <FieldLabel
+                text="tick_seconds"
+                restart={isRestart("server.tick_seconds")}
+                help="worker 主循环轮询间隔（秒）；越小响应越快但空转开销越高"
+              />
+            }
           >
             <InputNumber className="w-full" min={0} step={0.5} />
           </Form.Item>
@@ -592,13 +636,25 @@ function SystemConfigTab() {
                 <>
           <Form.Item
             name={["data", "default_provider"]}
-            label={<FieldLabel text="default_provider" restart={isRestart("data.default_provider")} />}
+            label={
+              <FieldLabel
+                text="default_provider"
+                restart={isRestart("data.default_provider")}
+                help="实时/历史取数的默认数据源；auto 会按可用性自动选择，也可指定 qmt / tushare / akshare 等固定源"
+              />
+            }
           >
             <Input placeholder="auto / qmt / tushare / akshare …" />
           </Form.Item>
           <Form.Item
             name={["data", "tushare", "token"]}
-            label={<FieldLabel text="tushare.token" restart={isRestart("data.tushare.token")} />}
+            label={
+              <FieldLabel
+                text="tushare.token"
+                restart={isRestart("data.tushare.token")}
+                help="TuShare Pro 接口 token，使用 TuShare 作为数据源时必填；已配置则脱敏显示，留空不改动"
+              />
+            }
           >
             {secretInput("data.tushare.token", data?.values.data.tushare.token_set ?? false)}
           </Form.Item>
@@ -608,6 +664,7 @@ function SystemConfigTab() {
               <FieldLabel
                 text="tushare.timeout_seconds"
                 restart={isRestart("data.tushare.timeout_seconds")}
+                help="调用 TuShare 接口的超时时间（秒），超时会触发失败重试或切换数据源"
               />
             }
           >
@@ -629,38 +686,74 @@ function SystemConfigTab() {
                 <>
           <Form.Item
             name={["market_data", "database_url"]}
-            label={<FieldLabel text="database_url" restart={isRestart("market_data.database_url")} />}
+            label={
+              <FieldLabel
+                text="database_url"
+                restart={isRestart("market_data.database_url")}
+                help="行情缓存库连接串，独立于主库；本地默认用 SQLite 文件，多进程/大数据量可换 PostgreSQL"
+              />
+            }
           >
             <Input placeholder="sqlite:///… / postgresql://…" />
           </Form.Item>
           <Form.Item
             name={["market_data", "enabled_intervals"]}
-            label={<FieldLabel text="enabled_intervals" restart={isRestart("market_data.enabled_intervals")} />}
+            label={
+              <FieldLabel
+                text="enabled_intervals"
+                restart={isRestart("market_data.enabled_intervals")}
+                help="需要同步与缓存的 K 线周期列表（如 1d、5m）；未启用的周期策略无法读取"
+              />
+            }
           >
             <Select mode="tags" options={INTERVAL_OPTIONS} placeholder="1d, 5m …" />
           </Form.Item>
           <Form.Item
             name={["market_data", "lookback_years"]}
-            label={<FieldLabel text="lookback_years" restart={isRestart("market_data.lookback_years")} />}
+            label={
+              <FieldLabel
+                text="lookback_years"
+                restart={isRestart("market_data.lookback_years")}
+                help="首次同步/回测拉取历史行情回看的年数，越大初次同步耗时越长"
+              />
+            }
           >
             <InputNumber className="w-full" min={0} />
           </Form.Item>
           <Form.Item
             name={["market_data", "default_provider"]}
-            label={<FieldLabel text="default_provider" restart={isRestart("market_data.default_provider")} />}
+            label={
+              <FieldLabel
+                text="default_provider"
+                restart={isRestart("market_data.default_provider")}
+                help="行情同步任务使用的默认数据源；auto 自动选择，也可固定为 qmt / tushare 等"
+              />
+            }
           >
             <Input placeholder="auto / qmt / tushare …" />
           </Form.Item>
           <Form.Item
             name={["market_data", "sync_on_startup"]}
-            label={<FieldLabel text="sync_on_startup" restart={isRestart("market_data.sync_on_startup")} />}
+            label={
+              <FieldLabel
+                text="sync_on_startup"
+                restart={isRestart("market_data.sync_on_startup")}
+                help="进程启动时是否自动触发一次行情同步"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
           </Form.Item>
           <Form.Item
             name={["market_data", "sync_concurrency"]}
-            label={<FieldLabel text="sync_concurrency" restart={isRestart("market_data.sync_concurrency")} />}
+            label={
+              <FieldLabel
+                text="sync_concurrency"
+                restart={isRestart("market_data.sync_concurrency")}
+                help="行情同步的并发任务数；调大提速但可能触发数据源限流"
+              />
+            }
           >
             <InputNumber className="w-full" min={1} />
           </Form.Item>
@@ -670,6 +763,7 @@ function SystemConfigTab() {
               <FieldLabel
                 text="provider_rate_limit_per_second"
                 restart={isRestart("market_data.provider_rate_limit_per_second")}
+                help="对数据源发起请求的每秒限速，避免触发数据源的调用频率限制"
               />
             }
           >
@@ -677,7 +771,13 @@ function SystemConfigTab() {
           </Form.Item>
           <Form.Item
             name={["market_data", "sync_full_market"]}
-            label={<FieldLabel text="sync_full_market" restart={isRestart("market_data.sync_full_market")} />}
+            label={
+              <FieldLabel
+                text="sync_full_market"
+                restart={isRestart("market_data.sync_full_market")}
+                help="开启后同步全市场标的，而非仅同步当前已订阅/持仓涉及的标的"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
@@ -698,26 +798,50 @@ function SystemConfigTab() {
                 <>
           <Form.Item
             name={["observability", "service_name"]}
-            label={<FieldLabel text="service_name" restart={isRestart("observability.service_name")} />}
+            label={
+              <FieldLabel
+                text="service_name"
+                restart={isRestart("observability.service_name")}
+                help="上报给 OpenTelemetry 的服务名，用于在追踪后端区分不同实例/环境"
+              />
+            }
           >
             <Input />
           </Form.Item>
           <Form.Item
             name={["observability", "log_level"]}
-            label={<FieldLabel text="log_level" restart={isRestart("observability.log_level")} />}
+            label={
+              <FieldLabel
+                text="log_level"
+                restart={isRestart("observability.log_level")}
+                help="全局日志输出级别；DEBUG 最详细，排查问题临时调低，日常建议 INFO"
+              />
+            }
           >
             <Select options={LOG_LEVEL_OPTIONS} />
           </Form.Item>
           <Form.Item
             name={["observability", "console_enabled"]}
-            label={<FieldLabel text="console_enabled" restart={isRestart("observability.console_enabled")} />}
+            label={
+              <FieldLabel
+                text="console_enabled"
+                restart={isRestart("observability.console_enabled")}
+                help="是否把日志同时输出到控制台（stdout），关闭后只写入日志文件"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
           </Form.Item>
           <Form.Item
             name={["observability", "tracing_enabled"]}
-            label={<FieldLabel text="tracing_enabled" restart={isRestart("observability.tracing_enabled")} />}
+            label={
+              <FieldLabel
+                text="tracing_enabled"
+                restart={isRestart("observability.tracing_enabled")}
+                help="是否开启 OTel 分布式追踪（span 导出）；关闭后调试页看不到 trace/span 详情"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
@@ -735,7 +859,13 @@ function SystemConfigTab() {
                 <>
           <Form.Item
             name={["review", "symbol_scope_mode"]}
-            label={<FieldLabel text="symbol_scope_mode" restart={isRestart("review.symbol_scope_mode")} />}
+            label={
+              <FieldLabel
+                text="symbol_scope_mode"
+                restart={isRestart("review.symbol_scope_mode")}
+                help="复盘功能统计标的范围的模式，一般保持默认即可"
+              />
+            }
           >
             <Input placeholder="default …" />
           </Form.Item>
@@ -755,26 +885,50 @@ function SystemConfigTab() {
                 <>
           <Form.Item
             name={["retention", "enabled"]}
-            label={<FieldLabel text="enabled" restart={isRestart("retention.enabled")} />}
+            label={
+              <FieldLabel
+                text="enabled"
+                restart={isRestart("retention.enabled")}
+                help="是否开启可观测性数据（span/调试事件等）的定时自动清理"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
           </Form.Item>
           <Form.Item
             name={["retention", "observability_ttl_days"]}
-            label={<FieldLabel text="observability_ttl_days" restart={isRestart("retention.observability_ttl_days")} />}
+            label={
+              <FieldLabel
+                text="observability_ttl_days"
+                restart={isRestart("retention.observability_ttl_days")}
+                help="可观测性数据（trace/span/调试会话等）保留天数，超期数据会被清理任务删除"
+              />
+            }
           >
             <InputNumber className="w-full" min={0} />
           </Form.Item>
           <Form.Item
             name={["retention", "prune_interval_hours"]}
-            label={<FieldLabel text="prune_interval_hours" restart={isRestart("retention.prune_interval_hours")} />}
+            label={
+              <FieldLabel
+                text="prune_interval_hours"
+                restart={isRestart("retention.prune_interval_hours")}
+                help="清理任务的运行间隔（小时）"
+              />
+            }
           >
             <InputNumber className="w-full" min={0} />
           </Form.Item>
           <Form.Item
             name={["retention", "prune_on_startup"]}
-            label={<FieldLabel text="prune_on_startup" restart={isRestart("retention.prune_on_startup")} />}
+            label={
+              <FieldLabel
+                text="prune_on_startup"
+                restart={isRestart("retention.prune_on_startup")}
+                help="进程启动时是否立即执行一次清理，而不是等到下一个间隔"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
@@ -792,7 +946,13 @@ function SystemConfigTab() {
                 <>
           <Form.Item
             name={["assistant", "tool_result_max_chars"]}
-            label={<FieldLabel text="tool_result_max_chars" restart={isRestart("assistant.tool_result_max_chars")} />}
+            label={
+              <FieldLabel
+                text="tool_result_max_chars"
+                restart={isRestart("assistant.tool_result_max_chars")}
+                help="assistant 工具调用返回结果注入对话上下文前的最大字符数，超出会被截断，避免撑爆上下文"
+              />
+            }
           >
             <InputNumber className="w-full" min={0} />
           </Form.Item>
@@ -816,7 +976,13 @@ function SystemConfigTab() {
           </Typography.Text>
           <Form.Item
             name={["auto_update", "enabled"]}
-            label={<FieldLabel text="enabled（自动检查更新）" restart={isRestart("auto_update.enabled")} />}
+            label={
+              <FieldLabel
+                text="enabled（自动检查更新）"
+                restart={isRestart("auto_update.enabled")}
+                help="是否后台按间隔自动检查 GitHub Release 新版本；发现新版本仅提示，需手动点击「立即更新」才会安装重启"
+              />
+            }
             valuePropName="checked"
           >
             <Switch data-testid="cfg-auto-update-enabled" />
@@ -827,6 +993,7 @@ function SystemConfigTab() {
               <FieldLabel
                 text="check_interval_hours"
                 restart={isRestart("auto_update.check_interval_hours")}
+                help="检查新版本的时间间隔（小时）"
               />
             }
           >
@@ -834,7 +1001,13 @@ function SystemConfigTab() {
           </Form.Item>
           <Form.Item
             name={["auto_update", "repo"]}
-            label={<FieldLabel text="repo" restart={isRestart("auto_update.repo")} />}
+            label={
+              <FieldLabel
+                text="repo"
+                restart={isRestart("auto_update.repo")}
+                help="检查更新所用的 GitHub 仓库，格式 owner/name"
+              />
+            }
           >
             <Input placeholder="owner/name（GitHub 仓库）" />
           </Form.Item>
@@ -856,20 +1029,38 @@ function SystemConfigTab() {
                 <>
           <Form.Item
             name={["database", "url"]}
-            label={<FieldLabel text="url" restart={isRestart("database.url")} />}
+            label={
+              <FieldLabel
+                text="url"
+                restart={isRestart("database.url")}
+                help="主库（存账户/任务/策略/cycle 等业务数据）连接串，默认 SQLite 文件，多实例部署建议换 PostgreSQL"
+              />
+            }
           >
             <Input placeholder="sqlite:///… / postgresql://…" />
           </Form.Item>
           <Form.Item
             name={["database", "echo"]}
-            label={<FieldLabel text="echo" restart={isRestart("database.echo")} />}
+            label={
+              <FieldLabel
+                text="echo"
+                restart={isRestart("database.echo")}
+                help="是否打印 SQLAlchemy 执行的 SQL 语句到日志，仅调试用，生产环境建议关闭"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
           </Form.Item>
           <Form.Item
             name={["database", "pool_pre_ping"]}
-            label={<FieldLabel text="pool_pre_ping" restart={isRestart("database.pool_pre_ping")} />}
+            label={
+              <FieldLabel
+                text="pool_pre_ping"
+                restart={isRestart("database.pool_pre_ping")}
+                help="从连接池取连接前先探活，避免使用已失效的数据库连接（如长时间空闲后断开）"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
@@ -893,32 +1084,62 @@ function SystemConfigTab() {
           </Typography.Text>
           <Form.Item
             name={["qmt_proxy", "host"]}
-            label={<FieldLabel text="host" restart={isRestart("qmt_proxy.host")} />}
+            label={
+              <FieldLabel
+                text="host"
+                restart={isRestart("qmt_proxy.host")}
+                help="内嵌启动 qmt-proxy 时监听的网卡地址，仅内嵌（both）模式下生效"
+              />
+            }
           >
             <Input placeholder="127.0.0.1" />
           </Form.Item>
           <Form.Item
             name={["qmt_proxy", "port"]}
-            label={<FieldLabel text="port" restart={isRestart("qmt_proxy.port")} />}
+            label={
+              <FieldLabel
+                text="port"
+                restart={isRestart("qmt_proxy.port")}
+                help="内嵌启动 qmt-proxy 时监听的端口，仅内嵌（both）模式下生效"
+              />
+            }
           >
             <InputNumber className="w-full" min={1} max={65535} />
           </Form.Item>
           <Form.Item
             name={["qmt_proxy", "mode"]}
-            label={<FieldLabel text="mode" restart={isRestart("qmt_proxy.mode")} />}
+            label={
+              <FieldLabel
+                text="mode"
+                restart={isRestart("qmt_proxy.mode")}
+                help="内嵌 qmt-proxy 的 xtquant 运行模式：mock 无需真实终端、dev/prod 需连接真实 QMT 客户端"
+              />
+            }
           >
             <Select options={XTQUANT_MODE_OPTIONS} />
           </Form.Item>
           <Form.Item
             name={["qmt_proxy", "grpc_enabled"]}
-            label={<FieldLabel text="grpc_enabled" restart={isRestart("qmt_proxy.grpc_enabled")} />}
+            label={
+              <FieldLabel
+                text="grpc_enabled"
+                restart={isRestart("qmt_proxy.grpc_enabled")}
+                help="内嵌 qmt-proxy 是否同时开启 gRPC 服务端口"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
           </Form.Item>
           <Form.Item
             name={["qmt_proxy", "local_token"]}
-            label={<FieldLabel text="local_token" restart={isRestart("qmt_proxy.local_token")} />}
+            label={
+              <FieldLabel
+                text="local_token"
+                restart={isRestart("qmt_proxy.local_token")}
+                help="doyoutrade 访问内嵌 qmt-proxy 使用的鉴权 token；已配置则脱敏显示，留空不改动"
+              />
+            }
           >
             {secretInput("qmt_proxy.local_token", data?.values.qmt_proxy.local_token_set ?? false)}
           </Form.Item>
@@ -938,38 +1159,74 @@ function SystemConfigTab() {
                 <>
           <Form.Item
             name={["feishu", "enabled"]}
-            label={<FieldLabel text="enabled" restart={isRestart("feishu.enabled")} />}
+            label={
+              <FieldLabel
+                text="enabled"
+                restart={isRestart("feishu.enabled")}
+                help="是否启用默认飞书渠道，用于通知推送与飞书机器人事件回调"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
           </Form.Item>
           <Form.Item
             name={["feishu", "app_id"]}
-            label={<FieldLabel text="app_id" restart={isRestart("feishu.app_id")} />}
+            label={
+              <FieldLabel
+                text="app_id"
+                restart={isRestart("feishu.app_id")}
+                help="飞书自建应用的 App ID（cli_ 开头），在飞书开放平台应用详情页获取"
+              />
+            }
           >
             <Input placeholder="cli_…" />
           </Form.Item>
           <Form.Item
             name={["feishu", "app_secret"]}
-            label={<FieldLabel text="app_secret" restart={isRestart("feishu.app_secret")} />}
+            label={
+              <FieldLabel
+                text="app_secret"
+                restart={isRestart("feishu.app_secret")}
+                help="飞书自建应用的 App Secret；已配置则脱敏显示，留空不改动"
+              />
+            }
           >
             {secretInput("feishu.app_secret", data?.values.feishu.app_secret_set ?? false)}
           </Form.Item>
           <Form.Item
             name={["feishu", "encrypt_key"]}
-            label={<FieldLabel text="encrypt_key" restart={isRestart("feishu.encrypt_key")} />}
+            label={
+              <FieldLabel
+                text="encrypt_key"
+                restart={isRestart("feishu.encrypt_key")}
+                help="飞书事件订阅的 Encrypt Key，用于解密回调事件；未开启加密可留空"
+              />
+            }
           >
             {secretInput("feishu.encrypt_key", data?.values.feishu.encrypt_key_set ?? false)}
           </Form.Item>
           <Form.Item
             name={["feishu", "verification_token"]}
-            label={<FieldLabel text="verification_token" restart={isRestart("feishu.verification_token")} />}
+            label={
+              <FieldLabel
+                text="verification_token"
+                restart={isRestart("feishu.verification_token")}
+                help="飞书事件订阅的 Verification Token，用于校验回调请求确实来自飞书"
+              />
+            }
           >
             {secretInput("feishu.verification_token", data?.values.feishu.verification_token_set ?? false)}
           </Form.Item>
           <Form.Item
             name={["feishu", "domain"]}
-            label={<FieldLabel text="domain" restart={isRestart("feishu.domain")} />}
+            label={
+              <FieldLabel
+                text="domain"
+                restart={isRestart("feishu.domain")}
+                help="飞书 API 域名：国内版选 feishu，国际版（Lark）选 lark"
+              />
+            }
           >
             <Select options={FEISHU_DOMAIN_OPTIONS} />
           </Form.Item>
@@ -1187,26 +1444,48 @@ function QmtProxyConfigTab({ active }: { active: boolean }) {
                 <>
           <Form.Item
             name={["xtquant", "mode"]}
-            label={<FieldLabel text="mode" restart={isRestart("xtquant.mode")} />}
+            label={
+              <FieldLabel
+                text="mode"
+                restart={isRestart("xtquant.mode")}
+                help="全局默认运行模式：mock 用模拟数据无需真实终端、dev/prod 需连接真实 QMT 客户端下单/取数"
+              />
+            }
           >
             <Select options={XTQUANT_MODE_OPTIONS} />
           </Form.Item>
           <Form.Item
             name={["xtquant", "data", "qmt_userdata_path"]}
-            label={<FieldLabel text="qmt_userdata_path" restart={isRestart("xtquant.data.qmt_userdata_path")} />}
+            label={
+              <FieldLabel
+                text="qmt_userdata_path"
+                restart={isRestart("xtquant.data.qmt_userdata_path")}
+                help="QMT 客户端 userdata_mini 目录路径，留空使用 QMT 默认安装路径"
+              />
+            }
           >
             <Input placeholder="QMT userdata_mini 路径（留空使用默认）" allowClear />
           </Form.Item>
           <Form.Item
             name={["xtquant", "trading", "allow_real_trading"]}
-            label={<FieldLabel text="allow_real_trading" restart={isRestart("xtquant.trading.allow_real_trading")} />}
+            label={
+              <FieldLabel
+                text="allow_real_trading"
+                restart={isRestart("xtquant.trading.allow_real_trading")}
+                help="全局是否允许真实下单；关闭时下单请求会被拒绝，仅用于取数或模拟"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
           </Form.Item>
 
           <Divider className="!my-2" orientation="left" plain>
-            <FieldLabel text="clients（多终端）" restart={isRestart("xtquant.clients")} />
+            <FieldLabel
+              text="clients（多终端）"
+              restart={isRestart("xtquant.clients")}
+              help="多个 QMT 客户端终端的配置列表，每个终端可独立设置路径/模式/是否允许真实交易/是否作为数据源"
+            />
           </Divider>
           <Form.List name={["xtquant", "clients"]}>
             {(fields, { add, remove }) => (
@@ -1231,25 +1510,47 @@ function QmtProxyConfigTab({ active }: { active: boolean }) {
                     <Form.Item
                       {...rest}
                       name={[name, "client_id"]}
-                      label="client_id"
+                      label={<FieldLabel text="client_id" help="终端唯一标识，供 default_client_id / data_source_client_id 引用" />}
                       rules={[{ required: true, message: "必填" }]}
                     >
                       <Input placeholder="终端唯一标识" />
                     </Form.Item>
-                    <Form.Item {...rest} name={[name, "name"]} label="name">
+                    <Form.Item
+                      {...rest}
+                      name={[name, "name"]}
+                      label={<FieldLabel text="name" help="终端显示名，仅用于界面展示，可选" />}
+                    >
                       <Input placeholder="显示名（可选）" />
                     </Form.Item>
-                    <Form.Item {...rest} name={[name, "qmt_userdata_path"]} label="qmt_userdata_path">
+                    <Form.Item
+                      {...rest}
+                      name={[name, "qmt_userdata_path"]}
+                      label={<FieldLabel text="qmt_userdata_path" help="该终端专用的 userdata_mini 路径，留空继承全局 xtquant.data.qmt_userdata_path" />}
+                    >
                       <Input placeholder="该终端的 userdata 路径（可选）" allowClear />
                     </Form.Item>
-                    <Form.Item {...rest} name={[name, "mode"]} label="mode">
+                    <Form.Item
+                      {...rest}
+                      name={[name, "mode"]}
+                      label={<FieldLabel text="mode" help="该终端专用的运行模式，留空继承全局 xtquant.mode" />}
+                    >
                       <Select options={XTQUANT_MODE_OPTIONS} allowClear placeholder="继承全局" />
                     </Form.Item>
                     <Space size="large">
-                      <Form.Item {...rest} name={[name, "allow_real_trading"]} label="allow_real_trading" valuePropName="checked">
+                      <Form.Item
+                        {...rest}
+                        name={[name, "allow_real_trading"]}
+                        label={<FieldLabel text="allow_real_trading" help="该终端是否允许真实下单" />}
+                        valuePropName="checked"
+                      >
                         <Switch />
                       </Form.Item>
-                      <Form.Item {...rest} name={[name, "is_data_source"]} label="is_data_source" valuePropName="checked">
+                      <Form.Item
+                        {...rest}
+                        name={[name, "is_data_source"]}
+                        label={<FieldLabel text="is_data_source" help="该终端是否可作为取数终端（供 data_source_client_id 选用）" />}
+                        valuePropName="checked"
+                      >
                         <Switch />
                       </Form.Item>
                     </Space>
@@ -1270,13 +1571,25 @@ function QmtProxyConfigTab({ active }: { active: boolean }) {
           <Form.Item
             className="mt-3"
             name={["xtquant", "default_client_id"]}
-            label={<FieldLabel text="default_client_id" restart={isRestart("xtquant.default_client_id")} />}
+            label={
+              <FieldLabel
+                text="default_client_id"
+                restart={isRestart("xtquant.default_client_id")}
+                help="未指定终端时默认使用的终端 client_id；留空则用全局 xtquant 配置"
+              />
+            }
           >
             <Select options={clientOptions} allowClear placeholder="选择一个终端作为默认" />
           </Form.Item>
           <Form.Item
             name={["xtquant", "data_source_client_id"]}
-            label={<FieldLabel text="data_source_client_id" restart={isRestart("xtquant.data_source_client_id")} />}
+            label={
+              <FieldLabel
+                text="data_source_client_id"
+                restart={isRestart("xtquant.data_source_client_id")}
+                help="用于取数（行情拉取）的终端 client_id；留空则用默认终端"
+              />
+            }
           >
             <Select options={clientOptions} allowClear placeholder="选择取数终端" />
           </Form.Item>
@@ -1294,7 +1607,15 @@ function QmtProxyConfigTab({ active }: { active: boolean }) {
               ),
               children: (
                 <>
-          <Form.Item label={<FieldLabel text="api_keys" restart={isRestart("security.api_keys")} />}>
+          <Form.Item
+            label={
+              <FieldLabel
+                text="api_keys"
+                restart={isRestart("security.api_keys")}
+                help="访问 qmt-proxy HTTP/gRPC 接口所需的 Bearer API Key 列表，可配置多个；已配置则脱敏显示，需重新填写才会覆盖"
+              />
+            }
+          >
             {editingApiKeys ? (
               <div className="space-y-1">
                 <Form.Item name={["security", "api_keys"]} noStyle>
@@ -1340,7 +1661,13 @@ function QmtProxyConfigTab({ active }: { active: boolean }) {
                 <>
           <Form.Item
             name={["logging", "level"]}
-            label={<FieldLabel text="level" restart={isRestart("logging.level")} />}
+            label={
+              <FieldLabel
+                text="level"
+                restart={isRestart("logging.level")}
+                help="qmt-proxy 日志输出级别；排查问题临时调低，日常建议 INFO"
+              />
+            }
           >
             <Select options={LOG_LEVEL_OPTIONS} />
           </Form.Item>
@@ -1357,15 +1684,39 @@ function QmtProxyConfigTab({ active }: { active: boolean }) {
                 <>
           <Form.Item
             name={["grpc", "enabled"]}
-            label={<FieldLabel text="enabled" restart={isRestart("grpc.enabled")} />}
+            label={
+              <FieldLabel
+                text="enabled"
+                restart={isRestart("grpc.enabled")}
+                help="是否开启 qmt-proxy 的 gRPC 服务端口（HTTP 接口不受此开关影响）"
+              />
+            }
             valuePropName="checked"
           >
             <Switch />
           </Form.Item>
-          <Form.Item name={["grpc", "host"]} label={<FieldLabel text="host" restart={isRestart("grpc.host")} />}>
+          <Form.Item
+            name={["grpc", "host"]}
+            label={
+              <FieldLabel
+                text="host"
+                restart={isRestart("grpc.host")}
+                help="gRPC 服务监听的网卡地址"
+              />
+            }
+          >
             <Input placeholder="0.0.0.0" />
           </Form.Item>
-          <Form.Item name={["grpc", "port"]} label={<FieldLabel text="port" restart={isRestart("grpc.port")} />}>
+          <Form.Item
+            name={["grpc", "port"]}
+            label={
+              <FieldLabel
+                text="port"
+                restart={isRestart("grpc.port")}
+                help="gRPC 服务监听端口"
+              />
+            }
+          >
             <InputNumber className="w-full" min={1} max={65535} />
           </Form.Item>
                 </>
@@ -1379,10 +1730,28 @@ function QmtProxyConfigTab({ active }: { active: boolean }) {
               ),
               children: (
                 <>
-          <Form.Item name={["app", "host"]} label={<FieldLabel text="host" restart={isRestart("app.host")} />}>
+          <Form.Item
+            name={["app", "host"]}
+            label={
+              <FieldLabel
+                text="host"
+                restart={isRestart("app.host")}
+                help="qmt-proxy HTTP 服务监听的网卡地址"
+              />
+            }
+          >
             <Input placeholder="0.0.0.0" />
           </Form.Item>
-          <Form.Item name={["app", "port"]} label={<FieldLabel text="port" restart={isRestart("app.port")} />}>
+          <Form.Item
+            name={["app", "port"]}
+            label={
+              <FieldLabel
+                text="port"
+                restart={isRestart("app.port")}
+                help="qmt-proxy HTTP 服务监听端口"
+              />
+            }
+          >
             <InputNumber className="w-full" min={1} max={65535} />
           </Form.Item>
                 </>
