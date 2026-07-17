@@ -183,6 +183,9 @@ class DailyReviewExecutor:
         market_breadth_provider: Any = None,
         sector_provider: Any = None,
         dragon_tiger_provider: Any = None,
+        knowledge_graph_repository: Any = None,
+        model_adapter_factory: Any = None,
+        instrument_catalog_repository: Any = None,
     ):
         self._svc = assistant_service
         self._cron_repo = cron_job_repository
@@ -194,6 +197,12 @@ class DailyReviewExecutor:
         self._market_breadth_provider = market_breadth_provider
         self._sector_provider = sector_provider
         self._dragon_tiger_provider = dragon_tiger_provider
+        # 知识图谱 LLM 抽取（步骤 5b）：三者都是可选依赖——repo 或 adapter
+        # 工厂缺席时该步骤以 ``daily_review_kg_extract_skipped`` 显式跳过
+        # （不静默消失），复盘主链路不受影响。
+        self._knowledge_graph_repository = knowledge_graph_repository
+        self._model_adapter_factory = model_adapter_factory
+        self._instrument_catalog_repository = instrument_catalog_repository
 
     def _ensure_market_providers(self) -> tuple[Any, Any, Any]:
         """Resolve (breadth, sector, dragon_tiger) providers, defaulting to akshare.
@@ -216,6 +225,128 @@ class DailyReviewExecutor:
             if dragon is None:
                 dragon = AkshareDragonTigerProvider()
         return breadth, sector, dragon
+
+    # --- knowledge-graph extraction (step 5b) -------------------------------
+
+    async def _extract_kg_candidates(
+        self,
+        *,
+        job_id: str,
+        agent_id: str | None,
+        asof: date,
+        reply_text: str,
+        journal_path: str,
+        span: Any,
+    ) -> dict[str, Any]:
+        """从复盘 markdown 抽取 ``provenance='llm'`` 候选边（软失败）。
+
+        返回结构化状态 dict（``status`` ∈ skipped/ok/error），并同步发
+        debug event + ``daily_review.kg_*`` span attribute。任何异常都被
+        捕获转结构化错误——本步骤永不阻断复盘投递。
+        """
+        if self._knowledge_graph_repository is None or self._model_adapter_factory is None:
+            reason = (
+                "knowledge_graph_repository_unwired"
+                if self._knowledge_graph_repository is None
+                else "model_adapter_factory_unwired"
+            )
+            span.set_attribute("daily_review.kg_extract_status", "skipped")
+            await emit_debug_event(
+                "daily_review_kg_extract_skipped",
+                {
+                    "job_id": job_id,
+                    "asof": asof.isoformat(),
+                    "reason": reason,
+                    "hint": "wire knowledge_graph_repository + model_adapter_factory "
+                    "into DailyReviewExecutor (api/server.py) to enable KG extraction",
+                },
+            )
+            return {"status": "skipped", "reason": reason}
+
+        source_ref = (
+            f"kb:{journal_path}" if journal_path else f"kb:journal/{asof.isoformat()}"
+        )
+        try:
+            # 用复盘所用 agent 的模型路由做抽取（同一模型、同一账单口径）；
+            # agent 未绑定路由时回退默认路由。
+            route_name: str | None = None
+            agent_repo = getattr(self._svc, "agent_repo", None)
+            if agent_repo is not None and agent_id:
+                agent = await agent_repo.get_agent(agent_id)
+                route_name = (
+                    str((agent or {}).get("model_route_name") or "").strip() or None
+                )
+            adapter = await self._model_adapter_factory(route_name)
+
+            from doyoutrade.knowledge.graph_extraction import extract_and_apply
+
+            result = await extract_and_apply(
+                self._knowledge_graph_repository,
+                adapter,
+                reply_text,
+                reference_date=asof.isoformat(),
+                source_ref=source_ref,
+                now=datetime.now(timezone.utc).replace(tzinfo=None),
+                instrument_catalog_repository=self._instrument_catalog_repository,
+            )
+        except Exception as exc:  # noqa: BLE001 — surfaced, non-fatal
+            logger.warning(
+                "daily_review kg extraction failed job_id=%s asof=%s (%s): %s",
+                job_id, asof, type(exc).__name__, exc,
+            )
+            span.set_attribute("daily_review.kg_extract_status", "error")
+            await emit_debug_event(
+                "daily_review_kg_extract_failed",
+                {
+                    "job_id": job_id,
+                    "asof": asof.isoformat(),
+                    "source_ref": source_ref,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                    "hint": "KG extraction crashed; the review itself was "
+                    "delivered — inspect the model route / kg tables",
+                },
+            )
+            return {
+                "status": "error",
+                "error_code": "kg_extract_crashed",
+                "message": f"{type(exc).__name__}: {exc}",
+            }
+
+        if result.get("status") != "ok":
+            span.set_attribute("daily_review.kg_extract_status", "error")
+            await emit_debug_event(
+                "daily_review_kg_extract_failed",
+                {
+                    "job_id": job_id,
+                    "asof": asof.isoformat(),
+                    "source_ref": source_ref,
+                    "error_code": result.get("error_code"),
+                    "message": result.get("message"),
+                    "hint": "model call or output parse failed; see error_code",
+                },
+            )
+            return result
+
+        span.set_attribute("daily_review.kg_extract_status", "ok")
+        span.set_attribute(
+            "daily_review.kg_candidate_edge_count",
+            int(result.get("candidate_count") or 0),
+        )
+        await emit_debug_event(
+            "daily_review_kg_candidates_extracted",
+            {
+                "job_id": job_id,
+                "asof": asof.isoformat(),
+                "source_ref": source_ref,
+                "skipped": result.get("skipped"),
+                "candidate_count": result.get("candidate_count"),
+                "edges_submitted": result.get("edges_submitted"),
+                "apply": result.get("apply"),
+                "warning_count": len(result.get("warnings") or []),
+            },
+        )
+        return result
 
     # --- contract validation ----------------------------------------------
 
@@ -840,6 +971,21 @@ class DailyReviewExecutor:
                     "daily_review.journal_path", str(journal_result.get("path"))
                 )
 
+            # 5b) 知识图谱 LLM 抽取（软失败）：从刚写入的复盘 markdown 抽取
+            #     provenance='llm' 候选边。fallback 复盘是确定性 Python 组稿
+            #     （无新观点），跳过以省模型成本。任何失败只发结构化事件，
+            #     不阻断投递。
+            kg_extraction: dict[str, Any] | None = None
+            if journal_result is not None and compose_failed_reason is None:
+                kg_extraction = await self._extract_kg_candidates(
+                    job_id=ctx.job_id,
+                    agent_id=agent_id,
+                    asof=asof,
+                    reply_text=reply_text,
+                    journal_path=str(journal_result.get("path") or ""),
+                    span=span,
+                )
+
             # 6) Deliver.
             delivery_status, delivery_info = await deliver_assistant_message_to_session(
                 self._svc,
@@ -886,5 +1032,8 @@ class DailyReviewExecutor:
                         if compose_failed_reason
                         else parse_trailing_review_json(reply_text)
                     ),
+                    # 步骤 5b 的知识图谱抽取结果（skipped/ok/error 结构化
+                    # 状态；未装配或 fallback 复盘时为 skipped/None）。
+                    "kg_extraction": kg_extraction,
                 },
             )
