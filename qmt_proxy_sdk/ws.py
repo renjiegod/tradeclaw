@@ -7,10 +7,23 @@ import json
 import logging
 from typing import TYPE_CHECKING, AsyncIterator
 
+import warnings
+
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 import websockets
 from websockets.asyncio.client import connect
+from websockets.exceptions import InvalidStatus
+
+# websockets < 14 的旧客户端在握手非 101 时抛 InvalidStatusCode（新版已弃用 /
+# 移除）。为兼容老版本，把它一并纳入重连捕获；不存在时用 InvalidStatus 占位，
+# 保证 except 元组恒有效。
+try:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from websockets.exceptions import InvalidStatusCode  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - depends on installed websockets version
+    InvalidStatusCode = InvalidStatus  # type: ignore[assignment, misc]
 
 from qmt_proxy_sdk.exceptions import QmtProxyError, TransportError
 from qmt_proxy_sdk.models.data import QuoteData
@@ -20,6 +33,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+
+def _handshake_retry_after(exc: BaseException) -> float | None:
+    """若 WS 握手失败是 429 且带 ``Retry-After`` 头，返回等待秒数。
+
+    兼容两种异常形态：新版 ``InvalidStatus``（携带 ``response``）与旧版
+    ``InvalidStatusCode``（直接携带 ``status_code`` / ``headers``）。
+    """
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status = getattr(response, "status_code", None)
+        headers = getattr(response, "headers", None)
+    else:
+        status = getattr(exc, "status_code", None)
+        headers = getattr(exc, "headers", None)
+
+    if status != 429 or headers is None:
+        return None
+    getter = getattr(headers, "get", None)
+    raw = getter("Retry-After") if callable(getter) else None
+    if raw is None:
+        return None
+    try:
+        return max(0.0, float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return None
 
 
 class QuoteStream:
@@ -127,6 +166,8 @@ class QuoteStream:
                     except (
                         websockets.ConnectionClosed,
                         websockets.InvalidURI,
+                        InvalidStatus,
+                        InvalidStatusCode,
                         ConnectionError,
                         OSError,
                     ) as exc:
@@ -142,13 +183,26 @@ class QuoteStream:
                             span.set_status(Status(StatusCode.ERROR, str(error)))
                             raise error from exc
                         delay = self._reconnect_delay * attempt
-                        logger.warning(
-                            "WebSocket disconnected, reconnecting in %.1fs "
-                            "(attempt %d/%d)",
-                            delay,
-                            attempt,
-                            self._reconnect_attempts,
-                        )
+                        # 握手 429（云网关限流）：尊重服务端 Retry-After，
+                        # 等待取 max(原退避, Retry-After)。
+                        retry_after = _handshake_retry_after(exc)
+                        if retry_after is not None:
+                            delay = max(delay, retry_after)
+                            logger.warning(
+                                "WebSocket handshake rate limited (429), "
+                                "reconnecting in %.1fs (attempt %d/%d)",
+                                delay,
+                                attempt,
+                                self._reconnect_attempts,
+                            )
+                        else:
+                            logger.warning(
+                                "WebSocket disconnected, reconnecting in %.1fs "
+                                "(attempt %d/%d)",
+                                delay,
+                                attempt,
+                                self._reconnect_attempts,
+                            )
                         await asyncio.sleep(delay)
             finally:
                 await self._cleanup_subscription()

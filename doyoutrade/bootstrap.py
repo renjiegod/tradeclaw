@@ -21,9 +21,11 @@ from doyoutrade.data.local_market_bars import LocalHistoricalBarsDataProvider
 from doyoutrade.data.market_sync import MarketDataSyncService
 from doyoutrade.data.account_resolution import (
     ResolvedAccount,
+    market_only_from_record,
     register_default_account_resolver,
     resolved_account_from_record,
 )
+from doyoutrade.data.cloud_profile import get_cloud_profile
 from doyoutrade.data.factory import build_trading_data_stack, resolve_effective_provider
 from doyoutrade.account.store_reader import StoreBackedAccountReader
 from doyoutrade.data.mock_provider import MockTradingDataProvider
@@ -707,6 +709,7 @@ async def _build_market_data_runtime(
     *,
     migrate: bool,
     watchlist_repository=None,
+    account_repository=None,
 ):
     market_url = ensure_market_data_database_url(cfg.market_data.database_url)
     market_backend = (
@@ -757,6 +760,23 @@ async def _build_market_data_runtime(
         )
         return data_provider
 
+    # Cloud-mode preset resolver: when the *default account* points at a
+    # doyoutrade-cloud gateway, each sync run clamps lookback / outbound rate
+    # to min(configured, plan recommendation). Resolved per run (accounts can
+    # change at runtime); a missing account, classic qmt-proxy, or probe
+    # failure all yield None and leave configured behaviour untouched.
+    cloud_profile_provider = None
+    if account_repository is not None:
+
+        async def _cloud_profile_provider():
+            record = await account_repository.get_default_account()
+            account = market_only_from_record(record)
+            if account is None or not account.has_connection:
+                return None
+            return await get_cloud_profile(account.base_url, account.token)
+
+        cloud_profile_provider = _cloud_profile_provider
+
     bootstrap_provider = _provider_factory()
     sync_service = MarketDataSyncService(
         market_repository=market_repository,
@@ -770,6 +790,7 @@ async def _build_market_data_runtime(
         rate_limit_per_second=cfg.market_data.provider_rate_limit_per_second,
         watchlist_repository=watchlist_repository,
         sync_full_market=cfg.market_data.sync_full_market,
+        cloud_profile_provider=cloud_profile_provider,
     )
     return market_engine, market_repository, sync_service
 
@@ -851,6 +872,7 @@ async def build_platform_runtime(
             instrument_catalog_repository,
             migrate=migrate,
             watchlist_repository=watchlist_repository,
+            account_repository=account_repository,
         )
     except Exception:
         await dispose_engine(engine)

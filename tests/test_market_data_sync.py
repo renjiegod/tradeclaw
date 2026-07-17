@@ -6,6 +6,12 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from doyoutrade.core.models import Bar
+from doyoutrade.data.cloud_profile import (
+    CloudPlan,
+    CloudProfile,
+    CloudQuota,
+    CloudRecommendations,
+)
 from doyoutrade.data.market_sync import (
     MarketDataSyncService,
     _split_into_coverage_segments,
@@ -1418,6 +1424,181 @@ class AdjustDriftSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unavailable[0]["reason"], "anchor_check_failed")
         self.assertEqual(unavailable[0]["error"], "anchor read down")
         self.assertIn("hint", unavailable[0])
+
+
+def _cloud_profile(
+    *,
+    plan_name: str = "free",
+    disable_download: bool = True,
+    sync_lookback_years: int | None = 2,
+    provider_rate_limit_per_second: float | None = 0.4,
+) -> "CloudProfile":
+    return CloudProfile(
+        service="doyoutrade-cloud",
+        protocol_version=1,
+        plan=CloudPlan(plan_name=plan_name),
+        quota=CloudQuota(daily_requests=2000, used_today=0, remaining_today=2000),
+        capabilities=("rate_limit_headers",),
+        recommendations=CloudRecommendations(
+            disable_download=disable_download,
+            sync_lookback_years=sync_lookback_years,
+            provider_rate_limit_per_second=provider_rate_limit_per_second,
+        ),
+    )
+
+
+class CloudPresetSyncTests(unittest.IsolatedAsyncioTestCase):
+    """Cloud-mode recommendations clamp sync limits to min(configured, recommended)."""
+
+    def _service(
+        self,
+        repo: FakeMarketRepository,
+        provider: FakeProvider,
+        *,
+        lookback_years: int = 10,
+        rate_limit_per_second: float = 1000.0,
+        cloud_profile_provider=None,
+    ) -> MarketDataSyncService:
+        catalog = FakeCatalogRepository(
+            [{"symbol": "600000.SH", "instrument_type": "stock", "is_tradable": True}]
+        )
+        return MarketDataSyncService(
+            market_repository=repo,
+            instrument_catalog_repository=catalog,
+            provider_factory=lambda: provider,
+            intervals=("1d",),
+            lookback_years=lookback_years,
+            provider="qmt",
+            adjust="qfq",
+            concurrency=1,
+            rate_limit_per_second=rate_limit_per_second,
+            today_fn=lambda: date(2026, 6, 1),
+            cloud_profile_provider=cloud_profile_provider,
+        )
+
+    async def test_cloud_recommendations_clamp_lookback_and_rate(self) -> None:
+        repo = FakeMarketRepository()
+        provider = FakeProvider()
+
+        async def _provider() -> "CloudProfile":
+            return _cloud_profile(sync_lookback_years=2, provider_rate_limit_per_second=0.4)
+
+        service = self._service(repo, provider, cloud_profile_provider=_provider)
+        with patch(
+            "doyoutrade.data.market_sync.emit_debug_event", new_callable=AsyncMock
+        ) as emit:
+            result = await service.run_once()
+
+        self.assertEqual(result["succeeded"], 1)
+        # Lookback clamped 10 -> 2 years: fetch starts at 2024-06-01, not 2016-06-01.
+        self.assertEqual(provider.calls[0][1], "2024-06-01")
+        # Outbound throttle clamped 1000 -> 0.4 req/s for this run.
+        self.assertEqual(service._effective_rate_limit_per_second, 0.4)
+        self.assertEqual(service._effective_lookback_years, 2)
+        # Configured values stay untouched (clamp is per-run, not an override).
+        self.assertEqual(service.lookback_years, 10)
+        self.assertEqual(service.rate_limit_per_second, 1000.0)
+        cloud_events = [
+            call.args[1]
+            for call in emit.await_args_list
+            if call.args[0] == "market_data.sync.cloud_preset_applied"
+        ]
+        self.assertEqual(len(cloud_events), 1)
+        self.assertEqual(cloud_events[0]["plan_name"], "free")
+        self.assertEqual(cloud_events[0]["effective_lookback_years"], 2)
+        self.assertEqual(cloud_events[0]["effective_rate_limit_per_second"], 0.4)
+        self.assertIn("hint", cloud_events[0])
+
+    async def test_cloud_recommendations_never_relax_user_config(self) -> None:
+        # Recommended values are *larger* than the configured ones: the
+        # conservative min() must keep the user's tighter configuration.
+        repo = FakeMarketRepository()
+        provider = FakeProvider()
+
+        async def _provider() -> "CloudProfile":
+            return _cloud_profile(
+                sync_lookback_years=20, provider_rate_limit_per_second=5000.0
+            )
+
+        service = self._service(
+            repo,
+            provider,
+            lookback_years=3,
+            rate_limit_per_second=1000.0,
+            cloud_profile_provider=_provider,
+        )
+        with patch(
+            "doyoutrade.data.market_sync.emit_debug_event", new_callable=AsyncMock
+        ):
+            result = await service.run_once()
+
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(provider.calls[0][1], "2023-06-01")
+        self.assertEqual(service._effective_lookback_years, 3)
+        self.assertEqual(service._effective_rate_limit_per_second, 1000.0)
+
+    async def test_cloud_probe_none_keeps_classic_behaviour(self) -> None:
+        repo = FakeMarketRepository()
+        provider = FakeProvider()
+
+        async def _provider() -> None:
+            return None
+
+        service = self._service(repo, provider, cloud_profile_provider=_provider)
+        with patch(
+            "doyoutrade.data.market_sync.emit_debug_event", new_callable=AsyncMock
+        ) as emit:
+            result = await service.run_once()
+
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(provider.calls[0][1], "2016-06-01")
+        self.assertEqual(service._effective_lookback_years, 10)
+        self.assertEqual(service._effective_rate_limit_per_second, 1000.0)
+        event_names = [call.args[0] for call in emit.await_args_list]
+        self.assertNotIn("market_data.sync.cloud_preset_applied", event_names)
+
+    async def test_cloud_probe_failure_keeps_classic_behaviour_and_is_logged(self) -> None:
+        repo = FakeMarketRepository()
+        provider = FakeProvider()
+
+        async def _provider() -> None:
+            raise RuntimeError("hello endpoint unreachable")
+
+        service = self._service(repo, provider, cloud_profile_provider=_provider)
+        with patch(
+            "doyoutrade.data.market_sync.emit_debug_event", new_callable=AsyncMock
+        ) as emit, self.assertLogs("doyoutrade.data.market_sync", level="WARNING") as logs:
+            result = await service.run_once()
+
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(provider.calls[0][1], "2016-06-01")
+        self.assertEqual(service._effective_lookback_years, 10)
+        self.assertEqual(service._effective_rate_limit_per_second, 1000.0)
+        self.assertTrue(
+            any("cloud profile probe failed" in line for line in logs.output)
+        )
+        event_names = [call.args[0] for call in emit.await_args_list]
+        self.assertNotIn("market_data.sync.cloud_preset_applied", event_names)
+
+    async def test_effective_values_reset_between_runs(self) -> None:
+        # A cloud run followed by a classic run (account switched back) must
+        # restore the configured values — no sticky clamps.
+        repo = FakeMarketRepository()
+        provider = FakeProvider()
+        verdicts: list["CloudProfile | None"] = [_cloud_profile(), None]
+
+        async def _provider() -> "CloudProfile | None":
+            return verdicts.pop(0)
+
+        service = self._service(repo, provider, cloud_profile_provider=_provider)
+        with patch(
+            "doyoutrade.data.market_sync.emit_debug_event", new_callable=AsyncMock
+        ):
+            await service.run_once()
+            self.assertEqual(service._effective_lookback_years, 2)
+            await service.run_once()
+        self.assertEqual(service._effective_lookback_years, 10)
+        self.assertEqual(service._effective_rate_limit_per_second, 1000.0)
 
 
 if __name__ == "__main__":

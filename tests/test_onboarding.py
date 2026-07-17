@@ -1,6 +1,8 @@
+import io
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from doyoutrade import onboarding
 from doyoutrade.onboarding import (
@@ -9,6 +11,7 @@ from doyoutrade.onboarding import (
     _agent_route_usable,
     _apply,
     _first_usable_route,
+    _maybe_prompt_qmt_proxy,
     _prompt,
     _unique_route_name,
 )
@@ -58,6 +61,19 @@ class _FakeAgentRepo:
         self.updates.append(updates)
         self.agent.update(updates)
         return dict(self.agent)
+
+
+class _FakeAccountRepo:
+    def __init__(self, accounts=None):
+        self.accounts = list(accounts or [])
+        self.upserts: list[dict] = []
+
+    async def list_accounts(self):
+        return list(self.accounts)
+
+    async def upsert_account(self, payload):
+        self.upserts.append(dict(payload))
+        return dict(payload)
 
 
 def _runtime(route_repo):
@@ -234,6 +250,85 @@ class OnboardingPromptTests(unittest.TestCase):
         self.assertEqual(answers.slug, "openai")
         self.assertEqual(answers.base_url, "https://api.openai.com/v1")
         self.assertEqual(answers.model, "gpt-4.1")
+
+
+class DataSourcePromptTests(unittest.IsolatedAsyncioTestCase):
+    """数据源向导分支：DoYouTrade Cloud / 自建 qmt-proxy / 跳过。"""
+
+    async def test_cloud_branch_registers_mock_default_account_with_defaults(self):
+        repo = _FakeAccountRepo()
+        inputs = iter(["", "dytc_abc123"])  # 云网关地址（回车用默认）、API key
+        with patch.object(onboarding, "select_index", return_value=0), \
+             patch("builtins.input", lambda *_: next(inputs)), \
+             redirect_stdout(io.StringIO()) as out:
+            await _maybe_prompt_qmt_proxy({"account_repository": repo})
+        self.assertEqual(len(repo.upserts), 1)
+        account = repo.upserts[0]
+        self.assertEqual(account["name"], "DoYouTrade Cloud")
+        self.assertEqual(account["mode"], "mock")
+        self.assertEqual(account["base_url"], onboarding.CLOUD_GATEWAY_DEFAULT_URL)
+        self.assertEqual(account["token"], "dytc_abc123")
+        self.assertTrue(account["is_default"])
+        self.assertTrue(account["enabled"])
+        self.assertIn("云端行情 + 本地模拟交易", out.getvalue())
+        self.assertIn("不可用于实盘交易", out.getvalue())
+
+    async def test_cloud_branch_warns_on_wrong_prefix_but_continues(self):
+        repo = _FakeAccountRepo()
+        inputs = iter(["", "sk-not-a-cloud-key"])
+        with patch.object(onboarding, "select_index", return_value=0), \
+             patch("builtins.input", lambda *_: next(inputs)), \
+             redirect_stdout(io.StringIO()) as out:
+            await _maybe_prompt_qmt_proxy({"account_repository": repo})
+        self.assertIn("不是 dytc_ 前缀", out.getvalue())
+        self.assertEqual(len(repo.upserts), 1)
+        self.assertEqual(repo.upserts[0]["token"], "sk-not-a-cloud-key")
+        self.assertEqual(repo.upserts[0]["mode"], "mock")
+
+    async def test_cloud_branch_custom_gateway_gets_https_scheme(self):
+        repo = _FakeAccountRepo()
+        inputs = iter(["cloud.example.com", "dytc_xyz"])
+        with patch.object(onboarding, "select_index", return_value=0), \
+             patch("builtins.input", lambda *_: next(inputs)), \
+             redirect_stdout(io.StringIO()):
+            await _maybe_prompt_qmt_proxy({"account_repository": repo})
+        self.assertEqual(repo.upserts[0]["base_url"], "https://cloud.example.com")
+
+    async def test_remote_proxy_branch_keeps_existing_flow(self):
+        repo = _FakeAccountRepo()
+        inputs = iter(["192.168.1.10:8001", "proxy-token"])  # 地址、token
+        with patch.object(onboarding, "select_index", return_value=1), \
+             patch("builtins.input", lambda *_: next(inputs)), \
+             redirect_stdout(io.StringIO()):
+            await _maybe_prompt_qmt_proxy({"account_repository": repo})
+        self.assertEqual(len(repo.upserts), 1)
+        account = repo.upserts[0]
+        self.assertEqual(account["name"], "QMT 远程")
+        self.assertEqual(account["mode"], "mock")
+        self.assertEqual(account["base_url"], "http://192.168.1.10:8001")
+        self.assertEqual(account["token"], "proxy-token")
+
+    async def test_skip_choice_registers_nothing(self):
+        repo = _FakeAccountRepo()
+        with patch.object(onboarding, "select_index", return_value=None), \
+             redirect_stdout(io.StringIO()) as out:
+            await _maybe_prompt_qmt_proxy({"account_repository": repo})
+        self.assertEqual(repo.upserts, [])
+        self.assertIn("已跳过数据源配置", out.getvalue())
+
+    async def test_existing_base_url_account_skips_prompt_entirely(self):
+        repo = _FakeAccountRepo(accounts=[{"base_url": "http://10.0.0.2:8001"}])
+        select = MagicMock()
+        with patch.object(onboarding, "select_index", select):
+            await _maybe_prompt_qmt_proxy({"account_repository": repo})
+        select.assert_not_called()
+        self.assertEqual(repo.upserts, [])
+
+    async def test_missing_account_repository_is_noop(self):
+        # runtime 没接 account_repository 时不得抛错，也不打印任何提示。
+        with redirect_stdout(io.StringIO()) as out:
+            await _maybe_prompt_qmt_proxy({})
+        self.assertEqual(out.getvalue(), "")
 
 
 if __name__ == "__main__":

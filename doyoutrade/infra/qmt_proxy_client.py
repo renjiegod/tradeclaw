@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import date, datetime, time
-from typing import Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 from zoneinfo import ZoneInfo
 
 from opentelemetry import trace as otel_trace
@@ -24,6 +24,9 @@ from qmt_proxy_sdk.exceptions import ClientError, QmtProxyError
 from qmt_proxy_sdk.models.data import TradingCalendarResponse
 
 from doyoutrade.data.constants import DEFAULT_BAR_ADJUST
+
+if TYPE_CHECKING:
+    from doyoutrade.data.cloud_profile import CloudProfile
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,11 @@ _FULL_KLINE_UNSUPPORTED_MARKERS = (
 # Async callback used to persist a refreshed trading session id back onto the
 # owning ``accounts`` row: ``(account_pk, session_id) -> Awaitable[None]``.
 SessionPersist = Callable[[str, str], Awaitable[None]]
+
+# Async resolver for the connection's cloud profile (see
+# doyoutrade/data/cloud_profile.py): ``() -> CloudProfile | None`` where
+# ``None`` means classic qmt-proxy mode.
+CloudProfileProvider = Callable[[], Awaitable[Optional["CloudProfile"]]]
 
 _QMT_PROXY_CONNECT_HINT = (
     "Check qmt-proxy: xtquant installed, qmt_userdata_path set, QMT running, and xttrader "
@@ -127,6 +135,34 @@ async def _emit_market_download_fallback(
                 "fast disable_download read returned empty so a download-enabled "
                 "fetch was retried (slower). Pre-download/backfill this range to "
                 "keep the fast path.",
+            },
+        )
+    except Exception:  # noqa: BLE001 — observability must not break data fetch
+        pass
+
+
+async def _emit_market_download_fallback_skipped(
+    symbol: str, start_date: str, end_date: str, interval: str, plan_name: str | None
+) -> None:
+    """Surface a cloud-mode skip of the download-enabled retry as a structured
+    debug event: the fast local read was empty, but the cloud plan recommends
+    ``disable_download`` so the slow retry is intentionally not attempted."""
+    try:
+        from doyoutrade.debug import emit_debug_event
+
+        await emit_debug_event(
+            "qmt_market_download_fallback_skipped",
+            {
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date,
+                "interval": interval,
+                "reason": "cloud_disable_download",
+                "plan_name": plan_name,
+                "hint": "fast disable_download read returned empty, but the "
+                "doyoutrade-cloud plan recommends disable_download so the "
+                "download-enabled retry was skipped; backfill this range from a "
+                "local provider or upgrade the cloud plan if the bars are needed.",
             },
         )
     except Exception:  # noqa: BLE001 — observability must not break data fetch
@@ -297,6 +333,7 @@ class QmtProxyRestClient:
         terminal_id: Optional[str] = None,
         session_persist: Optional[SessionPersist] = None,
         sdk_client: AsyncQmtProxyClient | None = None,
+        cloud_profile_provider: Optional[CloudProfileProvider] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.token = token
@@ -312,6 +349,11 @@ class QmtProxyRestClient:
         tid = None if terminal_id is None else str(terminal_id).strip()
         self.terminal_id = tid or None
         self._session_persist = session_persist
+        # Optional cloud-profile resolver (doyoutrade/data/cloud_profile.py).
+        # Only consulted when the fast history read comes back empty, to decide
+        # whether the cloud plan forbids the download-enabled retry. ``None``
+        # (or a probe returning None/raising) keeps classic behaviour.
+        self._cloud_profile_provider = cloud_profile_provider
         self._owns_client = sdk_client is None
         self._client = sdk_client or AsyncQmtProxyClient(
             base_url=self.base_url,
@@ -477,6 +519,28 @@ class QmtProxyRestClient:
         if _market_payload_has_rows(payload):
             return payload
 
+        # Cloud mode: when the connected gateway's plan recommends
+        # disable_download, skip the slow download-enabled retry entirely (the
+        # cloud backend has no local QMT terminal to download into). Classic
+        # mode (no provider / probe returned None / probe raised) is untouched.
+        profile = await self._cloud_profile_or_none()
+        if profile is not None and profile.recommendations.disable_download:
+            plan_name = profile.plan.plan_name or None
+            logger.info(
+                "qmt market fast read empty; download fallback skipped "
+                "(cloud mode plan=%s disable_download=true) "
+                "symbol=%s start=%s end=%s interval=%s",
+                plan_name,
+                symbol,
+                start_date,
+                end_date,
+                interval,
+            )
+            await _emit_market_download_fallback_skipped(
+                symbol, start_date, end_date, interval, plan_name
+            )
+            return payload
+
         logger.info(
             "qmt market fast read empty; retrying with download "
             "symbol=%s start=%s end=%s interval=%s",
@@ -495,6 +559,26 @@ class QmtProxyRestClient:
             adjust_type=adjust_type,
             disable_download=False,
         )
+
+    async def _cloud_profile_or_none(self) -> "CloudProfile | None":
+        """Resolve the connection's cloud profile; ``None`` means classic mode.
+
+        A probe failure is logged (type + message + base_url) but never
+        propagates — cloud detection must not break a classic data fetch.
+        """
+        if self._cloud_profile_provider is None:
+            return None
+        try:
+            return await self._cloud_profile_provider()
+        except Exception as exc:  # noqa: BLE001 — visible, degrades to classic mode
+            logger.warning(
+                "cloud profile probe failed during market fetch base_url=%s "
+                "error_type=%s error=%s; keeping classic download-fallback behaviour",
+                self.base_url,
+                type(exc).__name__,
+                exc,
+            )
+            return None
 
     async def get_trading_calendar(self, year: int) -> TradingCalendarResponse:
         return await self._client.data.get_trading_calendar(year)
