@@ -167,6 +167,15 @@ async def build_api_with_runtime(tick_interval_seconds: float | None = None):
                 cron_job_repository=cron_job_repo,
                 statement_provider=_daily_review_statement_provider,
                 trading_day_checker=_daily_review_trading_day_checker,
+                # 步骤 5b（知识图谱 LLM 抽取）的可选依赖：缺席时执行器发
+                # daily_review_kg_extract_skipped 显式跳过，复盘主链路不受影响。
+                knowledge_graph_repository=runtime.get("knowledge_graph_repository"),
+                model_adapter_factory=getattr(
+                    assistant_service, "model_adapter_factory", None
+                ),
+                instrument_catalog_repository=runtime.get(
+                    "instrument_catalog_repository"
+                ),
             )
         )
 
