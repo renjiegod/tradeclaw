@@ -29,14 +29,15 @@
       irm https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.ps1 | iex
 
 .EXAMPLE
-    用法二（先审阅再执行，推荐谨慎用户）：
+    用法二（先审阅再执行，推荐谨慎用户；Windows 请走 install-win.ps1）：
       irm https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.ps1 -OutFile install.ps1
+      irm https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install-win.ps1 -OutFile install-win.ps1
       notepad install.ps1     # 看清楚它做了什么
-      powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+      powershell -NoProfile -ExecutionPolicy Bypass -File install-win.ps1
 
 .EXAMPLE
     非交互 / CI 场景强制覆盖重装：
-      powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Force
+      powershell -NoProfile -ExecutionPolicy Bypass -File install-win.ps1 -Force
 #>
 [CmdletBinding()]
 param(
@@ -158,6 +159,17 @@ function Install-DoYouTrade {
     if ($LASTEXITCODE -ne 0) { Write-Die "安装失败，请检查网络 / 安装源后重试。" }
 
     Update-ShellPath
+
+    # Make the new shim visible in *this* session, then verify it exists.
+    # Without this, a GUI installer that immediately launches the shortcut
+    # can still report "doyoutrade not found" even after a successful install.
+    $uvBin = Join-Path $env:USERPROFILE ".local\bin"
+    if (Test-Path $uvBin) { $env:Path = "$uvBin;$env:Path" }
+    $shim = Join-Path $uvBin "doyoutrade.exe"
+    if (-not (Get-Command doyoutrade -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $shim)) {
+        Write-Die "uv tool install 成功，但未找到 doyoutrade 命令（期望路径：$shim）。请重开终端后运行 uv tool list 排查。"
+    }
+
     Write-Ok "doyoutrade 安装完成（已内置 qmt-proxy）。"
 }
 

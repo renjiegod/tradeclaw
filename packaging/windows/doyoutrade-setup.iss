@@ -1,14 +1,13 @@
-; DoYouTrade Windows 图形安装包（Inno Setup）。
+; DoYouTrade Windows GUI installer (Inno Setup).
 ;
-; 只是把仓库根 install.ps1 的安装逻辑包进一个"下一步下一步完成"的向导：
-;   1. 拷贝 install.ps1 + 启动器脚本到安装目录
-;   2. 静默调用 install.ps1 -Force（检测/装 uv → uv tool install doyoutrade[qmt-proxy]）
-;   3. 创建开始菜单 / 桌面快捷方式，指向启动器脚本（启动 doyoutrade + 自动开浏览器）
+; Wraps repo-root install-win.ps1 (ASCII) -> install.ps1 (UTF-8 no BOM):
+;   1. Copy install-win.ps1 + install.ps1 + launcher bat into {app}
+;   2. Silently run install-win.ps1 -Force (uv + uv tool install doyoutrade[qmt-proxy])
+;   3. Create Start Menu / desktop shortcuts to the launcher bat
 ;
-; 本地编译（需要先装 https://jrsoftware.org/isinfo.php）：
+; Build locally (requires https://jrsoftware.org/isinfo.php):
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\windows\doyoutrade-setup.iss
-; CI 里由 .github/workflows/build-windows-installer.yml 传入 /DMyAppVersion=<版本号>。
-#ifndef MyAppVersion
+; CI passes /DMyAppVersion=<version> from .github/workflows/build-windows-installer.yml.#ifndef MyAppVersion
   #define MyAppVersion "0.0.0-dev"
 #endif
 
@@ -49,6 +48,10 @@ Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加图标:"; Flags: unchecked
 
 [Files]
+; install-win.ps1 is the Windows PowerShell 5.1 -File entrypoint (ASCII).
+; It re-encodes install.ps1 (UTF-8 no BOM, required for irm|iex) to a
+; UTF-8-BOM temp copy so Chinese Windows CP936 does not ParserError.
+Source: "..\..\install-win.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "launch-doyoutrade.bat"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -59,7 +62,7 @@ Name: "{autodesktop}\DoYouTrade"; Filename: "{app}\{#MyAppExeName}"; WorkingDir:
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install.ps1"" -Force"; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install-win.ps1"" -Force"; \
     StatusMsg: "正在安装 DoYouTrade（首次安装需要拉取依赖，可能要几分钟，请勿关闭窗口）..."; \
     Flags: runascurrentuser waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 DoYouTrade"; Flags: postinstall nowait skipifsilent shellexec

@@ -31,7 +31,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-D22128?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="License"></a>
-  <img src="https://img.shields.io/badge/version-0.1.1-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.1.2-blue?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square" alt="PRs Welcome">
 </p>
@@ -147,8 +147,16 @@ irm https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.ps1 | ie
 
 ```powershell
 irm https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.ps1 -OutFile install.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+irm https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install-win.ps1 -OutFile install-win.ps1
+# 审阅 install.ps1 后：
+powershell -NoProfile -ExecutionPolicy Bypass -File install-win.ps1
 ```
+
+> 注意：请用 `install-win.ps1` 做 `-File` 入口，不要直接 `-File install.ps1`。
+> `install.ps1` 必须保持「UTF-8 无 BOM」才能让上面的 `irm | iex` 正常工作；
+> 而中文 Windows 上的 Windows PowerShell 5.1 用 `-File` 读无 BOM 脚本时会按系统 ANSI（GBK）解码，
+> 中文注释/字符串会被拆坏并直接 `ParserError`。`install-win.ps1` 是纯 ASCII 包装，会把
+> `install.ps1` 转成带 BOM 的临时副本再执行。
 
 脚本会自动：检测 / 安装 [uv](https://docs.astral.sh/uv/)（自带 Python 3.12，零前置）→ 把 `doyoutrade` 装成常驻命令。**Windows 版会一并装上内置 qmt-proxy**（含 xtquant），macOS / Linux 只装 DoYouTrade 本体。装完在你自己的终端运行：
 
@@ -168,7 +176,7 @@ doyoutrade
 - 想要真实 A 股行情、QMT 实盘等进阶能力，见下方梯度二 / 三。
 
 > 谨慎用户可先下载脚本审阅再执行（`curl -fsSL … -o install.sh` → 查看 → `sh install.sh`）；Windows 用
-> `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1`（可加 `-Force` 跳过确认）。
+> `powershell -NoProfile -ExecutionPolicy Bypass -File install-win.ps1`（需同目录有 `install.ps1`；可加 `-Force` 跳过确认）。
 > 已经装了 uv、想跳过脚本的话，等价的一条命令是
 > `uvx --from git+https://github.com/renjiegod/doyoutrade doyoutrade`（即跑即用，不持久安装）。
 > 从源码开发（改代码、跑测试）走下面的「梯度一：克隆源码本地开发」。
@@ -183,7 +191,7 @@ doyoutrade
 
 不想下载安装包也行，用下面两个脚本代替敲命令，体验和图形安装包一致（网页首启向导 + 系统托盘图标）：
 
-1. 下载 [`安装DoYouTrade.bat`](https://raw.githubusercontent.com/renjiegod/doyoutrade/main/%E5%AE%89%E8%A3%85DoYouTrade.bat) 和 [`启动DoYouTrade.bat`](https://raw.githubusercontent.com/renjiegod/doyoutrade/main/%E5%90%AF%E5%8A%A8DoYouTrade.bat)，放进同一个文件夹（浏览器点开会直接显示脚本文本，右键「另存为」即可保存；Chrome 等浏览器下载 `.bat` 时会弹安全提示，选择「保留」/「仍然下载」即可 —— 脚本内容就是上面那条 `install.ps1` 一条命令，可放心点开源码审阅）。
+1. 下载 [`安装DoYouTrade.bat`](https://raw.githubusercontent.com/renjiegod/doyoutrade/main/%E5%AE%89%E8%A3%85DoYouTrade.bat) 和 [`启动DoYouTrade.bat`](https://raw.githubusercontent.com/renjiegod/doyoutrade/main/%E5%90%AF%E5%8A%A8DoYouTrade.bat)，放进同一个文件夹（浏览器点开会直接显示脚本文本，右键「另存为」即可保存；Chrome 等浏览器下载 `.bat` 时会弹安全提示，选择「保留」/「仍然下载」即可 —— 安装 bat 会调用上面的 `install.ps1` / `install-win.ps1`，可放心点开源码审阅）。
 2. 双击「**安装DoYouTrade.bat**」，等窗口跑完显示"安装完成"。
 3. 双击「**启动DoYouTrade.bat**」，稍等片刻会自动弹出浏览器打开控制台；首次使用在网页向导里选一个大模型供应商、填 API Key 即可，黑窗口只是后台服务，不用管它。
 4. 以后每次使用只需双击「启动DoYouTrade.bat」；想停止服务，关掉这个窗口，或从系统托盘图标选「退出 DoYouTrade」都行。
