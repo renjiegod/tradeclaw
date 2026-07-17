@@ -7,7 +7,8 @@
 ;
 ; Build locally (requires https://jrsoftware.org/isinfo.php):
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\windows\doyoutrade-setup.iss
-; CI passes /DMyAppVersion=<version> from .github/workflows/build-windows-installer.yml.#ifndef MyAppVersion
+; CI passes /DMyAppVersion=<version> from .github/workflows/build-windows-installer.yml.
+#ifndef MyAppVersion
   #define MyAppVersion "0.0.0-dev"
 #endif
 
