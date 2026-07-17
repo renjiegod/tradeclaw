@@ -1443,3 +1443,111 @@ class DecisionSignalOutcomeRecord(Base):
     max_drawdown_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+
+
+class KnowledgeGraphNodeRecord(Base):
+    """知识图谱节点 — 私有知识库之上的实体层。
+
+    实体身份是自然键 ``(node_type, name)``（symbol 节点的 ``name`` 即规范
+    symbol 代码，cycle 节点即 ``YYYY-MM``），``id`` 只是稳定的代理键
+    （``kgn-`` 前缀）。节点由确定性投影（roles.jsonl / 交割单归因 /
+    decision_signals / 情绪时间线）或后续的 LLM 抽取产生；同一实体在两条
+    来源里出现时经自然键对齐为一个节点。
+    """
+
+    __tablename__ = "kg_nodes"
+    __table_args__ = (
+        UniqueConstraint("node_type", "name", name="uq_kg_nodes_type_name"),
+        Index("ix_kg_nodes_name", "name"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: 实体类型：symbol / role / cycle / signal（后续 LLM 抽取可扩展 theme /
+    #: playbook 等）。自由字符串 + 投影层词表约束，不用 CHECK 锁死扩展。
+    node_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attrs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=_utcnow,
+        onupdate=_utcnow,
+        nullable=False,
+    )
+
+
+class KnowledgeGraphEdgeRecord(Base):
+    """知识图谱边 — bi-temporal 事实（借鉴 Graphiti 的双时间轴设计）。
+
+    两条时间轴（全部 naive-UTC，与本文件其余 DateTime 一致）：
+
+    - 现实轴 ``valid_at`` / ``invalid_at`` — 事实在现实世界何时开始/不再为真
+      （"东财是券商龙头"只在某轮周期内为真）。
+    - 系统轴 ``created_at`` / ``expired_at`` — 系统何时写入 / 何时被更新的
+      事实取代。**旧边只标记 ``expired_at``，从不删除**，因此可以回答
+      "当时的认知是什么"。``expired_at IS NULL`` = 当前有效边。
+
+    幂等与失效：
+
+    - ``dedupe_key`` 是事实身份（同一事实重复投影只保留一条 active 边；
+      不加 UNIQUE 约束——历史里同 key 的 expired 边合法存在）。
+    - ``state_key``（可空）标记"单值状态组"：同组内同一时刻只允许一条
+      active 边。个股角色是典型——``role|<symbol>`` 组里新角色边写入时，
+      旧角色边被置 ``expired_at``（写入方 ``apply_projection`` 实现）。
+
+    ``provenance`` 区分事实等级（codegraph 的 provenance 设计）：
+    ``deterministic`` = 交割单/信号等硬数据投影；``llm`` = 复盘文本抽取的
+    观点（带 ``confidence``）。检索侧据此分级呈现。``source_ref`` 指回
+    原始出处（``kb:<relpath>`` 或 ``db:<table>/<id>``），agent 可钻取原文。
+    """
+
+    __tablename__ = "kg_edges"
+    __table_args__ = (
+        CheckConstraint(
+            "provenance IN ('deterministic', 'llm')",
+            name="ck_kg_edges_provenance",
+        ),
+        Index("ix_kg_edges_src_active", "src_id", "expired_at"),
+        Index("ix_kg_edges_dst_active", "dst_id", "expired_at"),
+        Index("ix_kg_edges_dedupe", "dedupe_key", "expired_at"),
+        Index("ix_kg_edges_state_key", "state_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    src_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("kg_nodes.id", ondelete="CASCADE"), nullable=False
+    )
+    dst_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("kg_nodes.id", ondelete="CASCADE"), nullable=False
+    )
+    relation: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: 自然语言事实句 — 检索直接返回给 agent 的载体（Graphiti 的 ``fact``）。
+    fact: Mapped[str] = mapped_column(Text, nullable=False)
+    attrs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    state_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provenance: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    valid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    invalid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class KnowledgeGraphSourceStateRecord(Base):
+    """投影来源的增量同步水位（codegraph 的 ``files.content_hash`` 思路）。
+
+    ``source`` 形如 ``kb:symbols/roles.jsonl`` / ``db:decision_signals``；
+    ``content_hash`` 是该来源投影输入的 SHA-256。sync 前比对：hash 未变则
+    跳过整个来源，变了才重新投影（apply 本身幂等，跳过只是省工作量）。
+    ``stats`` 存最近一次 sync 的计数（nodes/edges created 等）供诊断。
+    """
+
+    __tablename__ = "kg_source_state"
+
+    source: Mapped[str] = mapped_column(String(255), primary_key=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    stats: Mapped[dict | None] = mapped_column(JSON, nullable=True)

@@ -485,6 +485,9 @@ class PersistenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 # 功能 5: decision signal lifecycle + backtest verification.
                 "decision_signals",
                 "decision_signal_outcomes",
+                "kg_nodes",
+                "kg_edges",
+                "kg_source_state",
                 # Pre-existing swarm orchestration tables (already in the schema
                 # via the swarm migration; the expected set had not been synced).
                 "swarm_runs",

@@ -608,6 +608,7 @@ def create_app(
     runtime_control_plane=None,
     quote_stream_service=None,
     update_service=None,
+    knowledge_graph_repository=None,
 ):
     try:
         import asyncio
@@ -784,11 +785,18 @@ def create_app(
     app.include_router(build_skills_router(default_skills_root))
 
     # Read-only access to the private KB's 复盘 journals (journal/ partition
-    # only) so the frontend 复盘 tab can render them. Writes stay agent-gated.
+    # only) so the frontend 复盘 tab can render them. Writes stay agent-gated;
+    # the knowledge-graph endpoints (query + deterministic re-projection) ride
+    # the same router and mutate only the DB-derived graph, never KB files.
     from doyoutrade.api.knowledge_base import build_knowledge_router
     from doyoutrade.tools._sandbox import knowledge_root
 
-    app.include_router(build_knowledge_router(knowledge_root))
+    app.include_router(
+        build_knowledge_router(
+            knowledge_root,
+            knowledge_graph_repository=knowledge_graph_repository,
+        )
+    )
 
     # 交割单 CSV 导入（multipart 预览 / 提交 + 券商目录建议）——写入知识库
     # trades/ 分区（无 DB 表；`import_trades_csv` 是唯一写路径）。

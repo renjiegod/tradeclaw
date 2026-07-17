@@ -83,6 +83,15 @@ CLI 域分布只记**命令族**，不要在首轮把参数表背成百科：
   推理定位到具体文件，再 `read_file` 读那一篇完整内容**，不要用 `list_files`
   逐个盲读（知识库随时间增长到上百文件，盲读 ls+read 会浪费大量 token）。
   可选 `partition` 参数限定单分区。详见下方"私有知识库"小节。
+- `knowledge_graph`：知识库之上的**实体关系图谱**（个股↔角色↔情绪周期↔交易
+  回合↔决策信号，事实带时间窗与来源）。`action="query"`（默认）+ `entity`
+  （股票代码 / 名称 / 角色词 / `YYYY-MM` 周期月 / 信号 id）返回该实体的邻域
+  事实；`hops=2` 可看到"同周期其他交易"级别的关联；`include_expired=true`
+  回溯已被推翻的历史认知（如角色变更史）。`action="sync"` 把 roles / 情绪
+  时间线 / 交割单归因 / decision_signals **幂等**投影进图谱（来源未变自动
+  跳过）——知识库数据刚更新后先 sync 再 query；`entity_not_found` 时也先
+  sync 一次再重试。图谱回答"和什么有关"，正文细节仍走 `knowledge_index`
+  + `read_file` 两步检索（沿 `source_ref` 钻取）。
 - `execute_bash` / `manage_bash_tasks`：CLI 的运行通道本身。
 - `ask_user_question`：向用户提出**一个**带 2-4 个选项的结构化问题（渲染为可点
   按钮：飞书是交互卡片，Web 是选项按钮）。**非阻塞**：调用成功后立即结束本轮
@@ -246,6 +255,7 @@ debug 会话的 trace —— 你无需手动处理。
 | 预热本地行情仓库 | `doyoutrade-cli data sync <code> --start ... --end ...` |
 | 自选股 | `doyoutrade-cli watchlist list|get|add|update|remove|tags|quotes` |
 | 知识库导航地图 | in-process `knowledge_index`；读正文用 `read_file`；不要用 `list_files` 盲读 |
+| 知识图谱（实体关联 / 历史角色 / 交易归因） | in-process `knowledge_graph`（`action="query"` + `entity=<代码/名称/角色/YYYY-MM>`；数据更新后先 `action="sync"`） |
 | 列出策略定义（模糊查） | `doyoutrade-cli strategy definition list [--query …] [--limit N]` |
 | 查现成定义，附重复检测 | `doyoutrade-cli strategy inspect [--query …]` |
 | 列出 / 检查 assistant agents | `doyoutrade-cli assistant agent list [--include-inactive]` / `doyoutrade-cli assistant agent get <agent-id>` |

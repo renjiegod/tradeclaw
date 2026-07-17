@@ -15,6 +15,10 @@ sees two categories of tools:
    per file) over ``~/.doyoutrade/knowledge`` that lets the agent reason
    over the structure first instead of blind ``list_files`` + per-file
    ``read_file``. It is a pure local file derivation, not a domain op.
+   ``knowledge_graph`` is its sibling: the entity-relation layer over the
+   same KB (bi-temporal facts projected into ``kg_nodes`` / ``kg_edges``),
+   queried in-process because the agent needs it wired to the runtime's
+   graph repository.
 
 Every domain operation (task / cron / strategy / backtest / cycle /
 data / sdk / stock / pattern / factor / validation / model route) is
@@ -39,10 +43,14 @@ _EXPECTED_TOOL_NAMES = frozenset({
     "edit_file",
     "list_files",
     "knowledge_index",
+    "knowledge_graph",
     "execute_bash",
     "manage_bash_tasks",
     "ask_user_question",
     "watch_job",
+    "record_decision_signal",
+    "import_positions_from_image",
+    "import_trades_csv",
 })
 
 

@@ -635,6 +635,7 @@ class AssistantService:
         run_repository: Any | None = None,
         decision_signal_repository: Any | None = None,
         instrument_catalog_repository: Any | None = None,
+        knowledge_graph_repository: Any | None = None,
         approval_rules: list[ApprovalRule] | tuple[ApprovalRule, ...] | None = None,
         max_turns: int = 6,
     ):
@@ -657,6 +658,7 @@ class AssistantService:
             run_repository=run_repository,
             decision_signal_repository=decision_signal_repository,
             instrument_catalog_repository=instrument_catalog_repository,
+            knowledge_graph_repository=knowledge_graph_repository,
             model_adapter_factory=model_adapter_factory,
         )
         self.max_turns = max(1, int(max_turns))
