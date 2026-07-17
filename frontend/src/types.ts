@@ -1364,6 +1364,24 @@ export type ModelRouteRow = {
   updated_at: string;
 };
 
+/** ``GET /setup/status`` — whether the default agent has a usable model route. */
+export type SetupStatus = {
+  configured: boolean;
+};
+
+/**
+ * One entry from ``GET /setup/providers`` — the same preset catalog the
+ * terminal onboarding wizard (``doyoutrade/onboarding.py``) offers, serialized
+ * for the web ``SetupWizard`` overlay.
+ */
+export type SetupProvider = {
+  label: string;
+  provider_kind: string;
+  base_url: string | null;
+  model_hint: string;
+  needs_key: boolean;
+};
+
 export type SkillFrontmatter = {
   name: string;
   description: string;

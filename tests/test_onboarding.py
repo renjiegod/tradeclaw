@@ -6,20 +6,22 @@ from unittest.mock import MagicMock, patch
 
 from doyoutrade import onboarding
 from doyoutrade.onboarding import (
-    _PRESETS,
+    PRESETS,
     _Answers,
-    _agent_route_usable,
     _apply,
-    _first_usable_route,
     _maybe_prompt_qmt_proxy,
     _prompt,
     _unique_route_name,
+    agent_route_usable,
+    create_route_and_bind_agent,
+    first_usable_route,
+    serialize_presets,
 )
 from doyoutrade.persistence.repositories import ModelRouteRecord
 
 
 def _preset_index(slug: str) -> int:
-    for i, preset in enumerate(_PRESETS):
+    for i, preset in enumerate(PRESETS):
         if preset.slug == slug:
             return i
     raise AssertionError(f"preset slug not found: {slug}")
@@ -76,12 +78,6 @@ class _FakeAccountRepo:
         return dict(payload)
 
 
-def _runtime(route_repo):
-    return {
-        "model_route_repository": route_repo,
-    }
-
-
 class OnboardingWizardTests(unittest.IsolatedAsyncioTestCase):
     async def test_apply_creates_route_and_binds_default_agent(self):
         route_repo = _FakeRouteRepo()
@@ -101,6 +97,25 @@ class OnboardingWizardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(routes[0].target_model, "deepseek-chat")
         self.assertEqual(agent_repo.agent["model_route_name"], "default")
 
+    async def test_create_route_and_bind_agent_shared_by_terminal_and_web(self):
+        # The same helper _apply delegates to is what POST /setup/complete
+        # (doyoutrade/api/app.py) calls directly — exercise it standalone so a
+        # regression here is caught without going through the terminal prompt.
+        route_repo = _FakeRouteRepo()
+        agent_repo = _FakeAgentRepo()
+
+        resolved = await create_route_and_bind_agent(
+            route_repo, agent_repo,
+            route_name="default", provider_kind="openai_compatible",
+            api_key="sk-web", base_url="https://api.deepseek.com",
+            target_model="deepseek-chat",
+        )
+
+        self.assertEqual(resolved, "default")
+        routes = await route_repo.list_routes()
+        self.assertEqual(routes[0].api_key, "sk-web")
+        self.assertEqual(agent_repo.agent["model_route_name"], "default")
+
     async def test_route_usable_true_after_apply(self):
         route_repo = _FakeRouteRepo()
         agent_repo = _FakeAgentRepo()
@@ -109,16 +124,14 @@ class OnboardingWizardTests(unittest.IsolatedAsyncioTestCase):
                      "https://api.deepseek.com", "deepseek-chat", "default"),
             route_repo, agent_repo,
         )
-        runtime = _runtime(route_repo)
 
-        self.assertTrue(await _agent_route_usable(runtime, agent_repo))
+        self.assertTrue(await agent_route_usable(route_repo, agent_repo))
 
     async def test_route_not_usable_when_agent_unbound(self):
         route_repo = _FakeRouteRepo()
         agent_repo = _FakeAgentRepo(model_route_name="")
-        runtime = _runtime(route_repo)
 
-        self.assertFalse(await _agent_route_usable(runtime, agent_repo))
+        self.assertFalse(await agent_route_usable(route_repo, agent_repo))
 
     async def test_route_not_usable_when_route_missing_api_key(self):
         route_repo = _FakeRouteRepo()
@@ -127,9 +140,8 @@ class OnboardingWizardTests(unittest.IsolatedAsyncioTestCase):
             api_key="", base_url="https://api.deepseek.com", target_model="deepseek-chat",
         )
         agent_repo = _FakeAgentRepo(model_route_name="default")
-        runtime = _runtime(route_repo)
 
-        self.assertFalse(await _agent_route_usable(runtime, agent_repo))
+        self.assertFalse(await agent_route_usable(route_repo, agent_repo))
 
     async def test_first_usable_route_binds_existing_when_agent_unbound(self):
         route_repo = _FakeRouteRepo()
@@ -137,9 +149,8 @@ class OnboardingWizardTests(unittest.IsolatedAsyncioTestCase):
             route_name="default", provider_kind="openai_compatible",
             api_key="sk-test", base_url="https://api.deepseek.com", target_model="deepseek-chat",
         )
-        runtime = _runtime(route_repo)
 
-        found = await _first_usable_route(runtime, route_repo)
+        found = await first_usable_route(route_repo)
         self.assertEqual(found, "default")
 
     async def test_first_usable_route_none_when_no_route_builds(self):
@@ -148,9 +159,8 @@ class OnboardingWizardTests(unittest.IsolatedAsyncioTestCase):
             route_name="default", provider_kind="openai_compatible",
             api_key="", base_url=None, target_model="",
         )
-        runtime = _runtime(route_repo)
 
-        self.assertIsNone(await _first_usable_route(runtime, route_repo))
+        self.assertIsNone(await first_usable_route(route_repo))
 
     async def test_unique_route_name_suffixes_on_conflict(self):
         route_repo = _FakeRouteRepo()
@@ -170,7 +180,7 @@ class OnboardingWizardTests(unittest.IsolatedAsyncioTestCase):
 
 class OnboardingPresetCatalogTests(unittest.TestCase):
     def test_presets_cover_opencode_style_openai_compat_vendors(self):
-        slugs = {p.slug for p in _PRESETS}
+        slugs = {p.slug for p in PRESETS}
         for expected in (
             "deepseek",
             "kimi",
@@ -197,12 +207,12 @@ class OnboardingPresetCatalogTests(unittest.TestCase):
 
     def test_presets_only_use_supported_provider_kinds(self):
         allowed = {"anthropic", "openai_compatible", "lmstudio"}
-        for preset in _PRESETS:
+        for preset in PRESETS:
             self.assertIn(preset.provider_kind, allowed, preset.slug)
 
     def test_local_presets_do_not_require_api_key(self):
         for slug in ("ollama", "lmstudio"):
-            self.assertFalse(_PRESETS[_preset_index(slug)].needs_key)
+            self.assertFalse(PRESETS[_preset_index(slug)].needs_key)
 
 
 class OnboardingPromptTests(unittest.TestCase):
@@ -329,6 +339,120 @@ class DataSourcePromptTests(unittest.IsolatedAsyncioTestCase):
         with redirect_stdout(io.StringIO()) as out:
             await _maybe_prompt_qmt_proxy({})
         self.assertEqual(out.getvalue(), "")
+
+
+class SetupProvidersSerializationTests(unittest.TestCase):
+    """GET /setup/providers (doyoutrade/api/app.py) serializes exactly this."""
+
+    def test_serialize_presets_matches_preset_tuple(self):
+        items = serialize_presets()
+        self.assertEqual(len(items), len(PRESETS))
+        for item, preset in zip(items, PRESETS):
+            self.assertEqual(item["label"], preset.label)
+            self.assertEqual(item["provider_kind"], preset.provider_kind)
+            self.assertEqual(item["base_url"], preset.base_url)
+            self.assertEqual(item["model_hint"], preset.model_hint)
+            self.assertEqual(item["needs_key"], preset.needs_key)
+
+    def test_serialize_presets_is_json_serializable(self):
+        import json
+
+        json.dumps(serialize_presets())
+
+
+class _FakeTTY:
+    """Stand-in for ``sys.stdin`` / ``sys.stdout`` that always claims to be a TTY."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+class WebSetupShortCircuitTests(unittest.IsolatedAsyncioTestCase):
+    """``DOYOUTRADE_WEB_SETUP=1`` (double-click launch): the terminal wizard
+    must defer to the web console's SetupWizard *before* the TTY check —
+    including when a real TTY happens to be attached (e.g. a launcher script
+    that opens a visible console window)."""
+
+    async def test_web_setup_true_skips_prompt_even_with_a_real_tty(self):
+        route_repo = _FakeRouteRepo()
+        agent_repo = _FakeAgentRepo(model_route_name="")
+        runtime = {"session_factory": object(), "model_route_repository": route_repo}
+        prompt_mock = MagicMock()
+
+        with patch(
+            "doyoutrade.assistant.repository.SqlAlchemyAgentRepository",
+            return_value=agent_repo,
+        ), patch.object(onboarding, "_prompt", prompt_mock), patch(
+            "sys.stdin", new=_FakeTTY()
+        ), patch("sys.stdout", new=_FakeTTY()), redirect_stdout(
+            io.StringIO()
+        ) as out:
+            await onboarding._run(runtime, web_setup=True)
+
+        prompt_mock.assert_not_called()
+        self.assertEqual(agent_repo.updates, [])
+        self.assertIn("请在浏览器里完成设置", out.getvalue())
+
+    async def test_web_setup_false_falls_back_to_headless_guidance_without_tty(self):
+        # Baseline: web_setup=False (the non-web / historical path) still
+        # behaves exactly as before — non-interactive startup never prompts.
+        route_repo = _FakeRouteRepo()
+        agent_repo = _FakeAgentRepo(model_route_name="")
+        runtime = {"session_factory": object(), "model_route_repository": route_repo}
+        prompt_mock = MagicMock()
+
+        with patch(
+            "doyoutrade.assistant.repository.SqlAlchemyAgentRepository",
+            return_value=agent_repo,
+        ), patch.object(onboarding, "_prompt", prompt_mock), patch(
+            "sys.stdin.isatty", return_value=False
+        ):
+            await onboarding._run(runtime, web_setup=False)
+
+        prompt_mock.assert_not_called()
+        self.assertEqual(agent_repo.updates, [])
+
+    async def test_already_configured_skips_wizard_regardless_of_web_setup(self):
+        # An already-usable route must short-circuit before web_setup is even
+        # consulted — configured-once machines are never re-prompted by
+        # either surface (terminal or web).
+        route_repo = _FakeRouteRepo()
+        agent_repo = _FakeAgentRepo()
+        await create_route_and_bind_agent(
+            route_repo, agent_repo,
+            route_name="default", provider_kind="openai_compatible",
+            api_key="sk-test", base_url="https://api.deepseek.com",
+            target_model="deepseek-chat",
+        )
+        runtime = {"session_factory": object(), "model_route_repository": route_repo}
+        prompt_mock = MagicMock()
+
+        with patch(
+            "doyoutrade.assistant.repository.SqlAlchemyAgentRepository",
+            return_value=agent_repo,
+        ), patch.object(onboarding, "_prompt", prompt_mock):
+            await onboarding._run(runtime, web_setup=True)
+            await onboarding._run(runtime, web_setup=False)
+
+        prompt_mock.assert_not_called()
+
+    async def test_maybe_run_setup_wizard_reads_env_var_by_default(self):
+        import os
+
+        route_repo = _FakeRouteRepo()
+        agent_repo = _FakeAgentRepo(model_route_name="")
+        runtime = {"session_factory": object(), "model_route_repository": route_repo}
+
+        with patch(
+            "doyoutrade.assistant.repository.SqlAlchemyAgentRepository",
+            return_value=agent_repo,
+        ), patch.dict(os.environ, {"DOYOUTRADE_WEB_SETUP": "1"}), redirect_stdout(
+            io.StringIO()
+        ) as out:
+            await onboarding.maybe_run_setup_wizard(runtime)
+
+        self.assertIn("请在浏览器里完成设置", out.getvalue())
+        self.assertEqual(agent_repo.updates, [])
 
 
 if __name__ == "__main__":

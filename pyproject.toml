@@ -58,6 +58,11 @@ qmt-proxy = [
     "pydantic-settings>=2.11.0",
     "python-dotenv>=1.2.1",
     "ruamel.yaml>=0.18",
+    # System tray icon for the double-click launcher (doyoutrade/infra/tray_icon.py).
+    # Windows-only convenience, so it rides along in this Windows-extras group
+    # (install.ps1 already installs doyoutrade[qmt-proxy]) rather than a new extra.
+    "pystray>=0.19.5; sys_platform == 'win32'",
+    "Pillow>=10.0.0; sys_platform == 'win32'",
 ]
 # mootdx (a maintained pytdx fork) drives the 通达信 data provider — an offline
 # alternative to QMT for OHLCV / minute bars / realtime L1 snapshots. mootdx

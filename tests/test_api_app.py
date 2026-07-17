@@ -4578,6 +4578,233 @@ class _FakeAgentRepoForCronReadiness:
         return {"id": agent_id}
 
 
+class _FakeModelRouteRepoForSetup:
+    """Minimal stand-in for SqlAlchemyModelRouteRepository: just enough
+    create / get_by_route_name / list_routes for the /setup/* endpoints
+    (doyoutrade.onboarding.agent_route_usable / create_route_and_bind_agent)
+    to exercise real create-then-resolve-then-build-adapter logic."""
+
+    def __init__(self):
+        from datetime import datetime, timezone
+
+        self._by_name: dict[str, SimpleNamespace] = {}
+        self._seq = 0
+        self._dt = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    async def create(self, *, route_name, provider_kind, api_key, base_url=None,
+                      target_model=None, settings=None, id=None):
+        self._seq += 1
+        rid = id or f"route-{self._seq}"
+        rec = SimpleNamespace(
+            id=rid, route_name=route_name, provider_kind=provider_kind,
+            base_url=base_url, api_key=api_key, target_model=target_model,
+            settings=settings, created_at=self._dt, updated_at=self._dt,
+        )
+        self._by_name[route_name] = rec
+        return rec
+
+    async def get_by_route_name(self, route_name):
+        from doyoutrade.persistence.errors import RecordNotFoundError
+
+        rec = self._by_name.get(route_name)
+        if rec is None:
+            raise RecordNotFoundError(f"model route not found: {route_name}")
+        return rec
+
+    async def list_routes(self):
+        return list(self._by_name.values())
+
+
+class _FakeServiceWithSetupRoutes(_FakeService):
+    """``_FakeService`` plus a real ``model_route_repository`` + the public
+    ``get_model_route_api`` the /setup/complete endpoint relies on (mirrors
+    ``PlatformService.get_model_route_api``: resolve + serialize)."""
+
+    def __init__(self):
+        super().__init__()
+        self.model_route_repository = _FakeModelRouteRepoForSetup()
+
+    async def get_model_route_api(self, route_name: str) -> dict:
+        rec = await self.model_route_repository.get_by_route_name(route_name)
+        return {
+            "id": rec.id,
+            "route_name": rec.route_name,
+            "provider_kind": rec.provider_kind,
+            "base_url": rec.base_url,
+            "api_key_masked": "****" if rec.api_key else "",
+            "target_model": rec.target_model,
+            "settings": rec.settings,
+            "created_at": rec.created_at.isoformat(),
+            "updated_at": rec.updated_at.isoformat(),
+        }
+
+
+class SetupWizardApiTests(unittest.TestCase):
+    """GET /setup/status, GET /setup/providers, POST /setup/complete —
+    the web first-run wizard's backend (SetupWizard.tsx), sharing the
+    "what counts as configured" / "create + bind" logic with the terminal
+    onboarding wizard via doyoutrade/onboarding.py (not reimplemented here)."""
+
+    def _client(self, service=None, assistant_service=None):
+        service = service or _FakeServiceWithSetupRoutes()
+        assistant_service = assistant_service or _FakeAssistantService()
+        app = create_app(service, _FakeApprovalGate(), assistant_service=assistant_service)
+        return TestClient(app), service, assistant_service
+
+    def test_status_false_when_default_agent_unconfigured(self):
+        client, _service, assistant_service = self._client()
+        asyncio.run(assistant_service.agent_repo.ensure_main_agent())
+
+        with client:
+            resp = client.get("/setup/status")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"configured": False})
+
+    def test_status_true_after_route_created_and_bound(self):
+        client, service, assistant_service = self._client()
+        asyncio.run(assistant_service.agent_repo.ensure_main_agent())
+
+        async def _seed():
+            from doyoutrade.onboarding import create_route_and_bind_agent
+
+            await create_route_and_bind_agent(
+                service.model_route_repository,
+                assistant_service.agent_repo,
+                route_name="default",
+                provider_kind="openai_compatible",
+                api_key="sk-test",
+                base_url="https://api.deepseek.com",
+                target_model="deepseek-chat",
+            )
+
+        asyncio.run(_seed())
+
+        with client:
+            resp = client.get("/setup/status")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"configured": True})
+
+    def test_status_503_when_model_route_repository_missing(self):
+        service = _FakeService()  # no model_route_repository attribute
+        assistant_service = _FakeAssistantService()
+        asyncio.run(assistant_service.agent_repo.ensure_main_agent())
+        client, _service, _assistant = self._client(service=service, assistant_service=assistant_service)
+
+        with client:
+            resp = client.get("/setup/status")
+
+        self.assertEqual(resp.status_code, 503)
+
+    def test_status_503_when_agent_repo_missing(self):
+        client, _service, _assistant = self._client(assistant_service=_FakeAssistantService.__new__(_FakeAssistantService))
+        # A bare instance (no __init__) has no agent_repo attribute at all —
+        # closer to a real deployment where AssistantService wasn't wired with one.
+        with client:
+            resp = client.get("/setup/status")
+        self.assertEqual(resp.status_code, 503)
+
+    def test_providers_returns_serialized_preset_catalog(self):
+        from doyoutrade.onboarding import PRESETS
+
+        client, _service, _assistant = self._client()
+
+        with client:
+            resp = client.get("/setup/providers")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(len(body["items"]), len(PRESETS))
+        slugs_present_kinds = {item["provider_kind"] for item in body["items"]}
+        self.assertIn("openai_compatible", slugs_present_kinds)
+        self.assertIn("anthropic", slugs_present_kinds)
+        first = body["items"][0]
+        self.assertEqual(
+            set(first.keys()), {"label", "provider_kind", "base_url", "model_hint", "needs_key"}
+        )
+
+    def test_complete_creates_route_and_binds_default_agent(self):
+        client, service, assistant_service = self._client()
+        asyncio.run(assistant_service.agent_repo.ensure_main_agent())
+
+        with client:
+            resp = client.post(
+                "/setup/complete",
+                json={
+                    "provider_kind": "openai_compatible",
+                    "api_key": "sk-web-setup",
+                    "base_url": "https://api.deepseek.com",
+                    "target_model": "deepseek-chat",
+                },
+            )
+            status_after = client.get("/setup/status")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["route_name"], "default")
+        self.assertEqual(body["provider_kind"], "openai_compatible")
+        self.assertEqual(body["target_model"], "deepseek-chat")
+
+        agent = asyncio.run(assistant_service.agent_repo.get_agent("agent_default"))
+        self.assertEqual(agent["model_route_name"], "default")
+        self.assertEqual(status_after.json(), {"configured": True})
+
+    def test_complete_rejects_unsupported_provider_kind(self):
+        client, _service, assistant_service = self._client()
+        asyncio.run(assistant_service.agent_repo.ensure_main_agent())
+
+        with client:
+            resp = client.post(
+                "/setup/complete",
+                json={"provider_kind": "not-a-real-kind", "api_key": "sk"},
+            )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("provider_kind must be one of", resp.json()["detail"])
+
+    def test_complete_dedupes_route_name_on_conflict(self):
+        client, service, assistant_service = self._client()
+        asyncio.run(assistant_service.agent_repo.ensure_main_agent())
+
+        async def _seed_existing():
+            await service.model_route_repository.create(
+                route_name="default", provider_kind="anthropic",
+                api_key="sk-old", base_url=None, target_model="claude-sonnet-4-5",
+            )
+
+        asyncio.run(_seed_existing())
+
+        with client:
+            resp = client.post(
+                "/setup/complete",
+                json={
+                    "provider_kind": "openai_compatible",
+                    "api_key": "sk-new",
+                    "base_url": "https://api.deepseek.com",
+                    "target_model": "deepseek-chat",
+                },
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotEqual(resp.json()["route_name"], "default")
+        self.assertTrue(resp.json()["route_name"].startswith("default-"))
+
+    def test_complete_503_when_model_route_repository_missing(self):
+        service = _FakeService()  # no model_route_repository
+        assistant_service = _FakeAssistantService()
+        asyncio.run(assistant_service.agent_repo.ensure_main_agent())
+        client, _service, _assistant = self._client(service=service, assistant_service=assistant_service)
+
+        with client:
+            resp = client.post(
+                "/setup/complete",
+                json={"provider_kind": "anthropic", "api_key": "sk-test"},
+            )
+
+        self.assertEqual(resp.status_code, 503)
+
+
 class CronJobApiTests(unittest.TestCase):
     """End-to-end contract tests for the cron job API surface (pre_action
     acceptance, trigger response shape, list/get run routes)."""

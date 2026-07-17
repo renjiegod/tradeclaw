@@ -71,6 +71,8 @@ import type {
   SectorHeatType,
   ModelInvocationRow,
   ModelRouteRow,
+  SetupProvider,
+  SetupStatus,
   PendingApproval,
   PushedMessage,
   AssistantSessionSummary,
@@ -1643,6 +1645,26 @@ export async function deleteModelRoute(routeId: string): Promise<void> {
 
 export async function revealModelRouteApiKey(routeId: string): Promise<{ api_key: string }> {
   return request(`/model-routes/${encodeURIComponent(routeId)}/api-key`);
+}
+
+/** Web first-run setup wizard (SetupWizard.tsx) — see doyoutrade/api/app.py. */
+
+export async function getSetupStatus(): Promise<SetupStatus> {
+  return request("/setup/status");
+}
+
+export async function getSetupProviders(): Promise<{ items: SetupProvider[] }> {
+  return request("/setup/providers");
+}
+
+export async function completeSetup(payload: {
+  provider_kind: string;
+  api_key: string;
+  base_url?: string | null;
+  target_model?: string | null;
+  route_name?: string;
+}): Promise<ModelRouteRow> {
+  return request("/setup/complete", { method: "POST", body: JSON.stringify(payload) });
 }
 
 export type ModelRouteTestChunk =
