@@ -19,6 +19,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer encoding / launcher regression tests
+        shell: bash
+        run: |
+          python -m unittest \
+            tests.test_installer_no_bom \
+            tests.test_install_win_bootstrap \
+            tests.test_windows_launcher_bat \
+            -v
+
       - name: 解析版本号
         id: version
         shell: bash
