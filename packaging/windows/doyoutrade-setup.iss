@@ -68,5 +68,5 @@ Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 DoYouTrade"; Flags
 ; 卸载向导只删自己装的 install.ps1 / 启动器脚本；uv tool install 的 doyoutrade 命令
 ; 本体是 uv 管的，一并清掉，避免"卸载了安装包，命令还在"的困惑。uv 不在了就跳过，不报错。
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""if (Get-Command uv -ErrorAction SilentlyContinue) { uv tool uninstall doyoutrade }"""; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""if (Get-Command uv -ErrorAction SilentlyContinue) {{ uv tool uninstall doyoutrade }"""; \
     Flags: runascurrentuser waituntilterminated; RunOnceId: "UninstallDoYouTradeTool"
