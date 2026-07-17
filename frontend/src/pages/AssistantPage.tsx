@@ -2,6 +2,7 @@ import {
   BulbOutlined,
   CopyOutlined,
   DownOutlined,
+  PaperClipOutlined,
   PlusOutlined,
   RobotOutlined,
   SendOutlined,
@@ -47,10 +48,10 @@ import type {
   AssistantPendingApproval,
   AssistantSession,
   AssistantUserQuestionBlock,
+  MessageAttachment,
   ModelRouteRow,
   PendingApproval,
   TraceSummary,
-  UploadResult,
 } from "../types";
 import { type ToolCallEntry } from "../components/assistant/types";
 import { ApprovalQueueCard } from "../components/ApprovalQueueCard";
@@ -76,11 +77,6 @@ const DEFAULT_TITLE = "新会话";
 // `message.delta` rows (persisted per token), so a small window can miss the
 // in-flight attempt's own `attempt.started` event entirely.
 const EVENTS_TAIL_LIMIT = 500;
-
-interface Attachment {
-  filename: string;
-  file_path: string;
-}
 
 export function ThinkingBlock({ content, streaming = false }: { content: string; streaming?: boolean }) {
   const [open, setOpen] = useState(true);
@@ -197,8 +193,8 @@ function MessageBubble({
       <div
         className={`${
           isUser
-            ? "max-w-[72%] rounded-bubble bg-chat-bubble px-5 py-4 text-lg text-chat-ink"
-            : "w-full max-w-[860px] text-chat-ink"
+            ? "max-w-[72%] break-words [overflow-wrap:anywhere] rounded-bubble bg-chat-bubble px-5 py-4 text-lg text-chat-ink"
+            : "w-full max-w-[860px] break-words [overflow-wrap:anywhere] text-chat-ink"
         }`}
       >
         {!isUser ? (
@@ -228,7 +224,27 @@ function MessageBubble({
             />
           </>
         ) : (
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
+          <>
+            {Array.isArray(item.metadata?.attachments) && item.metadata.attachments.length > 0 ? (
+              <div
+                className={`flex flex-wrap justify-end gap-2 ${item.content ? "mb-2" : ""}`}
+              >
+                {item.metadata.attachments.map((att) => (
+                  <span
+                    key={att.file_id}
+                    className="inline-flex max-w-[220px] items-center gap-1 rounded-lg bg-white/60 px-2 py-1 text-sm text-chat-ink"
+                    title={att.filename}
+                  >
+                    <PaperClipOutlined className="shrink-0 text-chat-accent" />
+                    <span className="truncate">{att.filename}</span>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {item.content ? (
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
+            ) : null}
+          </>
         )}
       </div>
       <span className="mt-1 px-1 text-xs text-gray-400">
@@ -322,7 +338,7 @@ export function AssistantPage() {
   const sendingRef = useRef(false);
   sendingRef.current = sending;
   const [isStopping, setIsStopping] = useState(false);
-  const [attachment, setAttachment] = useState<Attachment | null>(null);
+  const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [activeRightTab, setActiveRightTab] = useState<"traces" | "skills-tools">("traces");
   // 对话渲染模式。默认简洁模式（false）：执行中只显示一个随进度更新的
   // 占位卡片，完成后工具调用折叠进"思考过程"卡片。打开调试模式（true）
@@ -1055,7 +1071,9 @@ export function AssistantPage() {
     const override = typeof overrideText === "string" ? overrideText.trim() : "";
     const rawText = override || input.trim();
     const hasText = rawText.length > 0;
-    const hasAttachment = !override && attachment !== null;
+    // Programmatic sends (option clicks) never carry attachments.
+    const outgoingAttachments = override ? [] : attachments;
+    const hasAttachment = outgoingAttachments.length > 0;
 
     if (!hasText && !hasAttachment) {
       message.warning("请输入消息或上传附件后再发送");
@@ -1101,14 +1119,11 @@ export function AssistantPage() {
       return;
     }
 
-    const attachmentPrefix = hasAttachment
-      ? `[Uploaded file: ${attachment.filename}, path: ${attachment.file_path}]`
-      : "";
-
-    const textParts: string[] = [];
-    if (attachmentPrefix) textParts.push(attachmentPrefix);
-    if (hasText) textParts.push(rawText);
-    const text = textParts.join("\n\n");
+    // Attachments travel as structured data (not a text prefix): the message
+    // text is the user's own words only, and the file rides in metadata so the
+    // bubble renders a filename chip while the server injects the path for the
+    // model. Absolute paths never touch the client here.
+    const text = hasText ? rawText : "";
 
     const optimisticUserMessage: AssistantMessage = {
       message_id: `optimistic-${Date.now()}`,
@@ -1117,7 +1132,7 @@ export function AssistantPage() {
       content: text,
       created_at: new Date().toISOString(),
       linked_attempt_id: null,
-      metadata: {},
+      metadata: hasAttachment ? { attachments: outgoingAttachments } : {},
     };
 
     setSending(true);
@@ -1310,7 +1325,9 @@ export function AssistantPage() {
     stream.addEventListener("attempt.stopped", closeAndRefreshAfterStop);
     stream.addEventListener("attempt.completed", closeAndRefreshAfterStop);
     try {
-      const result = await sendAssistantMessage(targetSessionId, text);
+      const result = hasAttachment
+        ? await sendAssistantMessage(targetSessionId, text, outgoingAttachments)
+        : await sendAssistantMessage(targetSessionId, text);
       if (result.lifecycle_command?.command === "new") {
         const nextSessionId = result.session.session_id;
         const rows = await refreshSessions(nextSessionId);
@@ -1354,12 +1371,12 @@ export function AssistantPage() {
       setPendingUserMessage(null);
       setSending(false);
       setIsStopping(false);
-      setAttachment(null);
+      setAttachments([]);
     }
   }, [
     activeModelRoute,
     agents,
-    attachment,
+    attachments,
     events,
     input,
     refreshSessionData,
@@ -1399,7 +1416,15 @@ export function AssistantPage() {
           try {
             const result = await uploadFile(file);
             if (result.status === "ok") {
-              setAttachment({ filename: result.filename, file_path: result.file_path });
+              setAttachments((prev) => [
+                ...prev,
+                {
+                  file_id: result.file_id,
+                  filename: result.filename,
+                  mime_type: result.mime_type,
+                  size_bytes: result.size_bytes,
+                },
+              ]);
             }
           } catch (err) {
             message.error(err instanceof Error ? err.message : String(err));
@@ -1541,11 +1566,21 @@ export function AssistantPage() {
             ) : null}
           </div>
         </Spin>
-        {attachment ? (
-          <div className="mb-2 flex items-center gap-2">
-            <Tag closable onClose={() => setAttachment(null)}>
-              {attachment.filename}
-            </Tag>
+        {attachments.length > 0 ? (
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            {attachments.map((att) => (
+              <Tag
+                key={att.file_id}
+                closable
+                icon={<PaperClipOutlined />}
+                onClose={() =>
+                  setAttachments((prev) => prev.filter((a) => a.file_id !== att.file_id))
+                }
+                className="max-w-[240px]"
+              >
+                <span className="truncate align-middle">{att.filename}</span>
+              </Tag>
+            ))}
             <Typography.Text type="secondary" className="text-xs">
               已上传
             </Typography.Text>

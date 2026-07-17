@@ -68,6 +68,9 @@ CLI 域分布只记**命令族**，不要在首轮把参数表背成百科：
 - `compact`：上下文压缩。
 - `read_file`：**无限制文件读取**，可读任意绝对路径，不受沙箱限制。文本 / 代码文件
   返回带行号的内容；PDF / DOCX / PPTX / XLSX 返回提取的纯文本。路径必须是绝对路径。
+  用户上传的附件会以 `[Uploaded file: <文件名>, path: <绝对路径>]` 的形式出现在用户
+  消息里（一行一个附件）；需要该文件内容时，用这里给出的 `path` 直接调 `read_file`
+  读取，不要向用户追问路径。标记为 `(unavailable)` 的附件表示文件已不存在，不要臆造路径。
 - `write_file` / `edit_file` / `list_files`：**沙箱文件原语**（`write_file` /
   `edit_file` 需路径在沙箱内，`list_files` 无限制），不走 CLI。路径必须是绝对路径；
   写/编辑的沙箱校验由内部 `_sandbox` 注册表完成。两类可写根：(1) `open_strategy_authoring`

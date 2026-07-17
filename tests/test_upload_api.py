@@ -76,19 +76,24 @@ class TestUploadAPI(unittest.TestCase):
     # ── test_upload_accepts_allowed_file ──────────────────────────────────────
 
     def test_upload_accepts_allowed_file(self):
-        """POST a .txt file returns 201 + {status: 'ok', file_path, filename}."""
+        """POST a .txt returns 201 + {status:'ok', file_id, filename, mime_type, size_bytes}.
+
+        The server's absolute path is intentionally NOT returned to the client
+        (only the opaque file_id); the file still lands under uploads/.
+        """
         content = b"hello world"
         response = self._post_upload("report.txt", content)
 
         self.assertEqual(response.status_code, 201, response.text)
         data = response.json()
         self.assertEqual(data["status"], "ok")
-        self.assertIn("file_path", data)
-        self.assertIn("filename", data)
+        self.assertIn("file_id", data)
+        self.assertNotIn("file_path", data)  # absolute path must not leak to client
         self.assertEqual(data["filename"], "report.txt")
+        self.assertEqual(data["size_bytes"], len(content))
 
-        # File actually exists on disk
-        file_path = Path(data["file_path"])
+        # File actually exists on disk, resolved server-side from file_id.
+        file_path = self._uploads_root / data["file_id"]
         self.assertTrue(file_path.exists(), f"Uploaded file not found at {file_path}")
         self.assertEqual(file_path.read_bytes(), content)
         self._tmp_files.append(file_path)
@@ -126,17 +131,18 @@ class TestUploadAPI(unittest.TestCase):
     # ── test_upload_saves_to_uploads_dir ──────────────────────────────────────
 
     def test_upload_saves_to_uploads_dir(self):
-        """File saved as uploads/{uuid.hex}{ext}."""
+        """File saved as uploads/{uuid.hex}{ext}; file_id is that storage name."""
         content = b"test content"
         response = self._post_upload("data.csv", content)
 
         self.assertEqual(response.status_code, 201, response.text)
         data = response.json()
-        file_path = Path(data["file_path"])
+        file_id = data["file_id"]
+        file_path = self._uploads_root / file_id
 
         # Is under uploads/
         self.assertEqual(file_path.parent.resolve(), self._uploads_root.resolve())
-        # Filename is 32 hex chars (uuid4 hex) + original extension
+        # file_id is 32 hex chars (uuid4 hex) + original extension
         self.assertEqual(len(file_path.stem), 32)
         self.assertTrue(file_path.stem.isalnum())
         self.assertEqual(file_path.suffix, ".csv")

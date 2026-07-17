@@ -17,6 +17,7 @@ try:  # Prefer real LangChain message classes when installed.
 except Exception:  # pragma: no cover - dependency fallback for stripped test envs
     from doyoutrade.test_messages import AIMessage, HumanMessage, ToolMessage
 
+from doyoutrade.assistant.attachments import compose_model_user_text
 from doyoutrade.assistant.repository import (
     InMemoryAssistantRepository,
     normalize_tool_configs,
@@ -460,7 +461,14 @@ def _conversation_messages_from_rows(rows: list[dict[str, Any]], fallback_user_t
         role = row.get("role")
         content = str(row.get("content") or "")
         if role == "user":
-            messages.append(HumanMessage(content=content))
+            # Persisted content is the user's own text only; re-inject the
+            # structured attachments as the model-visible path block so the
+            # agent can still read_file them on later turns. Must use the same
+            # composer as the live turn so the reconstructed last message equals
+            # ``fallback_user_text`` (otherwise the tail check below duplicates it).
+            metadata = row.get("metadata")
+            atts = metadata.get("attachments") if isinstance(metadata, dict) else None
+            messages.append(HumanMessage(content=compose_model_user_text(content, atts)))
         elif role == "assistant":
             # A run that failed mid-stream persists a flagged assistant message so the
             # failure stays visible in the chat, but it must NOT be replayed into the
@@ -1790,6 +1798,7 @@ class AssistantService:
         *,
         session_id: str,
         content: str,
+        attachments: list[dict[str, Any]] | None = None,
         streaming_controller: Any = None,
         source_attribution: Mapping[str, str | None] | None = None,
         turn_context_reminder: str | None = None,
@@ -1799,6 +1808,7 @@ class AssistantService:
         if session is None:
             raise RecordNotFoundError(f"assistant session not found: {session_id}")
 
+        attachments = list(attachments or [])
         text = content.strip()
         text = await self._resolve_user_question_answer(session, text)
 
@@ -1822,8 +1832,17 @@ class AssistantService:
                 # skill 找不到，当作普通消息处理
                 cmd_key = None
 
-        if not text:
+        if not text and not attachments:
             raise ValueError("content is required")
+
+        # Persisted user content stays clean (the user's own text only); the
+        # structured attachments ride in metadata. The model-visible turn text
+        # injects the absolute paths so the agent can read_file them — this is
+        # never persisted into ``content`` nor shown to the user.
+        message_metadata: dict[str, Any] = dict(user_message_metadata or {})
+        if attachments:
+            message_metadata["attachments"] = attachments
+        model_text = compose_model_user_text(text, attachments)
 
         attempt_id = f"attempt-{uuid4().hex[:12]}"
         run_id = f"asst-run-{uuid4().hex[:12]}"
@@ -1834,7 +1853,7 @@ class AssistantService:
             role="user",
             content=text,
             linked_attempt_id=attempt_id,
-            metadata=dict(user_message_metadata or {}),
+            metadata=message_metadata,
         )
         await self.repository.append_event(
             session_id=session_id,
@@ -1843,7 +1862,8 @@ class AssistantService:
                 "message_id": user_message["message_id"],
                 "role": "user",
                 "attempt_id": attempt_id,
-                "metadata_keys": sorted((user_message_metadata or {}).keys()),
+                "metadata_keys": sorted(message_metadata.keys()),
+                "attachment_count": len(attachments),
             },
         )
         should_generate_title = _should_generate_session_title(session.get("title", ""))
@@ -1856,7 +1876,7 @@ class AssistantService:
         task = asyncio.create_task(
             self._run_and_finalize(
                 session=session,
-                text=text,
+                text=model_text,
                 attempt_id=attempt_id,
                 run_id=run_id,
                 user_message=user_message,

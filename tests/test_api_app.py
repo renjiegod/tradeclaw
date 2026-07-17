@@ -1075,8 +1075,9 @@ class _FakeAssistantService:
             "channel_type": None,
         }
 
-    async def send_message(self, *, session_id, content):
+    async def send_message(self, *, session_id, content, attachments=None):
         self.sent_messages.append((session_id, content))
+        self.sent_attachments = attachments
         if content.strip().lower() == "/new":
             previous = self.sessions[session_id]
             created = await self.create_session(

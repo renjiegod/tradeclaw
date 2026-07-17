@@ -13,6 +13,7 @@ import type {
   AssistantSendMessageResponse,
   AssistantSession,
   AssistantSessionListResponse,
+  MessageAttachment,
   AssistantTool,
   AssistantChannel,
   AssistantChannelListResponse,
@@ -850,10 +851,13 @@ export function swarmRunEventStreamUrl(runId: string, lastEventId?: string | nul
 export async function sendAssistantMessage(
   sessionId: string,
   content: string,
+  attachments?: MessageAttachment[],
 ): Promise<AssistantSendMessageResponse> {
+  const body: { content: string; attachments?: MessageAttachment[] } = { content };
+  if (attachments && attachments.length > 0) body.attachments = attachments;
   const result = await request<AssistantSendMessageResponse>(`/assistant/sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(body),
   });
   return {
     ...result,
