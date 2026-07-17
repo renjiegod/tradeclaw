@@ -24,6 +24,7 @@ import {
   listPendingApprovals,
   sendAssistantMessage,
   stopAssistantSession,
+  uploadFile,
 } from "../api";
 
 vi.mock("../api", () => ({
@@ -328,6 +329,62 @@ describe("AssistantPage conversation", () => {
     await waitFor(() =>
       expect(sendAssistantMessage).toHaveBeenCalledWith("auto-session-1", "你好"),
     );
+  });
+
+  it("sends attachments as structured metadata, never as a path in the message text", async () => {
+    const createdSession: AssistantSession = {
+      ...session,
+      session_id: "auto-session-1",
+      title: "新会话",
+    };
+    vi.mocked(listAssistantSessions)
+      .mockResolvedValueOnce({ items: [], total: 0, limit: 50, offset: 0 })
+      .mockResolvedValue({ items: [createdSession], total: 1, limit: 50, offset: 0 });
+    vi.mocked(listAssistantMessages).mockResolvedValue([]);
+    vi.mocked(createAssistantSession).mockResolvedValue(createdSession);
+    vi.mocked(uploadFile).mockResolvedValue({
+      status: "ok",
+      file_id: "0123456789abcdef0123456789abcdef.pdf",
+      filename: "流水.pdf",
+      mime_type: "application/pdf",
+      size_bytes: 1234,
+    });
+    vi.mocked(sendAssistantMessage).mockResolvedValue({
+      session: createdSession,
+      messages: [],
+      trace_id: null,
+    });
+
+    const { container } = render(<AssistantPage />);
+    await waitFor(() => expect(screen.getByText("试试这些示例：")).toBeInTheDocument());
+
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(["x"], "流水.pdf", { type: "application/pdf" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    // The composer shows a filename chip — never the server path.
+    await waitFor(() => expect(screen.getByText("流水.pdf")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText(messageInputPlaceholder), {
+      target: { value: "分析这个文件" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /发送/i }));
+
+    await waitFor(() =>
+      expect(sendAssistantMessage).toHaveBeenCalledWith("auto-session-1", "分析这个文件", [
+        {
+          file_id: "0123456789abcdef0123456789abcdef.pdf",
+          filename: "流水.pdf",
+          mime_type: "application/pdf",
+          size_bytes: 1234,
+        },
+      ]),
+    );
+    // The message text carries the user's words only — no path, no prefix.
+    const lastCall = vi.mocked(sendAssistantMessage).mock.calls.at(-1)!;
+    expect(lastCall[1]).toBe("分析这个文件");
+    expect(lastCall[1]).not.toContain("path:");
+    expect(lastCall[1]).not.toContain("Uploaded file");
   });
 
   it("warns instead of silently no-oping when send has no session and no agent", async () => {

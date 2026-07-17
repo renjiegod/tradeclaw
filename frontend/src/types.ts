@@ -465,6 +465,17 @@ export type AssistantUserQuestionBlock = {
   multi_select?: boolean;
 };
 
+// A file attached to a user message. The client never holds the server's
+// absolute path — only the opaque `file_id` (returned by /upload) plus display
+// metadata. The backend resolves file_id -> absolute path server-side and
+// injects it into the model-visible text; it never appears in `content`.
+export type MessageAttachment = {
+  file_id: string;
+  filename: string;
+  mime_type?: string | null;
+  size_bytes?: number;
+};
+
 export type AssistantMessage = {
   message_id: string;
   session_id: string;
@@ -473,6 +484,9 @@ export type AssistantMessage = {
   created_at: string;
   linked_attempt_id: string | null;
   metadata: Record<string, unknown> & {
+    // Files the user attached to this message (rendered as filename chips, never
+    // as a raw path). Present on user messages that carried uploads.
+    attachments?: MessageAttachment[];
     thinking?: string;
     // Set on the assistant message persisted when a run fails mid-stream (e.g. a
     // model ReadTimeout). `partial` marks that `content` holds streamed-so-far text
@@ -2175,8 +2189,12 @@ export type AgentSettings = {
 
 export interface UploadResult {
   status: "ok";
-  file_path: string;
+  // Opaque server-side id (the on-disk storage name). The absolute path is NOT
+  // returned to the client — the backend re-derives it from file_id.
+  file_id: string;
   filename: string;
+  mime_type?: string | null;
+  size_bytes?: number;
 }
 
 export type AgentToolConfig = {

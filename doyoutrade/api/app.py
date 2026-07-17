@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 import json
+import mimetypes
 import os
 import uuid
 from pathlib import Path
@@ -23,6 +24,7 @@ from fastapi.responses import JSONResponse
 from opentelemetry import trace as trace_api
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from doyoutrade.assistant import attachments as _attachments
 from doyoutrade.assistant.cron_manager import AgentCronManager
 from doyoutrade.assistant.repository import normalize_tool_configs
 from doyoutrade.assistant.session_export import build_assistant_session_export
@@ -693,8 +695,9 @@ def create_app(
     }
     _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
     _CHUNK_SIZE = 1024 * 1024  # 1 MB
-    # uploads/ is at repo root: doyoutrade/api/app.py -> doyoutrade/api/ -> doyoutrade/ -> repo/
-    _UPLOADS_DIR = Path(__file__).resolve().parent.parent.parent / "uploads"
+    # uploads/ dir + the file_id contract live in the attachments module (single
+    # source of truth shared with the assistant service).
+    _UPLOADS_DIR = _attachments.UPLOADS_DIR
 
     if assistant_service is None:
         from doyoutrade.assistant import AssistantService
@@ -860,10 +863,16 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         logger.info("upload_file saved filename=%s size=%d path=%s", filename, bytes_read, storage_path)
+        # Return an opaque file_id (the on-disk storage name) + display metadata.
+        # The server's absolute path is intentionally NOT exposed to the client;
+        # it is re-derived server-side from file_id when a message references it.
+        mime_type = file.content_type or mimetypes.guess_type(filename)[0]
         return {
             "status": "ok",
-            "file_path": str(storage_path),
+            "file_id": storage_name,
             "filename": filename,
+            "mime_type": mime_type,
+            "size_bytes": bytes_read,
         }
 
     @app.get("/health")
@@ -1627,9 +1636,21 @@ def create_app(
 
     @app.post("/assistant/sessions/{session_id}/messages")
     async def send_assistant_message(session_id: str, payload: dict):
-        content = _normalize_required_string(payload.get("content"), field_name="content")
+        # content is optional when structured attachments are present (e.g. the
+        # user uploads a file without typing anything); the service enforces
+        # "at least one of content/attachments".
+        content = _normalize_optional_string(payload.get("content"), field_name="content") or ""
         try:
-            return await assistant_service.send_message(session_id=session_id, content=content)
+            attachments = _attachments.normalize_attachments(payload.get("attachments"))
+        except _attachments.AttachmentError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"error_code": exc.error_code, "message": str(exc)},
+            ) from exc
+        try:
+            return await assistant_service.send_message(
+                session_id=session_id, content=content, attachments=attachments
+            )
         except RecordNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
