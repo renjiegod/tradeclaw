@@ -3033,6 +3033,81 @@ def create_app(
 
         return StreamingResponse(_sse(), media_type="text/event-stream")
 
+    # ------------------------------------------------------------------
+    # Web first-run setup wizard (SetupWizard.tsx). Backs the same "is the
+    # default agent configured?" question the terminal onboarding wizard asks
+    # (doyoutrade/onboarding.py::_run) — imported from there, not
+    # reimplemented, so a machine configured from either surface reads as
+    # configured from the other. See DOYOUTRADE_WEB_SETUP in
+    # doyoutrade/api/server.py::_serve_doyoutrade for how the terminal wizard
+    # defers to this overlay on a double-click launch.
+    # ------------------------------------------------------------------
+
+    @app.get("/setup/status")
+    async def get_setup_status():
+        from doyoutrade.onboarding import agent_route_usable
+
+        try:
+            agent_repo = getattr(assistant_service, "agent_repo", None)
+            if agent_repo is None:
+                raise RuntimeError("assistant agent repository is not configured")
+            route_repository = getattr(service, "model_route_repository", None)
+            if route_repository is None:
+                raise RuntimeError("model routes are not configured")
+            configured = await agent_route_usable(route_repository, agent_repo)
+            return {"configured": configured}
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/setup/providers")
+    async def get_setup_providers():
+        from doyoutrade.onboarding import serialize_presets
+
+        return {"items": serialize_presets()}
+
+    @app.post("/setup/complete")
+    async def complete_setup(payload: dict):
+        from doyoutrade.onboarding import DEFAULT_ROUTE_NAME, create_route_and_bind_agent
+
+        try:
+            route_name = (
+                _normalize_optional_string(payload.get("route_name"), field_name="route_name")
+                or DEFAULT_ROUTE_NAME
+            )
+            kind = _normalize_required_string(payload.get("provider_kind"), field_name="provider_kind")
+            allowed_kinds = capability_registry.model_provider_kinds()
+            if kind not in allowed_kinds:
+                raise ValueError(f"provider_kind must be one of: {', '.join(allowed_kinds)}")
+            base_url = _normalize_optional_string(payload.get("base_url"), field_name="base_url")
+            target_model = _normalize_optional_string(payload.get("target_model"), field_name="target_model")
+            api_key = str(payload.get("api_key") or "")
+
+            agent_repo = getattr(assistant_service, "agent_repo", None)
+            if agent_repo is None:
+                raise RuntimeError("assistant agent repository is not configured")
+            route_repository = getattr(service, "model_route_repository", None)
+            if route_repository is None:
+                raise RuntimeError("model routes are not configured")
+
+            resolved_name = await create_route_and_bind_agent(
+                route_repository,
+                agent_repo,
+                route_name=route_name,
+                provider_kind=kind,
+                api_key=api_key,
+                base_url=base_url,
+                target_model=target_model,
+            )
+            return await service.get_model_route_api(resolved_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RecordNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except StateConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     @app.get("/system/state")
     async def get_system_state():
         return await service.get_system_state()

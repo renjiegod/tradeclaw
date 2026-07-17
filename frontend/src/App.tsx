@@ -22,7 +22,16 @@ import {
   useNavigate,
 } from "react-router-dom";
 
-import { getHealth, getRuntimeStatus, getSystemState, getVersion, listTasks, listPendingApprovals } from "./api";
+import {
+  getHealth,
+  getRuntimeStatus,
+  getSetupStatus,
+  getSystemState,
+  getVersion,
+  listTasks,
+  listPendingApprovals,
+} from "./api";
+import { SETUP_WIZARD_SKIPPED_KEY, SetupWizard } from "./components/SetupWizard";
 import { UpdateBanner } from "./components/UpdateFlow";
 import { type ConsoleOutletContext, useConsoleOutlet } from "./consoleOutletContext";
 import { PageRefreshContext } from "./pageRefreshContext";
@@ -322,6 +331,52 @@ function ApprovalsOutlet() {
   return <ApprovalsPage onMutated={() => void refresh()} />;
 }
 
+/**
+ * Mounts the web first-run SetupWizard overlay (SetupWizard.tsx) when the
+ * default agent has no usable model route yet — the double-click-launch
+ * replacement for the terminal onboarding wizard (doyoutrade/onboarding.py),
+ * which is skipped in that launch mode (DOYOUTRADE_WEB_SETUP=1).
+ *
+ * "Configured?" always comes from GET /setup/status (never assumed); a
+ * localStorage flag only suppresses the overlay for *this* browser after the
+ * user explicitly clicks "跳过" — it never fakes "configured" for anyone else
+ * hitting the same server, and a later status re-check still wins once real
+ * configuration lands (e.g. someone finishes it from another tab/device).
+ */
+function SetupWizardGate() {
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [skipped, setSkipped] = useState(() => localStorage.getItem(SETUP_WIZARD_SKIPPED_KEY) === "1");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await getSetupStatus();
+        if (!cancelled) setConfigured(status.configured);
+      } catch {
+        // /setup/status unavailable (older backend, or assistant/model-route
+        // repositories not wired in this deployment) — never block the
+        // console behind a wizard it cannot actually resolve.
+        if (!cancelled) setConfigured(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (configured === null || configured === true || skipped) {
+    return null;
+  }
+
+  return (
+    <SetupWizard
+      onCompleted={() => setConfigured(true)}
+      onSkip={() => setSkipped(true)}
+    />
+  );
+}
+
 function ModelSettingsOutlet() {
   return <ModelSettingsPage />;
 }
@@ -471,6 +526,7 @@ export default function App() {
         },
       }}
     >
+      <SetupWizardGate />
       <Routes>
         <Route path="/" element={<Navigate to="/assistant" replace />} />
         <Route element={<ConsoleShell />}>

@@ -573,6 +573,139 @@ wheels = [
 ]
 
 [[package]]
+name = "doyoutrade"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "aiosqlite" },
+    { name = "akshare" },
+    { name = "alembic" },
+    { name = "anthropic" },
+    { name = "apscheduler" },
+    { name = "asyncpg" },
+    { name = "baostock" },
+    { name = "click" },
+    { name = "fastapi" },
+    { name = "greenlet" },
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "langchain-core" },
+    { name = "lark-oapi" },
+    { name = "lmstudio" },
+    { name = "openai" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation-fastapi" },
+    { name = "opentelemetry-instrumentation-logging" },
+    { name = "opentelemetry-sdk" },
+    { name = "pandas" },
+    { name = "pydantic" },
+    { name = "pypinyin" },
+    { name = "python-multipart" },
+    { name = "python-socks" },
+    { name = "pyyaml" },
+    { name = "ruamel-yaml" },
+    { name = "sqlalchemy" },
+    { name = "stockstats" },
+    { name = "tushare" },
+    { name = "uvicorn" },
+    { name = "websocket-client" },
+    { name = "websockets" },
+]
+
+[package.optional-dependencies]
+doc-processing = [
+    { name = "openpyxl" },
+    { name = "pypdfium2" },
+    { name = "python-docx" },
+    { name = "python-pptx" },
+    { name = "rapidocr-onnxruntime" },
+]
+examples = [
+    { name = "vectorbt" },
+]
+mootdx = [
+    { name = "mootdx" },
+]
+qmt-proxy = [
+    { name = "grpcio" },
+    { name = "grpcio-reflection" },
+    { name = "loguru" },
+    { name = "pillow", marker = "sys_platform == 'win32'" },
+    { name = "protobuf" },
+    { name = "pydantic-settings" },
+    { name = "pystray", marker = "sys_platform == 'win32'" },
+    { name = "python-dotenv" },
+    { name = "ruamel-yaml" },
+    { name = "xtquant", marker = "sys_platform == 'win32'" },
+]
+report = [
+    { name = "aiosmtplib" },
+    { name = "markdown" },
+    { name = "playwright" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosmtplib", marker = "extra == 'report'", specifier = ">=3.0" },
+    { name = "aiosqlite", specifier = ">=0.21.0" },
+    { name = "akshare", specifier = ">=1.18.52" },
+    { name = "alembic", specifier = ">=1.15.2" },
+    { name = "anthropic", specifier = ">=0.40.0" },
+    { name = "apscheduler", specifier = ">=3.11.0,<4" },
+    { name = "asyncpg", specifier = ">=0.31.0" },
+    { name = "baostock", specifier = ">=0.9.1" },
+    { name = "click", specifier = ">=8.1.0" },
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "greenlet", specifier = ">=3.0.0" },
+    { name = "grpcio", marker = "extra == 'qmt-proxy'", specifier = ">=1.76.0" },
+    { name = "grpcio-reflection", marker = "extra == 'qmt-proxy'", specifier = ">=1.76.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "jinja2", specifier = ">=3.1.0" },
+    { name = "langchain-core", specifier = ">=0.3.0" },
+    { name = "lark-oapi", specifier = ">=1.4.0" },
+    { name = "lmstudio", specifier = ">=1.5.0" },
+    { name = "loguru", marker = "extra == 'qmt-proxy'", specifier = ">=0.7.3" },
+    { name = "markdown", marker = "extra == 'report'", specifier = ">=3.5" },
+    { name = "mootdx", marker = "extra == 'mootdx'", specifier = ">=0.11.7" },
+    { name = "openai", specifier = ">=1.68.0" },
+    { name = "openpyxl", marker = "extra == 'doc-processing'", specifier = ">=3.1.0" },
+    { name = "opentelemetry-api", specifier = ">=1.30.0" },
+    { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.51b0" },
+    { name = "opentelemetry-instrumentation-logging", specifier = ">=0.51b0" },
+    { name = "opentelemetry-sdk", specifier = ">=1.30.0" },
+    { name = "pandas", specifier = ">=2.2.0" },
+    { name = "pillow", marker = "sys_platform == 'win32' and extra == 'qmt-proxy'", specifier = ">=10.0.0" },
+    { name = "playwright", marker = "extra == 'report'", specifier = ">=1.40" },
+    { name = "protobuf", marker = "extra == 'qmt-proxy'", specifier = ">=6.33.0" },
+    { name = "pydantic", specifier = ">=2.12.5" },
+    { name = "pydantic-settings", marker = "extra == 'qmt-proxy'", specifier = ">=2.11.0" },
+    { name = "pypdfium2", marker = "extra == 'doc-processing'", specifier = ">=4.0.0" },
+    { name = "pypinyin", specifier = ">=0.53.0" },
+    { name = "pystray", marker = "sys_platform == 'win32' and extra == 'qmt-proxy'", specifier = ">=0.19.5" },
+    { name = "python-docx", marker = "extra == 'doc-processing'", specifier = ">=1.1.0" },
+    { name = "python-dotenv", marker = "extra == 'qmt-proxy'", specifier = ">=1.2.1" },
+    { name = "python-multipart", specifier = ">=0.0.20" },
+    { name = "python-pptx", marker = "extra == 'doc-processing'", specifier = ">=1.0.0" },
+    { name = "python-socks", extras = ["asyncio"], specifier = ">=2.8.1" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
+    { name = "rapidocr-onnxruntime", marker = "extra == 'doc-processing'", specifier = ">=1.3.0" },
+    { name = "ruamel-yaml", specifier = ">=0.18" },
+    { name = "ruamel-yaml", marker = "extra == 'qmt-proxy'", specifier = ">=0.18" },
+    { name = "sqlalchemy", specifier = ">=2.0.39" },
+    { name = "stockstats", specifier = ">=0.6.0" },
+    { name = "tushare", specifier = ">=1.4.29" },
+    { name = "uvicorn", specifier = ">=0.30.0" },
+    { name = "vectorbt", marker = "extra == 'examples'", specifier = ">=0.26.0" },
+    { name = "websocket-client", specifier = ">=1.8.0" },
+    { name = "websockets", specifier = ">=16.0" },
+    { name = "xtquant", marker = "sys_platform == 'win32' and extra == 'qmt-proxy'", specifier = ">=250516.1.1,<250517.0.0" },
+]
+provides-extras = ["qmt-proxy", "mootdx", "examples", "doc-processing", "report"]
+
+[package.metadata.requires-dev]
+dev = []
+
+[[package]]
 name = "et-xmlfile"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2404,6 +2537,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pystray"
+version = "0.19.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pillow", marker = "sys_platform == 'win32'" },
+    { name = "six", marker = "sys_platform == 'win32'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5c/64/927a4b9024196a4799eba0180e0ca31568426f258a4a5c90f87a97f51d28/pystray-0.19.5-py2.py3-none-any.whl", hash = "sha256:a0c2229d02cf87207297c22d86ffc57c86c227517b038c0d3c59df79295ac617", size = 49068, upload-time = "2023-09-17T13:44:26.872Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -3062,135 +3207,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/09/a9/6ba95a270c6f1fbcd
 wheels = [
     { url = "https://files.pythonhosted.org/packages/16/e1/3079a9ff9b8e11b846c6ac5c8b5bfb7ff225eee721825310c91b3b50304f/tqdm-4.67.3-py3-none-any.whl", hash = "sha256:ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf", size = 78374, upload-time = "2026-02-03T17:35:50.982Z" },
 ]
-
-[[package]]
-name = "doyoutrade"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aiosqlite" },
-    { name = "akshare" },
-    { name = "alembic" },
-    { name = "anthropic" },
-    { name = "apscheduler" },
-    { name = "asyncpg" },
-    { name = "baostock" },
-    { name = "click" },
-    { name = "fastapi" },
-    { name = "greenlet" },
-    { name = "httpx" },
-    { name = "jinja2" },
-    { name = "langchain-core" },
-    { name = "lark-oapi" },
-    { name = "lmstudio" },
-    { name = "openai" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-instrumentation-fastapi" },
-    { name = "opentelemetry-instrumentation-logging" },
-    { name = "opentelemetry-sdk" },
-    { name = "pandas" },
-    { name = "pydantic" },
-    { name = "pypinyin" },
-    { name = "python-multipart" },
-    { name = "python-socks" },
-    { name = "pyyaml" },
-    { name = "ruamel-yaml" },
-    { name = "sqlalchemy" },
-    { name = "stockstats" },
-    { name = "tushare" },
-    { name = "uvicorn" },
-    { name = "websocket-client" },
-    { name = "websockets" },
-]
-
-[package.optional-dependencies]
-doc-processing = [
-    { name = "openpyxl" },
-    { name = "pypdfium2" },
-    { name = "python-docx" },
-    { name = "python-pptx" },
-    { name = "rapidocr-onnxruntime" },
-]
-examples = [
-    { name = "vectorbt" },
-]
-mootdx = [
-    { name = "mootdx" },
-]
-qmt-proxy = [
-    { name = "grpcio" },
-    { name = "grpcio-reflection" },
-    { name = "loguru" },
-    { name = "protobuf" },
-    { name = "pydantic-settings" },
-    { name = "python-dotenv" },
-    { name = "ruamel-yaml" },
-    { name = "xtquant", marker = "sys_platform == 'win32'" },
-]
-report = [
-    { name = "aiosmtplib" },
-    { name = "markdown" },
-    { name = "playwright" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiosmtplib", marker = "extra == 'report'", specifier = ">=3.0" },
-    { name = "aiosqlite", specifier = ">=0.21.0" },
-    { name = "akshare", specifier = ">=1.18.52" },
-    { name = "alembic", specifier = ">=1.15.2" },
-    { name = "anthropic", specifier = ">=0.40.0" },
-    { name = "apscheduler", specifier = ">=3.11.0,<4" },
-    { name = "asyncpg", specifier = ">=0.31.0" },
-    { name = "baostock", specifier = ">=0.9.1" },
-    { name = "click", specifier = ">=8.1.0" },
-    { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "greenlet", specifier = ">=3.0.0" },
-    { name = "grpcio", marker = "extra == 'qmt-proxy'", specifier = ">=1.76.0" },
-    { name = "grpcio-reflection", marker = "extra == 'qmt-proxy'", specifier = ">=1.76.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "jinja2", specifier = ">=3.1.0" },
-    { name = "langchain-core", specifier = ">=0.3.0" },
-    { name = "lark-oapi", specifier = ">=1.4.0" },
-    { name = "lmstudio", specifier = ">=1.5.0" },
-    { name = "loguru", marker = "extra == 'qmt-proxy'", specifier = ">=0.7.3" },
-    { name = "markdown", marker = "extra == 'report'", specifier = ">=3.5" },
-    { name = "mootdx", marker = "extra == 'mootdx'", specifier = ">=0.11.7" },
-    { name = "openai", specifier = ">=1.68.0" },
-    { name = "openpyxl", marker = "extra == 'doc-processing'", specifier = ">=3.1.0" },
-    { name = "opentelemetry-api", specifier = ">=1.30.0" },
-    { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.51b0" },
-    { name = "opentelemetry-instrumentation-logging", specifier = ">=0.51b0" },
-    { name = "opentelemetry-sdk", specifier = ">=1.30.0" },
-    { name = "pandas", specifier = ">=2.2.0" },
-    { name = "playwright", marker = "extra == 'report'", specifier = ">=1.40" },
-    { name = "protobuf", marker = "extra == 'qmt-proxy'", specifier = ">=6.33.0" },
-    { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "pydantic-settings", marker = "extra == 'qmt-proxy'", specifier = ">=2.11.0" },
-    { name = "pypdfium2", marker = "extra == 'doc-processing'", specifier = ">=4.0.0" },
-    { name = "pypinyin", specifier = ">=0.53.0" },
-    { name = "python-docx", marker = "extra == 'doc-processing'", specifier = ">=1.1.0" },
-    { name = "python-dotenv", marker = "extra == 'qmt-proxy'", specifier = ">=1.2.1" },
-    { name = "python-multipart", specifier = ">=0.0.20" },
-    { name = "python-pptx", marker = "extra == 'doc-processing'", specifier = ">=1.0.0" },
-    { name = "python-socks", extras = ["asyncio"], specifier = ">=2.8.1" },
-    { name = "pyyaml", specifier = ">=6.0.0" },
-    { name = "rapidocr-onnxruntime", marker = "extra == 'doc-processing'", specifier = ">=1.3.0" },
-    { name = "ruamel-yaml", specifier = ">=0.18" },
-    { name = "ruamel-yaml", marker = "extra == 'qmt-proxy'", specifier = ">=0.18" },
-    { name = "sqlalchemy", specifier = ">=2.0.39" },
-    { name = "stockstats", specifier = ">=0.6.0" },
-    { name = "tushare", specifier = ">=1.4.29" },
-    { name = "uvicorn", specifier = ">=0.30.0" },
-    { name = "vectorbt", marker = "extra == 'examples'", specifier = ">=0.26.0" },
-    { name = "websocket-client", specifier = ">=1.8.0" },
-    { name = "websockets", specifier = ">=16.0" },
-    { name = "xtquant", marker = "sys_platform == 'win32' and extra == 'qmt-proxy'", specifier = ">=250516.1.1,<250517.0.0" },
-]
-provides-extras = ["qmt-proxy", "mootdx", "examples", "doc-processing", "report"]
-
-[package.metadata.requires-dev]
-dev = []
 
 [[package]]
 name = "traitlets"

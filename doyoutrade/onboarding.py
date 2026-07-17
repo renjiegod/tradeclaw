@@ -13,17 +13,31 @@ Design rules (mirroring AGENTS.md error-visibility discipline):
   Docker, CI, ``&`` background), the wizard logs clear guidance and returns — the
   server still starts; the operator can configure via the /settings/models page
   or ``POST /model-routes`` afterwards.
+- Double-click launches (``DOYOUTRADE_WEB_SETUP=1``, see :func:`maybe_run_setup_wizard`)
+  short-circuit the same way *before* the TTY check: the web console's
+  ``SetupWizard`` overlay (``GET /setup/status`` + ``POST /setup/complete``,
+  wired in ``doyoutrade/api/app.py``) owns first-run configuration instead of a
+  blocking terminal prompt, so a user who never opens a terminal is never asked
+  to type into one.
 - Never crash startup on a wizard error. Any failure is logged (with type +
   message) and the server proceeds; a missing model only degrades the assistant
   (it already returns a structured "not configured" fallback), it must not take
   the whole platform down.
 - Idempotent: if a usable route already exists it is bound and the wizard is
   skipped, so re-runs never re-prompt.
+
+``agent_route_usable`` / ``first_usable_route`` / ``route_builds`` and
+``create_route_and_bind_agent`` / ``serialize_presets`` are public (no leading
+underscore) precisely because ``doyoutrade/api/app.py`` imports them for the web
+setup endpoints — this module is the single source of truth for "what counts as
+configured" and "how a route gets created + bound", shared by the terminal
+wizard and the web API so they can never drift apart.
 """
 
 from __future__ import annotations
 
 import getpass
+import os
 import sys
 import uuid
 from dataclasses import dataclass
@@ -57,7 +71,11 @@ class _Preset:
 # our adapters can speak today (anthropic / openai_compatible / lmstudio).
 # base_url + model_hint are suggestions the user can override; the model id is
 # always confirmed by the user (never silently assumed).
-_PRESETS: tuple[_Preset, ...] = (
+#
+# Public (no leading underscore): both the terminal wizard's ``_prompt()`` and
+# the web setup API's ``GET /setup/providers`` (``serialize_presets`` below)
+# read this exact tuple, so there is only ever one provider list to maintain.
+PRESETS: tuple[_Preset, ...] = (
     # —— 国内常用 ——
     _Preset("DeepSeek", "openai_compatible", "deepseek", "https://api.deepseek.com", "deepseek-chat"),
     _Preset("Kimi / Moonshot", "openai_compatible", "kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
@@ -129,6 +147,28 @@ _PRESETS: tuple[_Preset, ...] = (
 )
 
 
+def serialize_presets() -> list[dict]:
+    """JSON-serializable view of :data:`PRESETS` for ``GET /setup/providers``.
+
+    Field names match what the web ``SetupWizard`` form needs: ``label`` (menu
+    text), ``provider_kind`` / ``base_url`` / ``model_hint`` (form defaults),
+    ``needs_key`` (whether to require an API key input). This is the only place
+    that shapes the JSON, so the terminal preset list and the web provider list
+    can never disagree about what providers exist.
+    """
+
+    return [
+        {
+            "label": p.label,
+            "provider_kind": p.provider_kind,
+            "base_url": p.base_url,
+            "model_hint": p.model_hint,
+            "needs_key": p.needs_key,
+        }
+        for p in PRESETS
+    ]
+
+
 @dataclass(frozen=True)
 class _Answers:
     provider_kind: str
@@ -139,16 +179,30 @@ class _Answers:
     route_name: str
 
 
-async def maybe_run_setup_wizard(runtime: dict, *, launch_mode: str = "doyoutrade") -> None:
+async def maybe_run_setup_wizard(
+    runtime: dict, *, launch_mode: str = "doyoutrade", web_setup: bool | None = None
+) -> None:
     """Configure a model if the default agent has none. Never raises.
 
     ``launch_mode`` is the resolved ``doyoutrade --mode``. On a doyoutrade-only
     launch (macOS/Linux default) the first-run wizard also offers to register a
     remote qmt-proxy address; in ``both`` mode the embedded proxy is auto-wired
-    instead so this prompt is skipped."""
+    instead so this prompt is skipped.
 
+    ``web_setup`` (default: read from ``DOYOUTRADE_WEB_SETUP=1``) marks a
+    double-click / GUI launch: first-run configuration is handled by the web
+    console's ``SetupWizard`` overlay (``GET /setup/status`` +
+    ``POST /setup/complete``) instead of a blocking terminal prompt, so this
+    short-circuits *before* the TTY check — even a launch that happens to have
+    a real TTY attached (e.g. a bat file that opens a console window) must not
+    block on ``input()``/``getpass()`` waiting for someone who is looking at a
+    browser, not a terminal.
+    """
+
+    if web_setup is None:
+        web_setup = os.environ.get("DOYOUTRADE_WEB_SETUP") == "1"
     try:
-        await _run(runtime, launch_mode=launch_mode)
+        await _run(runtime, launch_mode=launch_mode, web_setup=web_setup)
     except (KeyboardInterrupt, EOFError):
         # Ctrl-C / closed stdin mid-wizard: skip, don't kill startup.
         print("\n跳过安装向导，稍后可在网页 /settings/models 配置模型。", flush=True)
@@ -161,22 +215,28 @@ async def maybe_run_setup_wizard(runtime: dict, *, launch_mode: str = "doyoutrad
         )
 
 
-async def _run(runtime: dict, *, launch_mode: str = "doyoutrade") -> None:
+async def _run(runtime: dict, *, launch_mode: str = "doyoutrade", web_setup: bool = False) -> None:
     from doyoutrade.assistant.repository import SqlAlchemyAgentRepository
 
     session_factory = runtime["session_factory"]
     route_repo = runtime["model_route_repository"]
     agent_repo = SqlAlchemyAgentRepository(session_factory)
 
-    # Already usable → nothing to do.
-    if await _agent_route_usable(runtime, agent_repo):
+    # Already usable → nothing to do. This check runs regardless of web_setup:
+    # a machine that has already been configured (terminal or web) must never
+    # be re-prompted by either surface.
+    if await agent_route_usable(route_repo, agent_repo):
         return
 
     # A usable route exists but the default agent isn't bound → bind it silently.
-    existing = await _first_usable_route(runtime, route_repo)
+    existing = await first_usable_route(route_repo)
     if existing is not None:
         await agent_repo.update_agent("agent_default", {"model_route_name": existing})
         logger.info("setup: bound default agent to existing model route %r", existing)
+        return
+
+    if web_setup:
+        _print_web_setup_guidance()
         return
 
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -325,26 +385,36 @@ async def _register_remote_proxy_account(repo) -> None:
     )
 
 
-async def _agent_route_usable(runtime: dict, agent_repo) -> bool:
-    agent = await agent_repo.get_agent("agent_default")
+async def agent_route_usable(route_repository, agent_repo, *, agent_id: str = "agent_default") -> bool:
+    """True iff *agent_id* is bound to a model route that actually builds an adapter.
+
+    Public and decoupled from the ``runtime`` dict (takes ``route_repository``
+    directly) so both the terminal wizard's ``_run`` and the web setup API's
+    ``GET /setup/status`` (``doyoutrade/api/app.py``) can call it and always see
+    the same answer to "is this machine configured?".
+    """
+
+    agent = await agent_repo.get_agent(agent_id)
     route_name = str((agent or {}).get("model_route_name") or "").strip()
     if not route_name:
         return False
-    return await _route_builds(runtime, route_name)
+    return await route_builds(route_repository, route_name)
 
 
-async def _first_usable_route(runtime: dict, route_repo) -> str | None:
+async def first_usable_route(route_repository) -> str | None:
+    """First route in *route_repository* that :func:`route_builds`, or None."""
+
     try:
-        routes = await route_repo.list_routes()
+        routes = await route_repository.list_routes()
     except Exception:
         return None
     for route in routes:
-        if await _route_builds(runtime, route.route_name):
+        if await route_builds(route_repository, route.route_name):
             return route.route_name
     return None
 
 
-async def _route_builds(runtime: dict, route_name: str) -> bool:
+async def route_builds(route_repository, route_name: str) -> bool:
     """True iff the route resolves to settings that build a real adapter.
 
     ``resolve_model_settings`` checks model/base_url; ``build_model_adapter``
@@ -359,7 +429,7 @@ async def _route_builds(runtime: dict, route_name: str) -> bool:
     try:
         settings = await resolve_model_settings(
             route_name=route_name,
-            route_repository=runtime["model_route_repository"],
+            route_repository=route_repository,
         )
         build_model_adapter(settings)
         return True
@@ -375,6 +445,19 @@ def _print_headless_guidance() -> None:
     )
 
 
+def _print_web_setup_guidance() -> None:
+    logger.warning(
+        "no model route configured; DOYOUTRADE_WEB_SETUP is set, so the terminal "
+        "wizard is skipped — open the web console to finish setup (it will show "
+        "a full-screen setup wizard backed by GET /setup/status + "
+        "POST /setup/complete)"
+    )
+    print(
+        "\n未检测到可用的模型配置。请在浏览器里完成设置——网页控制台会自动弹出安装向导。\n",
+        flush=True,
+    )
+
+
 def _prompt() -> _Answers | None:
     print("\n" + "=" * 60, flush=True)
     print("DoYouTrade 安装向导 — 未检测到可用的模型配置", flush=True)
@@ -383,14 +466,14 @@ def _prompt() -> _Answers | None:
 
     choice = select_index(
         "请选择供应商（↑↓ 选择，Enter 确认；无方向键时输入编号）",
-        [p.label for p in _PRESETS],
+        [p.label for p in PRESETS],
         allow_skip=True,
         skip_label="跳过（稍后在网页配置）",
         default=0,
     )
     if choice is None:
         return None
-    preset = _PRESETS[choice]
+    preset = PRESETS[choice]
 
     if preset.base_url is not None:
         base_url = _ask("接口地址", default=preset.base_url).strip() or None
@@ -434,26 +517,59 @@ def _ask(label: str, *, default: str) -> str:
 
 
 async def _apply(answers: _Answers, route_repo, agent_repo) -> None:
-    route_name = await _unique_route_name(route_repo, answers.route_name)
-    await route_repo.create(
-        route_name=route_name,
+    route_name = await create_route_and_bind_agent(
+        route_repo,
+        agent_repo,
+        route_name=answers.route_name,
         provider_kind=answers.provider_kind,
         api_key=answers.api_key,
         base_url=answers.base_url,
         target_model=answers.model,
     )
-    await agent_repo.update_agent("agent_default", {"model_route_name": route_name})
-
-    logger.info(
-        "setup: created model route=%r kind=%r model=%r and bound default agent",
-        route_name,
-        answers.provider_kind,
-        answers.model,
-    )
     print("\n✓ 已写入模型配置，并绑定默认智能体。", flush=True)
     print(f"  配置名称 = {route_name}", flush=True)
     print(f"  模型 ID  = {answers.model}", flush=True)
     print("正在启动服务……\n", flush=True)
+
+
+async def create_route_and_bind_agent(
+    route_repo,
+    agent_repo,
+    *,
+    route_name: str,
+    provider_kind: str,
+    api_key: str,
+    base_url: str | None,
+    target_model: str | None,
+    agent_id: str = "agent_default",
+) -> str:
+    """Create a model route and bind it as *agent_id*'s ``model_route_name``.
+
+    This is the single create-then-bind sequence shared by the terminal wizard
+    (``_apply``, above) and the web setup API (``POST /setup/complete`` in
+    ``doyoutrade/api/app.py``) — the exact two DB writes (route create + agent
+    bind) must stay identical across both entry points, so neither may
+    reimplement or copy-paste this. Returns the actual route name used (a
+    conflicting *route_name* is de-duplicated by :func:`_unique_route_name`).
+    """
+
+    resolved_name = await _unique_route_name(route_repo, route_name)
+    await route_repo.create(
+        route_name=resolved_name,
+        provider_kind=provider_kind,
+        api_key=api_key,
+        base_url=base_url,
+        target_model=target_model,
+    )
+    await agent_repo.update_agent(agent_id, {"model_route_name": resolved_name})
+    logger.info(
+        "setup: created model route=%r kind=%r model=%r and bound agent=%r",
+        resolved_name,
+        provider_kind,
+        target_model,
+        agent_id,
+    )
+    return resolved_name
 
 
 async def _unique_route_name(route_repo, route_name: str) -> str:

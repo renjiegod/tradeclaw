@@ -511,9 +511,15 @@ async def _serve_doyoutrade(launch_mode: str) -> None:
     # interactive TTY collects a provider + api_key + model and writes it before
     # we start serving. On doyoutrade-only launches it also offers to register a
     # remote qmt-proxy address. Non-interactive startups are never blocked.
+    #
+    # DOYOUTRADE_WEB_SETUP=1 (set by the double-click launcher, not by this
+    # process) marks a GUI launch: the terminal prompt is skipped in favor of
+    # the web console's own SetupWizard overlay (GET /setup/status +
+    # POST /setup/complete, wired below in create_app / app.py).
     from doyoutrade.onboarding import maybe_run_setup_wizard
 
-    await maybe_run_setup_wizard(app.state.runtime, launch_mode=launch_mode)
+    web_setup = os.environ.get("DOYOUTRADE_WEB_SETUP") == "1"
+    await maybe_run_setup_wizard(app.state.runtime, launch_mode=launch_mode, web_setup=web_setup)
 
     if launch_mode == "both":
         await _auto_wire_qmt_base_url(app.state.runtime, cfg.qmt_proxy)
@@ -534,6 +540,16 @@ async def _serve_doyoutrade(launch_mode: str) -> None:
         cfg.server.port,
     )
     server = Server(config)
+
+    # Optional Windows system tray icon (double-click launch UX): no-op unless
+    # sys.platform == win32 AND DOYOUTRADE_TRAY=1 (set by the launcher, not
+    # here). "退出 DoYouTrade" sets server.should_exit, the same
+    # graceful-shutdown trigger the update-restart hook below uses. Any
+    # failure degrades to no tray icon; it must never take startup down.
+    if launch_mode in ("doyoutrade", "both"):
+        from doyoutrade.infra.tray_icon import maybe_start_tray_icon
+
+        maybe_start_tray_icon(server, cfg.server.host, cfg.server.port)
 
     # Wire the self-updater's graceful-restart hook: an accepted
     # POST /update/apply drains the server, then (below) the process execs
