@@ -43,6 +43,29 @@ def _cmd_available() -> bool:
     return sys.platform == "win32" and shutil.which("cmd.exe") is not None
 
 
+def _system_ansi_code_page() -> int | None:
+    """Return Windows system ANSI code page (GetACP), or None if unknown."""
+    shell = shutil.which("powershell") or shutil.which("powershell.exe")
+    if not shell:
+        return None
+    probe = subprocess.run(
+        [
+            shell,
+            "-NoProfile",
+            "-Command",
+            "[System.Text.Encoding]::Default.CodePage",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    for ln in (probe.stdout or "").splitlines():
+        ln = ln.strip()
+        if ln.isdigit():
+            return int(ln)
+    return None
+
+
 def _read_bat_text(path: Path) -> str:
     return path.read_bytes().decode("gbk")
 
@@ -136,12 +159,26 @@ class LauncherBatEncodingTests(unittest.TestCase):
                     f"{path.name} should still mention doyoutrade in the "
                     f"error message. output:\n{combined}",
                 )
-                self.assertIn(
-                    "未找到",
-                    combined,
-                    f"{path.name} Chinese error text should render. "
-                    f"output:\n{combined}",
-                )
+                # GBK .bat sources only render as intact Chinese under CP936
+                # (Chinese Windows). GitHub Actions windows-latest is en-US
+                # (typically CP1252) — require the glyph check only there.
+                acp = _system_ansi_code_page()
+                if acp == 936:
+                    self.assertIn(
+                        "未找到",
+                        combined,
+                        f"{path.name} Chinese error text should render under "
+                        f"CP936. output:\n{combined}",
+                    )
+                else:
+                    # Still require the ASCII diagnostic cue we added for all locales.
+                    self.assertIn(
+                        "uv tool list",
+                        combined.lower(),
+                        f"{path.name} should mention uv tool list even when "
+                        f"CJK glyphs are mojibake under ACP={acp}. "
+                        f"output:\n{combined}",
+                    )
 
     def test_launchers_avoid_parenthesized_if_blocks_with_echo(self) -> None:
         """Static guard: Chinese echo must not sit inside ``if (...)`` blocks."""
