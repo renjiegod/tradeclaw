@@ -1,8 +1,12 @@
-"""ask_user_question end-to-end regression: the tool records the pending
-question and ends the turn; option clicks (/ask_user protocol) and free-text
-replies both answer + clear it with visible user_question.* events; stale
-clicks never crash; malformed input fails with structured errors."""
+"""ask_user_question end-to-end regression (fizz-style blocking): the tool call
+suspends inside its execution slot until the user answers; the answer is fed
+back as THIS call's tool_result and the SAME run continues — no synthetic user
+message, no new attempt. Option clicks (answer endpoint / QuestionBroker) and
+free-typed replies both resolve the wait with visible user_question.* events;
+stale clicks with no live wait never crash; malformed input fails with
+structured errors."""
 
+import asyncio
 import unittest
 from typing import Any
 from unittest.mock import MagicMock
@@ -50,15 +54,25 @@ class AskUserQuestionServiceTests(unittest.IsolatedAsyncioTestCase):
         events = await service.list_events(session_id, limit=200)
         return [e["event_type"] for e in events]
 
-    async def test_ask_then_option_click_answers(self):
+    async def _wait_for_pending_question(self, service, session_id: str) -> str:
+        """Poll until the ask_user tool has suspended on a broker future."""
+        for _ in range(500):
+            pending = service.question_broker.list_pending(session_id)
+            if pending:
+                return pending[0]["question_id"]
+            await asyncio.sleep(0.005)
+        raise AssertionError("ask_user_question never suspended on the broker")
+
+    async def test_option_answer_continues_same_run_without_user_message(self):
         def _expect_answer_visible(messages, _tools):
             joined = "\n".join(str(getattr(m, "content", "")) for m in messages)
-            assert "我的选择：近一年" in joined, "rewritten answer not visible to model"
+            assert '"selected"' in joined and "近一年" in joined, (
+                "structured answer not fed back as tool_result"
+            )
 
         adapter = ScriptedModelAdapter(
             [
                 call_tool("ask_user_question", dict(_QUESTION_ARGS)),
-                say("好的，等你选择。"),
                 say("收到，按近一年跑。", expect=_expect_answer_visible),
             ]
         )
@@ -66,40 +80,46 @@ class AskUserQuestionServiceTests(unittest.IsolatedAsyncioTestCase):
         session = await service.create_session(agent_id="test-agent", title="ask")
         sid = session["session_id"]
 
-        result = await service.send_message(session_id=sid, content="帮我定回测区间")
-        pending = await self._pending(repo, sid)
-        self.assertIsNotNone(pending)
-        question_id = pending["question_id"]
-        self.assertEqual(len(pending["options"]), 2)
-        # The persisted assistant message carries the user_question block.
-        block_types = [
-            block.get("type")
-            for block in result["messages"][-1]["metadata"].get("content_blocks", [])
-        ]
-        self.assertIn("user_question", block_types)
+        # send_message blocks until the question is answered (the turn suspends
+        # inside the tool slot), so drive it as a task and resolve concurrently.
+        run = asyncio.create_task(service.send_message(session_id=sid, content="帮我定回测区间"))
+        question_id = await self._wait_for_pending_question(service, sid)
+        self.assertIsNotNone(await self._pending(repo, sid))
         self.assertIn("user_question.asked", await self._event_types(service, sid))
 
-        # Option click arrives via the /ask_user protocol.
-        result = await service.send_message(
-            session_id=sid, content=f"/ask_user {question_id} 近一年"
+        accepted = service.question_broker.resolve(
+            question_id, selected=["近一年"], source="option_click"
         )
+        self.assertTrue(accepted)
+
+        result = await run
+        # Same run continued: pending cleared, answered event emitted.
         self.assertIsNone(await self._pending(repo, sid))
-        event_types = await self._event_types(service, sid)
-        self.assertIn("user_question.answered", event_types)
-        # The persisted user message is readable text, not the raw protocol.
+        self.assertIn("user_question.answered", await self._event_types(service, sid))
+        # NO synthetic user message for the answer — the only user message is the
+        # original prompt.
         user_rows = [
             m
             for m in await service.list_messages(sid, limit=100, offset=0)
             if m["role"] == "user"
         ]
-        self.assertIn("我的选择：近一年", user_rows[-1]["content"])
+        self.assertEqual(len(user_rows), 1)
+        self.assertEqual(user_rows[0]["content"], "帮我定回测区间")
+        # The final assistant message carries the answered recap on the block.
+        block = next(
+            b
+            for b in result["messages"][-1]["metadata"].get("content_blocks", [])
+            if b.get("type") == "user_question"
+        )
+        self.assertTrue(block.get("answered"))
+        self.assertEqual(block.get("selected"), ["近一年"])
+        self.assertEqual(result["messages"][-1]["content"], "收到，按近一年跑。")
         adapter.assert_exhausted()
 
-    async def test_free_text_reply_clears_pending(self):
+    async def test_free_text_reply_resolves_without_new_attempt(self):
         adapter = ScriptedModelAdapter(
             [
                 call_tool("ask_user_question", dict(_QUESTION_ARGS)),
-                say("等你选择。"),
                 say("明白，按你说的来。"),
             ]
         )
@@ -107,32 +127,59 @@ class AskUserQuestionServiceTests(unittest.IsolatedAsyncioTestCase):
         session = await service.create_session(agent_id="test-agent", title="free")
         sid = session["session_id"]
 
-        await service.send_message(session_id=sid, content="定一下区间")
-        self.assertIsNotNone(await self._pending(repo, sid))
+        run = asyncio.create_task(service.send_message(session_id=sid, content="定一下区间"))
+        await self._wait_for_pending_question(service, sid)
 
-        await service.send_message(session_id=sid, content="都不要，用 2024 全年")
+        # A free-typed reply while a question is pending resolves the wait — it
+        # returns a light envelope and does NOT start a new attempt.
+        envelope = await service.send_message(session_id=sid, content="都不要，用 2024 全年")
+        self.assertTrue(envelope.get("resolved_user_question", {}).get("accepted"))
+        self.assertEqual(envelope.get("messages"), [])
+
+        await run
         self.assertIsNone(await self._pending(repo, sid))
-        events = await self._event_types(service, sid)
-        self.assertIn("user_question.answered", events)
-
-    async def test_stale_click_is_visible_not_fatal(self):
-        adapter = ScriptedModelAdapter([say("好的。")])
-        service, repo = self._build(adapter)
-        session = await service.create_session(agent_id="test-agent", title="stale")
-        sid = session["session_id"]
-
-        result = await service.send_message(
-            session_id=sid, content="/ask_user uq-deadbeef 近一年"
-        )
-        self.assertIn("user_question.stale_answer", await self._event_types(service, sid))
-        # The answer text still reaches the model as a plain message.
+        self.assertIn("user_question.answered", await self._event_types(service, sid))
         user_rows = [
             m
             for m in await service.list_messages(sid, limit=100, offset=0)
             if m["role"] == "user"
         ]
-        self.assertEqual(user_rows[-1]["content"], "近一年")
-        self.assertEqual(result["messages"][-1]["content"], "好的。")
+        self.assertEqual([m["content"] for m in user_rows], ["定一下区间"])
+
+    async def test_stale_click_with_no_live_wait_is_visible_not_fatal(self):
+        # No live suspended wait: a stale /ask_user click is surfaced, does not
+        # start a model turn, and never crashes.
+        adapter = ScriptedModelAdapter([])
+        service, _repo = self._build(adapter)
+        session = await service.create_session(agent_id="test-agent", title="stale")
+        sid = session["session_id"]
+
+        envelope = await service.send_message(
+            session_id=sid, content="/ask_user uq-deadbeef 近一年"
+        )
+        self.assertFalse(envelope.get("resolved_user_question", {}).get("accepted"))
+        self.assertIn(
+            "user_question.stale_answer", await self._event_types(service, sid)
+        )
+        # No model turn ran and no user message was persisted.
+        self.assertEqual(len(adapter.calls), 0)
+        self.assertEqual(await service.list_messages(sid, limit=100, offset=0), [])
+
+    async def test_user_stop_cancels_the_suspended_question(self):
+        adapter = ScriptedModelAdapter(
+            [call_tool("ask_user_question", dict(_QUESTION_ARGS)), say("unreachable")]
+        )
+        service, repo = self._build(adapter)
+        session = await service.create_session(agent_id="test-agent", title="stop")
+        sid = session["session_id"]
+
+        run = asyncio.create_task(service.send_message(session_id=sid, content="定区间"))
+        await self._wait_for_pending_question(service, sid)
+        await service.stop_attempt(sid)
+        with self.assertRaises(Exception):
+            await run
+        # The abort race covered the human-wait; the second scripted step never ran.
+        self.assertLessEqual(len(adapter.calls), 1)
 
     async def test_validation_rejects_bad_options(self):
         repo = InMemoryAssistantRepository()

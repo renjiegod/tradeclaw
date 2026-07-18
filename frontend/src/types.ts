@@ -454,9 +454,11 @@ export type AssistantUserQuestionOption = {
   description?: string | null;
 };
 
-// Persisted content block emitted after a successful ask_user_question tool
-// call. The web UI renders the options as buttons; a click sends the
-// `/ask_user <question_id> <label>` protocol message back to the session.
+// Content block for an ask_user_question. The web UI renders the options as
+// buttons; a click resolves the suspended tool wait via the answer endpoint
+// (fizz-style tool_result) — no synthetic user message. Once answered, the
+// backend stamps `answered`/`selected`/`custom` onto the block so a page
+// reload rebuilds the read-only in-card recap.
 export type AssistantUserQuestionBlock = {
   type: "user_question";
   question_id: string;
@@ -464,6 +466,10 @@ export type AssistantUserQuestionBlock = {
   header?: string | null;
   options: AssistantUserQuestionOption[];
   multi_select?: boolean;
+  answered?: boolean;
+  selected?: string[] | null;
+  custom?: string | null;
+  answer_source?: string | null;
 };
 
 // A file attached to a user message. The client never holds the server's

@@ -1701,6 +1701,63 @@ def create_app(
             return {"items": []}
         return {"items": broker.list_pending(session_id)}
 
+    @app.post("/assistant/sessions/{session_id}/questions/{question_id}/answer")
+    async def answer_assistant_question(session_id: str, question_id: str, payload: dict):
+        """Answer a pending ask_user_question (web counterpart of clicking an
+        option / typing into the card). Resolves the suspended tool wait so the
+        SAME run continues — no synthetic user message. ``selected`` are the
+        chosen option labels; ``custom`` is free-form text (either or both)."""
+        raw_selected = payload.get("selected")
+        if raw_selected is None:
+            selected: list[str] = []
+        elif isinstance(raw_selected, str):
+            selected = [raw_selected]
+        elif isinstance(raw_selected, list):
+            selected = [str(item) for item in raw_selected]
+        else:
+            raise HTTPException(
+                status_code=400, detail="selected must be a string or a list of strings"
+            )
+        custom = str(payload.get("custom") or "").strip()
+        if not selected and not custom:
+            raise HTTPException(
+                status_code=400, detail="an answer requires selected options and/or custom text"
+            )
+        broker = getattr(assistant_service, "question_broker", None)
+        if broker is None:
+            raise HTTPException(status_code=503, detail="question broker unavailable")
+        request = broker.get(question_id)
+        if request is not None and request.session_id != session_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"question {question_id} does not belong to session {session_id}",
+            )
+        accepted = broker.resolve(
+            question_id,
+            selected=selected,
+            custom=custom,
+            source="option_click",
+            resolver_id=str(payload.get("resolver_id") or ""),
+        )
+        if not accepted:
+            # Already answered on another surface, timed out, or unknown — the
+            # clicker must see this instead of assuming their answer won.
+            raise HTTPException(
+                status_code=409,
+                detail=f"question {question_id} is not pending (answered elsewhere or expired)",
+            )
+        return {"status": "answered", "question_id": question_id}
+
+    @app.get("/assistant/sessions/{session_id}/questions/pending")
+    async def list_pending_assistant_questions(session_id: str):
+        """Pending ask_user_question waits for one session — lets the web UI
+        recover the card after a page refresh (SSE events are otherwise the
+        source)."""
+        broker = getattr(assistant_service, "question_broker", None)
+        if broker is None:
+            return {"items": []}
+        return {"items": broker.list_pending(session_id)}
+
     @app.post("/assistant/sessions/{session_id}/stop")
     async def stop_assistant_session(session_id: str):
         session = await assistant_service.get_session(session_id)

@@ -898,6 +898,51 @@ export async function listPendingAssistantApprovals(
   );
 }
 
+// Answer a pending ask_user_question by resolving the suspended tool wait
+// (fizz-style): the SAME run continues, no synthetic user message. `selected`
+// are chosen option labels; `custom` is free-form text (either or both).
+export async function answerAssistantQuestion(
+  sessionId: string,
+  questionId: string,
+  answer: { selected?: string[]; custom?: string },
+): Promise<{ status: string; question_id: string }> {
+  return request(
+    `/assistant/sessions/${encodeURIComponent(sessionId)}/questions/${encodeURIComponent(
+      questionId,
+    )}/answer`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        selected: answer.selected ?? [],
+        custom: answer.custom ?? "",
+      }),
+    },
+  );
+}
+
+export type AssistantPendingQuestion = {
+  question_id: string;
+  session_id: string;
+  attempt_id: string;
+  run_id: string;
+  question: string;
+  header?: string | null;
+  options: { label: string; description?: string | null }[];
+  multi_select?: boolean;
+  timeout_seconds?: number;
+  created_at?: string;
+};
+
+// Pending ask_user_question waits for one session — lets the web UI recover
+// the live card after a page refresh (SSE events are otherwise the source).
+export async function listPendingAssistantQuestions(
+  sessionId: string,
+): Promise<{ items: AssistantPendingQuestion[] }> {
+  return request(
+    `/assistant/sessions/${encodeURIComponent(sessionId)}/questions/pending`,
+  );
+}
+
 export async function searchInstrumentUniverse(params: {
   source: string;
   q: string;

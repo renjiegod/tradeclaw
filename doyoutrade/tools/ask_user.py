@@ -1,13 +1,18 @@
 """ask_user_question — present one structured, clickable question to the user.
 
-Non-blocking semantics: the tool records the pending question in
-``session.config["pending_user_question"]`` and returns immediately; the
-model is instructed to END its turn. Channels render the options (Feishu
-interactive card buttons, web option buttons); a click arrives as the next
-user message via the ``/ask_user <question_id> <answer>`` protocol, which
-``AssistantService`` rewrites into readable text and correlates back to the
-pending question. A free-typed user message also answers (and clears) the
-pending question — buttons are a convenience, not a gate.
+Blocking semantics (fizz-style, tool_call ↔ tool_result): the tool records the
+pending question in ``session.config["pending_user_question"]``; the dispatch
+loop (:meth:`AssistantService._await_user_question_answer`) then publishes the
+card and suspends this tool call inside its execution slot until the user
+answers. The answer is fed back as THIS call's ``tool_result`` and the SAME run
+continues — no synthetic user message, no new turn. Channels render the options
+(Feishu interactive card buttons, web option buttons / card); a click resolves
+through the answer endpoint / ``QuestionBroker``, and a free-typed reply while a
+question is pending answers it too — buttons are a convenience, not a gate.
+
+Because the loop replaces this tool's return value with the resolved answer,
+``execute`` only validates + persists the pending state and returns a neutral
+success marker; the model never sees that marker.
 """
 
 from __future__ import annotations
@@ -30,8 +35,10 @@ class AskUserQuestionTool(OperationHandler):
     name = "ask_user_question"
     description = (
         "向用户提出一个带 2-4 个选项的结构化问题（渲染为可点击按钮）。"
-        "非阻塞：调用后立即返回，你必须结束本轮回复等待用户选择；"
-        "用户的选择（或自由输入）会作为下一条用户消息到达。"
+        "阻塞：本工具会等待用户选择，并把用户的选择作为工具结果返回给你——"
+        "像普通工具一样，拿到返回的答案后继续完成任务，不要结束本轮、"
+        "不要复述选项、不要重复调用。返回值是 JSON："
+        '{"selected":[...选中的选项标签],"custom":用户自由输入或 null,"source":...}。'
         "只在确实需要用户拍板、且选项可枚举时使用；开放式问题直接在正文里问。"
     )
     category = "agent"
@@ -213,15 +220,9 @@ class AskUserQuestionTool(OperationHandler):
                 "multi_select": pending["multi_select"],
             },
         )
-        labels = " / ".join(option["label"] for option in pending["options"])
-        return ToolResult(
-            text=(
-                f"问题已提交给用户（question_id={question_id}，选项：{labels}）。"
-                "现在结束本轮回复：用一句话告诉用户你在等待他的选择即可，"
-                "不要复述所有选项、不要继续追问、不要再调用本工具。"
-                "用户的选择（或他自由输入的回答）会作为下一条用户消息到达。"
-            )
-        )
+        # Neutral success marker: the dispatch loop replaces this with the
+        # resolved answer before it reaches the model (see module docstring).
+        return ToolResult(text=f'{{"status":"awaiting_user","question_id":"{question_id}"}}')
 
     def _validate_shape(self, kwargs: dict[str, Any]) -> str | None:
         question = kwargs.get("question")

@@ -47,6 +47,7 @@ from doyoutrade.assistant.approvals import (
     ApprovalRule,
     match_approval_rule,
 )
+from doyoutrade.assistant.questions import QuestionBroker, QuestionResolution
 from doyoutrade.assistant.channels.base import ChannelDeliveryHandle
 from doyoutrade.skills.flow import (
     Flow,
@@ -669,6 +670,12 @@ class AssistantService:
             tuple(approval_rules) if approval_rules is not None else DEFAULT_APPROVAL_RULES
         )
         self.approval_broker = ApprovalBroker()
+        # Blocking ask_user_question waits (same future-broker skeleton as
+        # approvals): a call suspends inside its execution slot until a card
+        # click / free-typed reply resolves the future through
+        # ``self.question_broker``. The answer is fed back as the tool_result
+        # and the SAME run continues — no synthetic user message.
+        self.question_broker = QuestionBroker()
         self._abort_events: dict[str, asyncio.Event] = {}
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
@@ -833,18 +840,20 @@ class AssistantService:
         return [*history_messages[:-1], reminder, history_messages[-1]]
 
     # ------------------------------------------------------------ ask_user
-    # ``ask_user_question`` (non-blocking): the tool stores
-    # ``session.config["pending_user_question"]`` and the turn ends. The
-    # answer arrives as the NEXT user message — either the ``/ask_user
-    # <question_id> <answer>`` protocol (option button clicks from Feishu
-    # cards / the web UI) or free-typed text. Both clear the pending state
-    # with a visible user_question.* event.
+    # ``ask_user_question`` blocks (fizz-style): the tool call suspends inside
+    # its execution slot on a ``QuestionBroker`` future; a card click / answer
+    # endpoint / free-typed reply resolves it and the answer is fed back as the
+    # tool_result, continuing the SAME run. Answers therefore never create a
+    # synthetic user message or a new attempt. Audit via ``user_question.*``.
 
-    async def _resolve_user_question_answer(
+    async def _answer_pending_question_from_message(
         self, session: dict[str, Any], text: str
-    ) -> str:
-        """Rewrite an ``/ask_user`` protocol message into readable answer
-        text and correlate it with (then clear) the pending question."""
+    ) -> dict[str, Any] | None:
+        """Route an answer that arrived as a chat message (legacy ``/ask_user``
+        protocol from Feishu cards, or a free-typed reply while a question is
+        pending) to the suspended tool wait. Returns a light envelope when it
+        resolved / consumed a live wait; ``None`` when the message is not an
+        answer or no live wait exists (caller handles it as a normal message)."""
         session_id = str(session.get("session_id") or "")
         config = dict(session.get("config") or {})
         pending = config.get("pending_user_question")
@@ -854,48 +863,71 @@ class AssistantService:
             parts = text.split(maxsplit=2)
             question_id = parts[1] if len(parts) > 1 else ""
             answer = parts[2].strip() if len(parts) > 2 else ""
-            if pending is not None and question_id == str(pending.get("question_id") or ""):
-                await self._clear_pending_user_question(
-                    session_id,
-                    question_id=question_id,
-                    resolution="answered",
-                    source="option_click",
-                    answer=answer,
-                )
-                question = str(pending.get("question") or "").strip()
-                rewritten = f"我的选择：{answer or '(已确认)'}"
-                if question:
-                    rewritten += f"\n（回答的问题：{question}）"
-                return rewritten
-            # A click on a stale / unknown card: visible, never silent.
+            # Legacy multi-select option labels were joined by 、.
+            selected = [s for s in (p.strip() for p in answer.split("、")) if s]
+            custom = "" if selected else answer
+            source = "option_click"
+        elif pending is not None:
+            question_id = str(pending.get("question_id") or "")
+            selected = []
+            custom = text.strip()
+            source = "free_text"
+        else:
+            return None
+
+        request = self.question_broker.get(question_id) if question_id else None
+        if request is None:
+            # No live suspended wait: only intercept the explicit /ask_user
+            # protocol (a stale card click) — surface it, don't silently start a
+            # turn. A plain free-typed message falls through to normal handling.
+            if not text.startswith("/ask_user"):
+                return None
             logger.info(
-                "user_question stale answer session_id=%s question_id=%s pending=%s",
+                "user_question stale answer (no live wait) session_id=%s question_id=%s",
                 session_id,
                 question_id,
-                str((pending or {}).get("question_id")),
             )
             await self.repository.append_event(
                 session_id=session_id,
                 event_type="user_question.stale_answer",
                 payload={
                     "question_id": question_id,
-                    "answer": answer,
+                    "answer": custom or "、".join(selected),
                     "pending_question_id": (pending or {}).get("question_id"),
-                    "hint": "card click arrived for a question that is no longer pending",
+                    "hint": "card click arrived with no live suspended wait (process restarted?)",
                 },
             )
-            return answer or text
+            if pending is not None and question_id == str(pending.get("question_id") or ""):
+                await self._clear_pending_user_question(
+                    session_id,
+                    question_id=question_id,
+                    resolution="stale_answer",
+                    source=source,
+                    selected=selected,
+                    custom=custom,
+                )
+            return {
+                "session": session,
+                "messages": [],
+                "resolved_user_question": {
+                    "question_id": question_id,
+                    "accepted": False,
+                    "reason": "no_live_wait",
+                },
+            }
 
-        if pending is not None:
-            # Free-typed reply answers the pending question implicitly.
-            await self._clear_pending_user_question(
-                session_id,
-                question_id=str(pending.get("question_id") or ""),
-                resolution="answered",
-                source="free_text",
-                answer=text[:200],
-            )
-        return text
+        accepted = self.question_broker.resolve(
+            question_id, selected=selected, custom=custom, source=source
+        )
+        return {
+            "session": session,
+            "messages": [],
+            "resolved_user_question": {
+                "question_id": question_id,
+                "accepted": accepted,
+                "source": source,
+            },
+        }
 
     async def _clear_pending_user_question(
         self,
@@ -904,7 +936,8 @@ class AssistantService:
         question_id: str,
         resolution: str,
         source: str,
-        answer: str = "",
+        selected: list[str] | None = None,
+        custom: str = "",
     ) -> None:
         try:
             await self.repository.update_session_config(
@@ -924,7 +957,8 @@ class AssistantService:
             payload={
                 "question_id": question_id,
                 "source": source,
-                "answer": answer,
+                "selected": list(selected or []),
+                "custom": custom,
             },
         )
 
@@ -977,6 +1011,12 @@ class AssistantService:
                 "run_id": run_id,
                 "question_id": pending.get("question_id"),
                 "question": pending.get("question"),
+                "header": pending.get("header"),
+                # Full option list so the web SSE handler can render the live
+                # card while the turn is suspended (the persisted content block
+                # only lands when the turn finishes).
+                "options": pending.get("options"),
+                "multi_select": pending.get("multi_select"),
                 "option_count": len(pending.get("options") or []),
                 **_current_span_payload(),
             },
@@ -1009,6 +1049,132 @@ class AssistantService:
                             "hint": "interactive card send failed; the web content block still renders",
                         },
                     )
+
+    async def _await_user_question_answer(
+        self,
+        session_id: str,
+        *,
+        attempt_id: str,
+        run_id: str,
+        content_blocks: list[dict[str, Any]],
+        streaming_controller: Any,
+    ) -> str:
+        """Publish the pending question, then suspend on a broker future until
+        a card click / answer endpoint / free-typed reply resolves it. Returns
+        the structured answer as this tool call's ``tool_result`` (or a
+        structured timeout error). Runs inside the dispatch loop's tool slot so
+        the abort race cancels the wait on a user stop.
+
+        The card MUST be published *before* awaiting (else the user can't answer
+        a card they can't see), and the broker future MUST exist *before* the
+        card is delivered (else a fast answer would miss it) — hence the
+        create → publish → wait order below.
+        """
+        try:
+            session = await self.repository.get_session(session_id)
+        except Exception as exc:
+            logger.error(
+                "user_question.await_session_read_failed session_id=%s err=%s: %s",
+                session_id,
+                type(exc).__name__,
+                exc,
+            )
+            return (
+                "[error:user_question_await_failed] 无法读取会话状态来呈现问题；本次提问未生效。\n"
+                "hint: 直接在正文里用文字问用户。"
+            )
+        pending = ((session or {}).get("config") or {}).get("pending_user_question")
+        if not isinstance(pending, dict) or not pending:
+            logger.error(
+                "user_question.await_missing_state session_id=%s attempt_id=%s "
+                "(tool reported success but pending_user_question is absent)",
+                session_id,
+                attempt_id,
+            )
+            return (
+                "[error:user_question_await_failed] 待回答的问题状态缺失，无法等待答案；本次提问未生效。\n"
+                "hint: 直接在正文里用文字问用户。"
+            )
+
+        question_id = str(pending.get("question_id") or "")
+        # Broker future first, so a resolve arriving the instant the card shows
+        # cannot slip past an un-registered wait.
+        request = self.question_broker.create(
+            question_id=question_id,
+            session_id=session_id,
+            attempt_id=attempt_id,
+            run_id=run_id,
+            question=str(pending.get("question") or ""),
+            header=pending.get("header"),
+            options=list(pending.get("options") or []),
+            multi_select=bool(pending.get("multi_select")),
+        )
+        # Publish (content block for web live render + user_question.asked event
+        # + interactive channel card).
+        await self._publish_user_question(
+            session_id,
+            attempt_id=attempt_id,
+            run_id=run_id,
+            content_blocks=content_blocks,
+            streaming_controller=streaming_controller,
+        )
+
+        try:
+            resolution = await request.wait()
+        finally:
+            self.question_broker.discard(question_id)
+
+        if resolution.timed_out:
+            await self._clear_pending_user_question(
+                session_id,
+                question_id=question_id,
+                resolution="timeout",
+                source="timeout",
+            )
+            logger.warning(
+                "user_question timed out question_id=%s after %.0fs",
+                question_id,
+                request.timeout_seconds,
+            )
+            return (
+                "[error:user_question_timeout] 用户未在规定时间内作答，问题已取消。\n"
+                "hint: 用一句话告诉用户提问超时；不要重复提问，等他主动回复后再继续。"
+            )
+
+        # Record the answer as a read-only recap on the published content block
+        # so a page reload rebuilds it (fizz-style in-card recap), and clear the
+        # pending state with a visible user_question.answered event.
+        for block in content_blocks:
+            if (
+                block.get("type") == "user_question"
+                and block.get("question_id") == question_id
+            ):
+                block["answered"] = True
+                block["selected"] = list(resolution.selected)
+                block["custom"] = resolution.custom or None
+                block["answer_source"] = resolution.source
+                break
+        await self._clear_pending_user_question(
+            session_id,
+            question_id=question_id,
+            resolution="answered",
+            source=resolution.source,
+            selected=list(resolution.selected),
+            custom=resolution.custom,
+        )
+        logger.info(
+            "user_question answered question_id=%s source=%s selected=%s custom=%s",
+            question_id,
+            resolution.source,
+            resolution.selected,
+            bool(resolution.custom),
+        )
+        answer_obj = {
+            "selected": list(resolution.selected),
+            "custom": resolution.custom or None,
+            "source": resolution.source,
+        }
+        return json.dumps(answer_obj, ensure_ascii=False)
 
     # ----------------------------------------------------------- approvals
     # Blocking approvals: a matching tool call suspends inside its execution
@@ -1822,7 +1988,17 @@ class AssistantService:
 
         attachments = list(attachments or [])
         text = content.strip()
-        text = await self._resolve_user_question_answer(session, text)
+
+        # ask_user_question answers resolve the suspended tool wait (fizz-style
+        # tool_result) and continue the SAME run — they never start a new
+        # attempt or create a synthetic user message. Covers card clicks that
+        # still arrive as the legacy ``/ask_user`` protocol (e.g. Feishu) and
+        # free-typed replies while a question is pending. If no live wait
+        # exists (process restarted, or the turn already ended) this returns
+        # None and the message falls through to the normal path.
+        answered = await self._answer_pending_question_from_message(session, text)
+        if answered is not None:
+            return answered
 
         if _is_compact_command(text):
             return await self._handle_compact_command(session)
@@ -2815,12 +2991,31 @@ class AssistantService:
                                         )
                                         if blocked is not None:
                                             return blocked
-                                        return await resolved_tools.registry.execute(
+                                        tool_result = await resolved_tools.registry.execute(
                                             _name,
                                             _args,
                                             session_id=session["session_id"],
                                             calling_agent_id=session.get("agent_id"),
                                         )
+                                        # ask_user_question blocks (fizz-style):
+                                        # publish the card, then suspend for the
+                                        # user's answer INSIDE this slot so the
+                                        # abort race covers the human-wait. The
+                                        # answer replaces the tool result and is
+                                        # fed back as this call's tool_result —
+                                        # no synthetic user message, same run.
+                                        if (
+                                            _name == "ask_user_question"
+                                            and not _tool_result_is_error(tool_result)
+                                        ):
+                                            return await self._await_user_question_answer(
+                                                session["session_id"],
+                                                attempt_id=attempt_id,
+                                                run_id=run_id,
+                                                content_blocks=content_blocks,
+                                                streaming_controller=streaming_controller,
+                                            )
+                                        return tool_result
 
                                     tool_coro = _gated_execute()
                                 # Race the tool against the abort event so that a
@@ -2922,14 +3117,10 @@ class AssistantService:
                                         preview=preview,
                                         is_error=_tool_result_is_error(result),
                                     )
-                            if name == "ask_user_question" and not _tool_result_is_error(result):
-                                await self._publish_user_question(
-                                    session["session_id"],
-                                    attempt_id=attempt_id,
-                                    run_id=run_id,
-                                    content_blocks=content_blocks,
-                                    streaming_controller=streaming_controller,
-                                )
+                            # ask_user_question publishes its card and blocks
+                            # for the answer inside _gated_execute above; the
+                            # resolved answer is already in ``result`` here and
+                            # feeds back as this call's tool_result.
                             messages.append(
                                 ToolMessage(content=result, tool_call_id=call_id, name=name)
                             )
