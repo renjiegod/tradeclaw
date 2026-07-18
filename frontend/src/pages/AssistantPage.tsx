@@ -25,10 +25,12 @@ import {
   listAssistantEvents,
   listAssistantMessages,
   listAssistantSessions,
+  answerAssistantQuestion,
   listAssistantTools,
   listModelRoutes,
   listPendingApprovals,
   listPendingAssistantApprovals,
+  listPendingAssistantQuestions,
   resolveAssistantApproval,
   sendAssistantMessage,
   stopAssistantSession,
@@ -136,7 +138,10 @@ function MessageBubble({
 }: {
   item: AssistantMessage;
   toolCalls?: ToolCallEntry[];
-  onAnswerUserQuestion?: (questionId: string, label: string) => void;
+  onAnswerUserQuestion?: (
+    questionId: string,
+    answer: { selected: string[]; custom?: string },
+  ) => void;
   pendingQuestionId?: string | null;
   debugMode?: boolean;
 }) {
@@ -356,6 +361,15 @@ export function AssistantPage() {
   // Fed by the `approval.requested` SSE event; cleared on resolution /
   // timeout / attempt end; recovered after refresh via the pending API.
   const [pendingApproval, setPendingApproval] = useState<AssistantPendingApproval | null>(null);
+  // A blocking ask_user_question awaiting the user (mid-turn, fizz-style): the
+  // tool call is suspended server-side. Fed by `user_question.asked` SSE while
+  // the run is suspended (the persisted content block only lands when the turn
+  // finishes); cleared on answer / timeout / attempt end; recovered after a
+  // refresh via the pending API. Rendered as a live card at the bottom of the
+  // conversation; once the turn completes the persisted block's in-card recap
+  // takes over.
+  const [livePendingQuestion, setLivePendingQuestion] =
+    useState<AssistantUserQuestionBlock | null>(null);
   const attachApprovalListeners = useCallback((stream: EventSource) => {
     stream.addEventListener("approval.requested", (rawEvent) => {
       try {
@@ -365,13 +379,52 @@ export function AssistantPage() {
         // Ignore malformed live event payloads.
       }
     });
+    stream.addEventListener("user_question.asked", (rawEvent) => {
+      try {
+        const payload = JSON.parse((rawEvent as MessageEvent).data) as Record<string, unknown>;
+        const questionId = typeof payload.question_id === "string" ? payload.question_id : "";
+        if (!questionId) return;
+        setLivePendingQuestion({
+          type: "user_question",
+          question_id: questionId,
+          question: typeof payload.question === "string" ? payload.question : "",
+          header: typeof payload.header === "string" ? payload.header : null,
+          options: Array.isArray(payload.options)
+            ? (payload.options as AssistantUserQuestionBlock["options"])
+            : [],
+          multi_select: Boolean(payload.multi_select),
+        });
+      } catch {
+        // Ignore malformed live event payloads.
+      }
+    });
     const clearApproval = () => setPendingApproval(null);
+    const clearQuestion = () => setLivePendingQuestion(null);
     stream.addEventListener("approval.resolved", clearApproval);
     stream.addEventListener("approval.timeout", clearApproval);
+    stream.addEventListener("user_question.answered", clearQuestion);
+    stream.addEventListener("user_question.timeout", clearQuestion);
     stream.addEventListener("attempt.completed", clearApproval);
     stream.addEventListener("attempt.failed", clearApproval);
     stream.addEventListener("attempt.stopped", clearApproval);
+    stream.addEventListener("attempt.completed", clearQuestion);
+    stream.addEventListener("attempt.failed", clearQuestion);
+    stream.addEventListener("attempt.stopped", clearQuestion);
   }, []);
+  const handleAnswerUserQuestion = useCallback(
+    (questionId: string, answer: { selected: string[]; custom?: string }) => {
+      if (!sessionId) return;
+      // Optimistically clear the live card; the suspended run resumes on the
+      // server and the persisted block will carry the recap after completion.
+      setLivePendingQuestion((prev) => (prev?.question_id === questionId ? null : prev));
+      void answerAssistantQuestion(sessionId, questionId, answer).catch((error) => {
+        message.warning(
+          error instanceof Error ? error.message : "该问题已在其它端回答或已超时。",
+        );
+      });
+    },
+    [sessionId],
+  );
   const handleResolveApproval = useCallback(
     async (action: "approve_once" | "approve_always" | "reject") => {
       if (!pendingApproval) return;
@@ -866,10 +919,29 @@ export function AssistantPage() {
   useEffect(() => {
     if (!sessionId || activeSession?.status !== "running") {
       setPendingApproval(null);
+      setLivePendingQuestion(null);
       return;
     }
     void listPendingAssistantApprovals(sessionId)
       .then((result) => setPendingApproval(result.items[0] ?? null))
+      .catch(() => {});
+    // Same refresh-recovery for a turn suspended on an ask_user_question.
+    void listPendingAssistantQuestions(sessionId)
+      .then((result) => {
+        const item = result.items[0];
+        setLivePendingQuestion(
+          item
+            ? {
+                type: "user_question",
+                question_id: item.question_id,
+                question: item.question ?? "",
+                header: item.header ?? null,
+                options: Array.isArray(item.options) ? item.options : [],
+                multi_select: Boolean(item.multi_select),
+              }
+            : null,
+        );
+      })
       .catch(() => {});
   }, [sessionId, activeSession?.status]);
 
@@ -1493,9 +1565,7 @@ export function AssistantPage() {
                   key={item.message_id}
                   item={item}
                   toolCalls={Object.values(toolCallsByAttempt[item.linked_attempt_id ?? ""] ?? {})}
-                  onAnswerUserQuestion={(questionId, label) => {
-                    void submit(`/ask_user ${questionId} ${label}`);
-                  }}
+                  onAnswerUserQuestion={handleAnswerUserQuestion}
                   pendingQuestionId={pendingQuestionId}
                   debugMode={debugRenderMode}
                 />
@@ -1547,6 +1617,18 @@ export function AssistantPage() {
                   }
                   debugMode={debugRenderMode}
                 />
+              ) : null}
+              {livePendingQuestion ? (
+                <div className="flex w-full justify-start">
+                  <div className="w-full max-w-[860px]">
+                    <MessageContentRenderer
+                      text=""
+                      contentBlocks={[livePendingQuestion]}
+                      onAnswerUserQuestion={handleAnswerUserQuestion}
+                      pendingQuestionId={livePendingQuestion.question_id}
+                    />
+                  </div>
+                </div>
               ) : null}
               {(sending || activeSession?.status === "running") &&
               (debugRenderMode ||

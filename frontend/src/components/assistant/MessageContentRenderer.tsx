@@ -1,7 +1,7 @@
 // frontend/src/components/assistant/MessageContentRenderer.tsx
 
 import { useState } from "react";
-import { Button, Tag, Tooltip } from "antd";
+import { Button, Input, Tag, Tooltip } from "antd";
 import { CheckCircleFilled, ExportOutlined, QuestionCircleOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import { useNavigate } from "react-router-dom";
@@ -42,9 +42,13 @@ interface MessageContentRendererProps {
   thinkingBlocks?: Array<{ turn?: number; content: string }>;
   contentBlocks?: OrderedContentBlock[];
   toolCalls?: ToolCallEntry[];
-  // Wired by AssistantPage: clicking an option sends the
-  // `/ask_user <question_id> <label>` protocol message to the session.
-  onAnswerUserQuestion?: (questionId: string, label: string) => void;
+  // Wired by AssistantPage: answering resolves the suspended ask_user tool
+  // wait via the answer endpoint (fizz-style tool_result) — no synthetic user
+  // message. `selected` are chosen option labels; `custom` is free-form text.
+  onAnswerUserQuestion?: (
+    questionId: string,
+    answer: { selected: string[]; custom?: string },
+  ) => void;
   // The session's currently pending `ask_user_question` id (from
   // `activeSession.config.pending_user_question.question_id`), or `null`
   // when nothing is pending. `undefined` (caller doesn't track it) falls
@@ -71,23 +75,41 @@ function UserQuestionCard({
   isPending,
 }: {
   block: AssistantUserQuestionBlock;
-  onAnswer?: (questionId: string, label: string) => void;
+  onAnswer?: (questionId: string, answer: { selected: string[]; custom?: string }) => void;
   isPending: boolean;
 }) {
   // Locked immediately on click/confirm so a slow round-trip (session config
-  // refresh lagging behind the sent message) can't let a double-click fire
-  // the answer twice.
+  // refresh lagging behind the answer) can't let a double-click answer twice.
   const [submitting, setSubmitting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [customText, setCustomText] = useState("");
+  // Optimistic local recap: shown the instant the user answers, before the
+  // backend clears the pending state / the run finishes and reloads the block.
+  const [localAnswer, setLocalAnswer] = useState<{ selected: string[]; custom: string } | null>(
+    null,
+  );
   const multiSelect = Boolean(block.multi_select);
-  const resolved = !isPending;
-  const interactive = isPending && !submitting;
 
-  const answerSingle = (label: string) => {
+  // Answered = the backend stamped a recap onto the block (reload-safe) OR we
+  // just answered locally. Either way the card collapses to a read-only recap
+  // — the fizz "selection collapses into the card" behavior, never a separate
+  // user bubble. A card that is no longer the pending one (superseded / turn
+  // ended without an answer) also renders read-only, but without a selection.
+  const answered = Boolean(block.answered) || localAnswer !== null;
+  const resolved = answered || !isPending;
+  const interactive = isPending && !answered && !submitting;
+  const recapSelected = localAnswer?.selected ?? block.selected ?? [];
+  const recapCustom = (localAnswer?.custom ?? block.custom ?? "") || "";
+
+  const fire = (answer: { selected: string[]; custom?: string }) => {
     if (!interactive) return;
+    const hasAnswer = answer.selected.length > 0 || Boolean(answer.custom?.trim());
+    if (!hasAnswer) return;
     setSubmitting(true);
-    onAnswer?.(block.question_id, label);
+    setLocalAnswer({ selected: answer.selected, custom: answer.custom?.trim() || "" });
+    onAnswer?.(block.question_id, { selected: answer.selected, custom: answer.custom?.trim() });
   };
+  const answerSingle = (label: string) => fire({ selected: [label] });
   const toggleOption = (label: string) => {
     if (!interactive) return;
     setSelected((prev) => {
@@ -97,28 +119,53 @@ function UserQuestionCard({
       return next;
     });
   };
-  const submitSelection = () => {
-    if (!interactive || selected.size === 0) return;
-    setSubmitting(true);
-    onAnswer?.(block.question_id, Array.from(selected).join("、"));
-  };
+  const submitMulti = () =>
+    fire({ selected: Array.from(selected), custom: customText.trim() || undefined });
+  const submitCustom = () => fire({ selected: [], custom: customText.trim() });
+
+  if (resolved) {
+    const hasRecap = recapSelected.length > 0 || recapCustom.length > 0;
+    const recapText =
+      [...recapSelected, recapCustom].filter((part) => part && part.length > 0).join("、");
+    return (
+      <div
+        className="rounded-xl border border-shell-line bg-gray-50/70 px-4 py-3 transition-colors"
+        data-testid="assistant-user-question"
+        data-resolved="true"
+      >
+        <div className="mb-2 flex items-center gap-2 text-sm text-gray-400">
+          <CheckCircleFilled />
+          {block.header ? <Tag color="default">{block.header}</Tag> : null}
+          <span>{answered ? "该问题已回答" : "该问题已处理"}</span>
+        </div>
+        <div className={`mb-2 ${MODEL_INVOCATION_PROSE_CLASSNAME} opacity-70`}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.question}</ReactMarkdown>
+        </div>
+        {hasRecap ? (
+          <div
+            className="flex items-baseline gap-2 text-sm"
+            data-testid="assistant-user-question-recap"
+          >
+            <span className="shrink-0 text-gray-400">你的选择</span>
+            <span className="font-medium text-gray-700">{recapText}</span>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div
-      className={`rounded-xl border px-4 py-3 transition-colors ${
-        resolved ? "border-shell-line bg-gray-50/70" : "border-blue-200 bg-blue-50/60"
-      }`}
+      className="rounded-xl border border-blue-200 bg-blue-50/60 px-4 py-3 transition-colors"
       data-testid="assistant-user-question"
-      data-resolved={resolved ? "true" : "false"}
+      data-resolved="false"
     >
-      <div className={`mb-2 flex items-center gap-2 text-sm ${resolved ? "text-gray-400" : "text-blue-700"}`}>
-        {resolved ? <CheckCircleFilled /> : <QuestionCircleOutlined />}
-        {block.header ? <Tag color={resolved ? "default" : "blue"}>{block.header}</Tag> : null}
-        <span>
-          {resolved ? "该问题已处理" : multiSelect ? "需要你的选择（可多选）" : "需要你的选择"}
-        </span>
+      <div className="mb-2 flex items-center gap-2 text-sm text-blue-700">
+        <QuestionCircleOutlined />
+        {block.header ? <Tag color="blue">{block.header}</Tag> : null}
+        <span>{multiSelect ? "需要你的选择（可多选）" : "需要你的选择"}</span>
       </div>
-      <div className={`mb-3 ${MODEL_INVOCATION_PROSE_CLASSNAME} ${resolved ? "opacity-70" : ""}`}>
+      <div className={`mb-3 ${MODEL_INVOCATION_PROSE_CLASSNAME}`}>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.question}</ReactMarkdown>
       </div>
       <div className="flex flex-wrap gap-2">
@@ -138,19 +185,39 @@ function UserQuestionCard({
           );
         })}
       </div>
-      {multiSelect && !resolved ? (
+      {multiSelect ? (
         <div className="mt-2 flex justify-end">
           <Button
             size="small"
             type="primary"
-            disabled={!interactive || selected.size === 0}
-            onClick={submitSelection}
+            disabled={!interactive || (selected.size === 0 && customText.trim().length === 0)}
+            onClick={submitMulti}
           >
             确认选择
           </Button>
         </div>
       ) : null}
-      {!resolved ? <div className="mt-2 text-xs text-gray-400">也可以直接输入你的回答</div> : null}
+      <div className="mt-2 flex items-center gap-2">
+        <Input
+          size="small"
+          placeholder="其他（自定义回答）"
+          value={customText}
+          disabled={!interactive}
+          onChange={(event) => setCustomText(event.target.value)}
+          onPressEnter={multiSelect ? submitMulti : submitCustom}
+          data-testid="assistant-user-question-custom"
+        />
+        {!multiSelect ? (
+          <Button
+            size="small"
+            disabled={!interactive || customText.trim().length === 0}
+            onClick={submitCustom}
+            data-testid="assistant-user-question-custom-send"
+          >
+            发送
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }

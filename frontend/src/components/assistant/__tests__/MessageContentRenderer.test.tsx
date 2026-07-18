@@ -495,7 +495,7 @@ describe("MessageContentRenderer", () => {
       expect(screen.getByTestId("collapsed-process-card")).toBeInTheDocument();
       expect(screen.getByTestId("assistant-user-question")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "A" }));
-      expect(onAnswer).toHaveBeenCalledWith("uq-simple", "A");
+      expect(onAnswer).toHaveBeenCalledWith("uq-simple", { selected: ["A"], custom: undefined });
     });
 
     it("folds legacy toolCalls into the process card when content_blocks is absent", () => {
@@ -558,11 +558,14 @@ describe("MessageContentRenderer", () => {
       );
       expect(screen.getByText("需要你的选择")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "A" }));
-      expect(onAnswer).toHaveBeenCalledWith("uq-1", "A");
-      expect(screen.getByRole("button", { name: "A" })).toBeDisabled();
+      expect(onAnswer).toHaveBeenCalledWith("uq-1", { selected: ["A"], custom: undefined });
+      // The selection collapses into the card as a read-only recap (fizz-style):
+      // no separate user bubble, and the option buttons are gone.
+      expect(screen.getByTestId("assistant-user-question-recap")).toHaveTextContent("A");
+      expect(screen.queryByRole("button", { name: "A" })).toBeNull();
     });
 
-    it("renders a disabled recap once a different question becomes pending", () => {
+    it("renders a read-only recap once a different question becomes pending", () => {
       const onAnswer = vi.fn();
       render(
         <MessageContentRenderer
@@ -573,17 +576,48 @@ describe("MessageContentRenderer", () => {
         />,
       );
       expect(screen.getByText("该问题已处理")).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "A" }));
+      // Superseded cards render read-only — no clickable options.
+      expect(screen.queryByRole("button", { name: "A" })).toBeNull();
       expect(onAnswer).not.toHaveBeenCalled();
-      expect(screen.getByRole("button", { name: "A" })).toBeDisabled();
     });
 
-    it("renders a disabled recap when nothing is pending", () => {
+    it("renders a read-only recap when nothing is pending", () => {
       render(
         <MessageContentRenderer text="" contentBlocks={[askBlock]} pendingQuestionId={null} />,
       );
       expect(screen.getByText("该问题已处理")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "A" })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "A" })).toBeNull();
+    });
+
+    it("shows the answered selection recap from a persisted block", () => {
+      render(
+        <MessageContentRenderer
+          text=""
+          contentBlocks={[{ ...askBlock, answered: true, selected: ["B"] }]}
+          pendingQuestionId={null}
+        />,
+      );
+      expect(screen.getByText("该问题已回答")).toBeInTheDocument();
+      expect(screen.getByTestId("assistant-user-question-recap")).toHaveTextContent("B");
+      expect(screen.queryByRole("button", { name: "A" })).toBeNull();
+    });
+
+    it("answers with free-text custom input on single-select", () => {
+      const onAnswer = vi.fn();
+      render(
+        <MessageContentRenderer
+          text=""
+          contentBlocks={[askBlock]}
+          onAnswerUserQuestion={onAnswer}
+          pendingQuestionId="uq-1"
+        />,
+      );
+      fireEvent.change(screen.getByTestId("assistant-user-question-custom"), {
+        target: { value: "我自己写的答案" },
+      });
+      fireEvent.click(screen.getByTestId("assistant-user-question-custom-send"));
+      expect(onAnswer).toHaveBeenCalledWith("uq-1", { selected: [], custom: "我自己写的答案" });
+      expect(screen.getByTestId("assistant-user-question-recap")).toHaveTextContent("我自己写的答案");
     });
 
     it("defaults to interactive when the caller doesn't track pendingQuestionId", () => {
@@ -592,7 +626,7 @@ describe("MessageContentRenderer", () => {
         <MessageContentRenderer text="" contentBlocks={[askBlock]} onAnswerUserQuestion={onAnswer} />,
       );
       fireEvent.click(screen.getByRole("button", { name: "A" }));
-      expect(onAnswer).toHaveBeenCalledWith("uq-1", "A");
+      expect(onAnswer).toHaveBeenCalledWith("uq-1", { selected: ["A"], custom: undefined });
     });
 
     it("supports multi_select: toggling options doesn't answer until confirm is clicked", () => {
@@ -617,7 +651,7 @@ describe("MessageContentRenderer", () => {
       fireEvent.click(screen.getByRole("button", { name: "C" }));
       expect(onAnswer).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole("button", { name: "确认选择" }));
-      expect(onAnswer).toHaveBeenCalledWith("uq-2", "A、C");
+      expect(onAnswer).toHaveBeenCalledWith("uq-2", { selected: ["A", "C"], custom: undefined });
     });
   });
 });
