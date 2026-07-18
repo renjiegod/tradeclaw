@@ -5,7 +5,6 @@ and every transition lands as an approval.* event."""
 
 import asyncio
 import unittest
-from typing import Any
 
 from doyoutrade.assistant import AssistantService, InMemoryAssistantRepository
 from doyoutrade.assistant.approvals import (
@@ -54,6 +53,7 @@ class ApprovalRuleMatchTests(unittest.TestCase):
             "doyoutrade-cli task delete task-9": "task_delete",
             "doyoutrade-cli task trigger add task-1 --cron '* * * * *' --intent trade": "trigger_trade_intent",
             "doyoutrade-cli account set-default acct-1": "account_write",
+            "doyoutrade-cli knowledge graph-sync": "knowledge_graph_write",
         }
         for command, expected_key in cases.items():
             rule = match_approval_rule(
@@ -61,6 +61,16 @@ class ApprovalRuleMatchTests(unittest.TestCase):
             )
             self.assertIsNotNone(rule, command)
             self.assertEqual(rule.key, expected_key, command)
+
+    def test_graph_writes_never_allow_session_allowlisting(self):
+        rule = match_approval_rule(
+            DEFAULT_APPROVAL_RULES,
+            "execute_bash",
+            {"command": "doyoutrade-cli knowledge graph-sync"},
+        )
+
+        self.assertIsNotNone(rule)
+        self.assertFalse(rule.allow_always)
 
     def test_benign_commands_pass(self):
         for command in (
@@ -190,6 +200,48 @@ class ApprovalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fresh["config"]["approval_allowlist"], ["dangerous_echo"])
         adapter.assert_exhausted()
 
+    async def test_one_time_rule_rejects_approve_always(self):
+        def _expect_forbidden_visible(messages, _tools):
+            joined = "\n".join(str(getattr(m, "content", "")) for m in messages)
+            assert "approval_always_forbidden" in joined
+
+        adapter = ScriptedModelAdapter(
+            [
+                call_tool(
+                    "execute_bash",
+                    {"command": "doyoutrade-cli knowledge graph-sync"},
+                ),
+                say("图谱同步未执行。", expect=_expect_forbidden_visible),
+            ]
+        )
+        rules = (
+            ApprovalRule(
+                key="knowledge_graph_write",
+                tool="execute_bash",
+                command_pattern=r"\bknowledge\s+graph-sync\b",
+                description="修改知识图谱",
+                timeout_seconds=5.0,
+                allow_always=False,
+            ),
+        )
+        service, repo, tool = self._build(adapter, rules=rules)
+        session = await service.create_session(agent_id="a", title="one-time")
+        sid = session["session_id"]
+
+        send = asyncio.create_task(
+            service.send_message(session_id=sid, content="同步图谱")
+        )
+        await self._resolve_when_pending(service, "approve_always")
+        await send
+
+        self.assertEqual(tool.executed, [])
+        fresh = await repo.get_session(sid)
+        self.assertEqual(
+            fresh["config"].get("approval_allowlist", []),
+            [],
+        )
+        adapter.assert_exhausted()
+
     async def test_timeout_returns_structured_error(self):
         rules = (
             ApprovalRule(
@@ -286,6 +338,38 @@ class ApprovalFeishuCardTests(unittest.TestCase):
         self.assertEqual(decisions, ["approve_once", "approve_always", "reject"])
         self.assertTrue(all(b["value"]["action"] == "approval_resolve" for b in buttons))
         self.assertTrue(all(b["value"]["approval_id"] == "appr-1" for b in buttons))
+
+    def test_one_time_card_omits_approve_always(self):
+        from doyoutrade.assistant.channels.feishu.card.builder import build_approval_card
+
+        card = build_approval_card(
+            {
+                "approval_id": "appr-graph",
+                "description": "修改知识图谱",
+                "command_preview": "doyoutrade-cli knowledge graph-sync",
+                "timeout_seconds": 300,
+                "allow_always": False,
+            }
+        )
+
+        def _decisions(value):
+            if isinstance(value, dict):
+                current = (
+                    [value["value"]["decision"]]
+                    if value.get("tag") == "button"
+                    else []
+                )
+                for child in value.values():
+                    current.extend(_decisions(child))
+                return current
+            if isinstance(value, list):
+                current = []
+                for child in value:
+                    current.extend(_decisions(child))
+                return current
+            return []
+
+        self.assertEqual(_decisions(card), ["approve_once", "reject"])
 
 
 if __name__ == "__main__":

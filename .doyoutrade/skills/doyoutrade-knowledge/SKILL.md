@@ -130,7 +130,17 @@ file retrieval. It returns compact facts (with time windows + provenance +
 knowledge_graph(entity="300059")                        # 代码 / 名称 / 角色词 / YYYY-MM / 信号 id
 knowledge_graph(entity="龙头", hops=2)                   # 2 跳：谁当过龙头 + 它们的交易
 knowledge_graph(entity="2026-03", include_expired=true) # 周期月视角 + 已失效历史认知
-knowledge_graph(action="sync")                          # 数据刚更新后先同步再查
+knowledge_graph(                                        # Agent 只能提案，不能直接写图
+  action="propose",
+  summary="补充东方财富题材关系",
+  operations=[{
+    "op": "create_relation",
+    "source": {"type": "symbol", "name": "300059"},
+    "relation": "belongs_to_theme",
+    "target": {"type": "theme", "name": "券商"},
+    "fact": "东方财富属于券商题材。"
+  }]
+)
 ```
 
 Facts are **bi-temporal**: a superseded judgment (角色从 龙头 变 杂毛) is kept as
@@ -142,12 +152,15 @@ edges are hard-data projections of `roles.jsonl` / `_sentiment.jsonl` /
 day's 复盘 journal by the `daily_review` cron (content-hash watermarked, so an
 unchanged journal is never re-extracted). Treat `llm` edges as **观点候选**,
 not hard facts — weight them by confidence and verify via their `source_ref`
-journal when it matters. The graph never replaces reading the source file for
+journal when it matters. `manual` edges are local-user edits or individually
+approved Agent proposals. Agent proposals are durable but never mutate graph
+facts before approval, and there is no approve-always mode.
+The graph never replaces reading the source file for
 detail; follow `source_ref` (`kb:...` → the KB file,
 `db:decision_signals/<id>` → CLI `decision-signal`).
 `entity_not_found` right after new data is written usually just means the
-projection is stale — run `knowledge_graph(action="sync")` once and retry.
-CLI equivalents: `doyoutrade-cli knowledge graph <entity>` / `knowledge graph-sync`.
+projection is stale — ask the local user to run “同步投影” in the graph UI.
+Do not invoke CLI graph-sync to bypass the Agent approval boundary.
 
 ### 交割单归因 (trade attribution over `trades/`)
 
@@ -364,10 +377,11 @@ Don't push the directory to a remote even if `~/.doyoutrade` is symlinked.
 
 | `error_code` | Meaning | Fix |
 |---|---|---|
-| `unknown_arguments` | Kwarg outside `action` / `entity` / `hops` / `include_expired` / `force`. | Stick to the declared schema. |
+| `unknown_arguments` | Kwarg outside `action` / `entity` / `hops` / `include_expired` / `operations` / `summary`. | Stick to the declared schema. |
 | `validation_error` | Bad value (e.g. `hops` outside 1..3, unknown `action`). | Fix the value; `hops` is 1-3. |
 | `missing_entity` | `action="query"` without a non-empty `entity`. | Pass 代码 / 名称 / 角色词 / `YYYY-MM` / 信号 id. |
-| `entity_not_found` | No graph node matches. | `knowledge_graph(action="sync")` once, then retry with the canonical symbol or full name. |
+| `entity_not_found` | No graph node matches. | Ask the local user to sync from the graph UI, then retry with the canonical symbol or full name. |
+| `graph_schema_validation_error` | Proposed relation violates the protected Schema. | Correct the entity types / relation / fact in the proposal. |
 | `knowledge_graph_unwired` | Runtime has no graph repository wired. | Not fixable in-session; use the two-step file retrieval instead. |
 | `knowledge_graph_failed` | Underlying read/write failed (type + message included). | Read the message; typically DB / KB filesystem issues. |
 

@@ -340,15 +340,11 @@ def build_approval_card(payload: dict[str, Any]) -> dict[str, Any]:
             },
         }
 
-    elements.extend(
-        _button_stack(
-            [
-                _button("允许一次", "approve_once", "primary"),
-                _button("总是允许", "approve_always", "default"),
-                _button("拒绝", "reject", "danger"),
-            ]
-        )
-    )
+    buttons = [_button("允许一次", "approve_once", "primary")]
+    if payload.get("allow_always", True):
+        buttons.append(_button("总是允许", "approve_always", "default"))
+    buttons.append(_button("拒绝", "reject", "danger"))
+    elements.extend(_button_stack(buttons))
 
     return {
         "schema": "2.0",

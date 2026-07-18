@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import math
 import re
@@ -37,9 +39,13 @@ from doyoutrade.persistence.models import (
     DecisionSignalOutcomeRecord,
     DecisionSignalRecord,
     InstrumentCatalog,
+    KnowledgeGraphChangeOperationRecord,
+    KnowledgeGraphChangeSetRecord,
     KnowledgeGraphEdgeRecord,
     KnowledgeGraphNodeRecord,
+    KnowledgeGraphRevisionRecord,
     KnowledgeGraphSourceStateRecord,
+    KnowledgeGraphStateRecord,
     MarketBarRecord,
     MarketBarSyncStateRecord,
     ModelInvocationRecord,
@@ -4967,7 +4973,7 @@ class SqlAlchemyDecisionSignalRepository:
 # Knowledge graph — kg_nodes / kg_edges / kg_source_state
 # ---------------------------------------------------------------------------
 
-_KG_PROVENANCES = frozenset({"deterministic", "llm"})
+_KG_PROVENANCES = frozenset({"deterministic", "llm", "manual"})
 
 #: apply_projection 一次 IN 查询的分片大小（SQLite 变量上限保守值）。
 _KG_IN_CHUNK = 400
@@ -5001,6 +5007,7 @@ class KnowledgeGraphEdgeSpec:
     attrs: dict | None = None
     provenance: str = "deterministic"
     confidence: float | None = None
+    source_key: str | None = None
     source_ref: str | None = None
     valid_at: datetime | None = None
     invalid_at: datetime | None = None
@@ -5017,6 +5024,9 @@ class KnowledgeGraphNodeSnapshot:
     attrs: dict | None
     created_at: datetime
     updated_at: datetime
+    status: str = "active"
+    retired_at: datetime | None = None
+    redirect_to_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -5033,6 +5043,7 @@ class KnowledgeGraphEdgeSnapshot:
     state_key: str | None
     provenance: str
     confidence: float | None
+    source_key: str | None
     source_ref: str | None
     valid_at: datetime | None
     invalid_at: datetime | None
@@ -5059,6 +5070,9 @@ def _kg_node_snapshot(record: KnowledgeGraphNodeRecord) -> KnowledgeGraphNodeSna
         attrs=record.attrs,
         created_at=record.created_at,
         updated_at=record.updated_at,
+        status=getattr(record, "status", None) or "active",
+        retired_at=getattr(record, "retired_at", None),
+        redirect_to_id=getattr(record, "redirect_to_id", None),
     )
 
 
@@ -5074,6 +5088,7 @@ def _kg_edge_snapshot(record: KnowledgeGraphEdgeRecord) -> KnowledgeGraphEdgeSna
         state_key=record.state_key,
         provenance=record.provenance,
         confidence=record.confidence,
+        source_key=record.source_key,
         source_ref=record.source_ref,
         valid_at=record.valid_at,
         invalid_at=record.invalid_at,
@@ -5116,8 +5131,19 @@ class SqlAlchemyKnowledgeGraphRepository:
         edges: list[KnowledgeGraphEdgeSpec],
         *,
         now: datetime,
+        reconcile_source_keys: set[str] | None = None,
+        source_hashes: dict[str, str] | None = None,
     ) -> dict[str, int]:
-        """Idempotently apply one projection batch. Returns mutation stats."""
+        """Idempotently apply one projection batch and its source watermarks.
+
+        ``reconcile_source_keys`` identifies complete source snapshots. Active
+        edges owned by one of those sources but absent from ``edges`` are
+        expired in the same transaction. ``source_hashes`` advances watermarks
+        atomically with the graph mutations, preventing half-applied syncs.
+        """
+
+        reconcile_source_keys = set(reconcile_source_keys or ())
+        source_hashes = dict(source_hashes or {})
 
         for spec in nodes:
             if not isinstance(spec, KnowledgeGraphNodeSpec):
@@ -5152,6 +5178,12 @@ class SqlAlchemyKnowledgeGraphRepository:
                 raise ValueError(
                     f"edge spec requires non-empty dedupe_key/relation/fact, got "
                     f"dedupe_key={spec.dedupe_key!r} relation={spec.relation!r}"
+                )
+        for source, digest in source_hashes.items():
+            if not source or not isinstance(digest, str) or not digest:
+                raise ValueError(
+                    "source_hashes requires non-empty string keys and digests, "
+                    f"got source={source!r} digest={digest!r}"
                 )
 
         dedupe_keys = [s.dedupe_key for s in edges]
@@ -5200,6 +5232,9 @@ class SqlAlchemyKnowledgeGraphRepository:
                         name=spec.name,
                         display_name=spec.display_name,
                         attrs=spec.attrs,
+                        status="active",
+                        retired_at=None,
+                        redirect_to_id=None,
                         created_at=now,
                         updated_at=now,
                     )
@@ -5207,6 +5242,19 @@ class SqlAlchemyKnowledgeGraphRepository:
                     existing_nodes[key] = record
                     stats["nodes_created"] += 1
                 else:
+                    status = getattr(record, "status", "active") or "active"
+                    if status == "merged" and getattr(record, "redirect_to_id", None):
+                        survivor = await session.get(
+                            KnowledgeGraphNodeRecord,
+                            record.redirect_to_id,
+                        )
+                        if survivor is not None:
+                            id_by_key[key] = survivor.id
+                            continue
+                    if status != "active":
+                        # Do not revive retired/merged entities from projection.
+                        id_by_key[key] = record.id
+                        continue
                     changed = False
                     if spec.display_name is not None and spec.display_name != record.display_name:
                         record.display_name = spec.display_name
@@ -5259,6 +5307,7 @@ class SqlAlchemyKnowledgeGraphRepository:
                     spec.state_key,
                     spec.provenance,
                     spec.confidence,
+                    spec.source_key or spec.source_ref,
                     spec.source_ref,
                     spec.valid_at,
                     spec.invalid_at,
@@ -5274,6 +5323,7 @@ class SqlAlchemyKnowledgeGraphRepository:
                     record.state_key,
                     record.provenance,
                     record.confidence,
+                    record.source_key,
                     record.source_ref,
                     record.valid_at,
                     record.invalid_at,
@@ -5281,6 +5331,10 @@ class SqlAlchemyKnowledgeGraphRepository:
 
             for spec in edges:
                 existing = active_by_dedupe.get(spec.dedupe_key)
+                if existing is not None and existing.provenance == "manual":
+                    # Manual overlays win; projection must not expire them.
+                    stats["edges_unchanged"] += 1
+                    continue
                 if existing is not None and _record_content(existing) == _edge_content(spec):
                     stats["edges_unchanged"] += 1
                     continue
@@ -5299,6 +5353,7 @@ class SqlAlchemyKnowledgeGraphRepository:
                         state_key=spec.state_key,
                         provenance=spec.provenance,
                         confidence=spec.confidence,
+                        source_key=spec.source_key or spec.source_ref,
                         source_ref=spec.source_ref,
                         valid_at=spec.valid_at,
                         invalid_at=spec.invalid_at,
@@ -5321,6 +5376,8 @@ class SqlAlchemyKnowledgeGraphRepository:
                 for record in result.scalars().all():
                     if record.dedupe_key in incoming_dedupe:
                         continue
+                    if record.provenance == "manual":
+                        continue
                     # 单值状态组里出现了不在本次投影中的旧状态（如角色已
                     # 从 龙头 变为 杂毛）——按 bi-temporal 语义置 expired，
                     # 保留历史行。
@@ -5330,6 +5387,141 @@ class SqlAlchemyKnowledgeGraphRepository:
                         "kg apply_projection expired superseded state edge "
                         "state_key=%r dedupe_key=%r", record.state_key, record.dedupe_key,
                     )
+
+            # ---- complete source snapshots: expire facts no longer emitted ---
+            incoming_by_source: dict[str, set[str]] = {
+                source: set() for source in reconcile_source_keys
+            }
+            for spec in edges:
+                source_key = spec.source_key or spec.source_ref
+                if source_key in incoming_by_source:
+                    incoming_by_source[source_key].add(spec.dedupe_key)
+            for source_chunk in _chunked(sorted(reconcile_source_keys)):
+                result = await session.execute(
+                    select(KnowledgeGraphEdgeRecord).where(
+                        KnowledgeGraphEdgeRecord.source_key.in_(source_chunk),
+                        KnowledgeGraphEdgeRecord.expired_at.is_(None),
+                    )
+                )
+                for record in result.scalars().all():
+                    if record.dedupe_key in incoming_by_source[record.source_key]:
+                        continue
+                    if record.provenance == "manual":
+                        continue
+                    record.expired_at = now
+                    stats["edges_expired"] += 1
+                    _LOG.info(
+                        "kg apply_projection expired removed source edge "
+                        "source_key=%r dedupe_key=%r",
+                        record.source_key,
+                        record.dedupe_key,
+                    )
+
+            # ---- source watermarks: commit atomically with graph mutations ---
+            if source_hashes:
+                state_records: dict[str, KnowledgeGraphSourceStateRecord] = {}
+                for source_chunk in _chunked(sorted(source_hashes)):
+                    result = await session.execute(
+                        select(KnowledgeGraphSourceStateRecord).where(
+                            KnowledgeGraphSourceStateRecord.source.in_(source_chunk)
+                        )
+                    )
+                    state_records.update(
+                        {record.source: record for record in result.scalars().all()}
+                    )
+                for source, digest in sorted(source_hashes.items()):
+                    record = state_records.get(source)
+                    if record is None:
+                        session.add(
+                            KnowledgeGraphSourceStateRecord(
+                                source=source,
+                                content_hash=digest,
+                                synced_at=now,
+                                stats=dict(stats),
+                            )
+                        )
+                    else:
+                        record.content_hash = digest
+                        record.synced_at = now
+                        record.stats = dict(stats)
+
+            mutation_count = (
+                stats["nodes_created"]
+                + stats["nodes_updated"]
+                + stats["edges_created"]
+                + stats["edges_expired"]
+            )
+            if source_hashes and mutation_count:
+                state_result = await session.execute(
+                    select(KnowledgeGraphStateRecord)
+                    .where(KnowledgeGraphStateRecord.state_key == "default")
+                    .with_for_update()
+                )
+                graph_state = state_result.scalar_one_or_none()
+                if graph_state is None:
+                    graph_state = KnowledgeGraphStateRecord(
+                        state_key="default",
+                        head_revision=0,
+                        updated_at=now,
+                    )
+                    session.add(graph_state)
+                    await session.flush()
+                parent_revision = graph_state.head_revision
+                revision = parent_revision + 1
+                change_set_id = f"kgcs-{uuid.uuid4().hex[:12]}"
+                proposal_body = json.dumps(
+                    {
+                        "source_hashes": source_hashes,
+                        "stats": stats,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                session.add(
+                    KnowledgeGraphChangeSetRecord(
+                        id=change_set_id,
+                        status="applied",
+                        actor_type="system",
+                        actor_id="source-ingestion",
+                        base_revision=parent_revision,
+                        revision=revision,
+                        proposal_hash=hashlib.sha256(
+                            proposal_body.encode("utf-8")
+                        ).hexdigest(),
+                        summary=(
+                            "自动图谱投影："
+                            + ", ".join(sorted(source_hashes))
+                        ),
+                        created_at=now,
+                        applied_at=now,
+                        rejected_at=None,
+                    )
+                )
+                session.add(
+                    KnowledgeGraphChangeOperationRecord(
+                        id=f"kgop-{uuid.uuid4().hex[:12]}",
+                        change_set_id=change_set_id,
+                        position=0,
+                        op_type="system_projection",
+                        target_id=None,
+                        before_json=None,
+                        after_json={
+                            "source_hashes": source_hashes,
+                            "stats": dict(stats),
+                        },
+                    )
+                )
+                session.add(
+                    KnowledgeGraphRevisionRecord(
+                        revision=revision,
+                        parent_revision=parent_revision,
+                        change_set_id=change_set_id,
+                        created_at=now,
+                    )
+                )
+                graph_state.head_revision = revision
+                graph_state.updated_at = now
 
             await session.commit()
         return stats
@@ -5385,6 +5577,8 @@ class SqlAlchemyKnowledgeGraphRepository:
 
         精确命中排最前（symbol 代码 / 全名），其余按 LIKE 模糊补足到
         ``limit``。空 query 直接 ``ValueError``（可见错误优于全表扫）。
+        Retired entities are hidden. Merged losers resolve through
+        ``redirect_to_id`` to the surviving active entity.
         """
         text = (query or "").strip()
         if not text:
@@ -5399,7 +5593,7 @@ class SqlAlchemyKnowledgeGraphRepository:
                     )
                 )
                 .order_by(KnowledgeGraphNodeRecord.node_type, KnowledgeGraphNodeRecord.name)
-                .limit(limit)
+                .limit(limit * 3)
             )
             rows = list(exact.scalars().all())
             if len(rows) < limit:
@@ -5414,12 +5608,39 @@ class SqlAlchemyKnowledgeGraphRepository:
                         )
                     )
                     .order_by(KnowledgeGraphNodeRecord.node_type, KnowledgeGraphNodeRecord.name)
-                    .limit(limit)
+                    .limit(limit * 3)
                 )
                 for record in fuzzy.scalars().all():
-                    if record.id not in seen_ids and len(rows) < limit:
+                    if record.id not in seen_ids and len(rows) < limit * 3:
                         rows.append(record)
-            return [_kg_node_snapshot(r) for r in rows]
+
+            resolved: list[KnowledgeGraphNodeRecord] = []
+            seen_resolved: set[str] = set()
+            for record in rows:
+                current = record
+                hops = 0
+                while (
+                    current.status == "merged"
+                    and current.redirect_to_id
+                    and hops < 8
+                ):
+                    nxt = await session.get(
+                        KnowledgeGraphNodeRecord,
+                        current.redirect_to_id,
+                    )
+                    if nxt is None:
+                        break
+                    current = nxt
+                    hops += 1
+                if current.status != "active":
+                    continue
+                if current.id in seen_resolved:
+                    continue
+                seen_resolved.add(current.id)
+                resolved.append(current)
+                if len(resolved) >= limit:
+                    break
+            return [_kg_node_snapshot(r) for r in resolved]
 
     async def neighborhood(
         self,
@@ -5441,6 +5662,21 @@ class SqlAlchemyKnowledgeGraphRepository:
             center = await session.get(KnowledgeGraphNodeRecord, node_id)
             if center is None:
                 raise RecordNotFoundError(f"kg node not found: {node_id}")
+            hops_left = 0
+            while (
+                center.status == "merged"
+                and center.redirect_to_id
+                and hops_left < 8
+            ):
+                nxt = await session.get(
+                    KnowledgeGraphNodeRecord,
+                    center.redirect_to_id,
+                )
+                if nxt is None:
+                    break
+                center = nxt
+                hops_left += 1
+            node_id = center.id
 
             frontier = {node_id}
             visited_nodes = {node_id}
@@ -5480,7 +5716,14 @@ class SqlAlchemyKnowledgeGraphRepository:
                         KnowledgeGraphNodeRecord.id.in_(chunk)
                     )
                 )
-                node_rows.extend(result.scalars().all())
+                for record in result.scalars().all():
+                    if (
+                        not include_expired
+                        and getattr(record, "status", "active") != "active"
+                        and record.id != node_id
+                    ):
+                        continue
+                    node_rows.append(record)
             node_rows.sort(key=lambda r: (r.id != node_id, r.node_type, r.name))
             edge_rows = sorted(
                 edges_by_id.values(),

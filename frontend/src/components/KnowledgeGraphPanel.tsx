@@ -15,10 +15,18 @@ import {
   Typography,
   message,
 } from "antd";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ApiError, getKnowledgeGraph, syncKnowledgeGraph } from "../api";
+import {
+  ApiError,
+  getKnowledgeGraph,
+  getKnowledgeGraphLayout,
+  saveKnowledgeGraphLayout,
+  syncKnowledgeGraph,
+} from "../api";
 import type { KgEdge, KgNode, KnowledgeGraphNeighborhood } from "../types";
+import { KnowledgeGraphEditingActions } from "./KnowledgeGraphEditingActions";
+import { ManualRelationActions } from "./ManualRelationActions";
 import { layoutNeighborhood } from "./knowledgeGraphLayout";
 
 const SVG_WIDTH = 760;
@@ -66,6 +74,12 @@ function relationLabel(relation: string): string {
   return RELATION_LABELS[relation] ?? relation;
 }
 
+function provenanceLabel(provenance: KgEdge["provenance"]): string {
+  if (provenance === "llm") return "LLM 观点";
+  if (provenance === "manual") return "人工确认";
+  return "硬数据";
+}
+
 function formatWindow(edge: KgEdge): string {
   const day = (value: string | null) => (value ? value.slice(0, 10) : null);
   const start = day(edge.valid_at);
@@ -96,6 +110,21 @@ export function KnowledgeGraphPanel() {
   const [syncing, setSyncing] = useState(false);
   const [notFoundEntity, setNotFoundEntity] = useState<string | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+  const [positionOverrides, setPositionOverrides] = useState<
+    Map<string, { x: number; y: number }>
+  >(new Map());
+  const [lockedIds, setLockedIds] = useState<Set<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [highlightIds, setHighlightIds] = useState<Set<string>>(new Set());
+  const [savingLayout, setSavingLayout] = useState(false);
+  const dragRef = useRef<{
+    nodeId: string;
+    pointerId: number;
+    originX: number;
+    originY: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
 
   const load = useCallback(
     async (query: string, nextHops: number, nextExpired: boolean) => {
@@ -109,6 +138,23 @@ export function KnowledgeGraphPanel() {
           includeExpired: nextExpired,
         });
         setData(res);
+        setPositionOverrides(new Map());
+        setSelectedIds(new Set());
+        setHighlightIds(new Set());
+        try {
+          const layoutRes = await getKnowledgeGraphLayout(res.center.id);
+          if (layoutRes.layout) {
+            setPositionOverrides(
+              new Map(Object.entries(layoutRes.layout.positions)),
+            );
+            setLockedIds(new Set(layoutRes.layout.locked_ids));
+            setHighlightIds(new Set(layoutRes.layout.highlight_ids));
+          } else {
+            setLockedIds(new Set([res.center.id]));
+          }
+        } catch {
+          setLockedIds(new Set([res.center.id]));
+        }
       } catch (error: unknown) {
         if (error instanceof ApiError && error.status === 404) {
           setData(null);
@@ -157,8 +203,29 @@ export function KnowledgeGraphPanel() {
       width: SVG_WIDTH,
       height: SVG_HEIGHT,
       centerId: data.center.id,
+      lockedIds,
+      seedPositions: positionOverrides,
     });
-  }, [data]);
+  }, [data, lockedIds, positionOverrides]);
+
+  useEffect(() => {
+    if (!data) return;
+    if (selectedIds.size === 0) {
+      setHighlightIds(new Set());
+      return;
+    }
+    const next = new Set<string>();
+    for (const id of selectedIds) {
+      next.add(id);
+      for (const edge of data.edges) {
+        if (edge.src_id === id || edge.dst_id === id) {
+          next.add(edge.src_id);
+          next.add(edge.dst_id);
+        }
+      }
+    }
+    setHighlightIds(next);
+  }, [data, selectedIds]);
 
   const nodesById = useMemo(() => {
     const map = new Map<string, KgNode>();
@@ -195,6 +262,38 @@ export function KnowledgeGraphPanel() {
     if (current) void load(current, nextHops, nextExpired);
   };
 
+  const reloadCurrent = useCallback(async () => {
+    const current = (entity || data?.center.name || "").trim();
+    if (current) {
+      await load(current, hops, includeExpired);
+    }
+  }, [data?.center.name, entity, hops, includeExpired, load]);
+
+  const saveLayout = useCallback(async () => {
+    if (!data) return;
+    setSavingLayout(true);
+    try {
+      const payload: Record<string, { x: number; y: number }> = {};
+      for (const [id, pos] of positions.entries()) {
+        payload[id] = pos;
+      }
+      await saveKnowledgeGraphLayout(
+        data.center.id,
+        payload,
+        [...lockedIds],
+        [...highlightIds],
+        data.revision,
+      );
+      message.success("画布布局已保存");
+      await reloadCurrent();
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      message.error(`保存布局失败：${detail}`);
+    } finally {
+      setSavingLayout(false);
+    }
+  }, [data, highlightIds, lockedIds, positions, reloadCurrent]);
+
   return (
     <Card
       className="!border !border-shell-line !bg-card-bg shadow-shell-card"
@@ -208,6 +307,16 @@ export function KnowledgeGraphPanel() {
       }
       extra={
         <div className="flex items-center gap-2">
+          <KnowledgeGraphEditingActions data={data} onChanged={reloadCurrent} />
+          <Button
+            size="small"
+            disabled={!data}
+            loading={savingLayout}
+            onClick={() => void saveLayout()}
+            data-testid="kg-save-layout"
+          >
+            保存布局
+          </Button>
           <Button
             size="small"
             icon={<SyncOutlined />}
@@ -316,6 +425,33 @@ export function KnowledgeGraphPanel() {
                 role="img"
                 aria-label={`${nodeLabel(data.center)} 的知识图谱邻域`}
                 data-testid="kg-svg"
+                onPointerMove={(event) => {
+                  const drag = dragRef.current;
+                  if (!drag || event.pointerId !== drag.pointerId) return;
+                  const svg = event.currentTarget;
+                  const rect = svg.getBoundingClientRect();
+                  const scaleX = SVG_WIDTH / rect.width;
+                  const scaleY = SVG_HEIGHT / rect.height;
+                  const dx = (event.clientX - drag.originX) * scaleX;
+                  const dy = (event.clientY - drag.originY) * scaleY;
+                  setPositionOverrides((prev) => {
+                    const next = new Map(prev);
+                    next.set(drag.nodeId, {
+                      x: drag.startX + dx,
+                      y: drag.startY + dy,
+                    });
+                    return next;
+                  });
+                  setLockedIds((prev) => new Set(prev).add(drag.nodeId));
+                }}
+                onPointerUp={(event) => {
+                  if (dragRef.current?.pointerId === event.pointerId) {
+                    dragRef.current = null;
+                  }
+                }}
+                onPointerLeave={() => {
+                  dragRef.current = null;
+                }}
               >
                 {data.edges.map((edge) => {
                   const a = positions.get(edge.src_id);
@@ -323,6 +459,8 @@ export function KnowledgeGraphPanel() {
                   if (!a || !b) return null;
                   const expired = edge.expired_at != null;
                   const hovered = hoveredEdgeId === edge.id;
+                  const highlighted =
+                    highlightIds.has(edge.src_id) && highlightIds.has(edge.dst_id);
                   return (
                     <g key={edge.id}>
                       <line
@@ -330,9 +468,15 @@ export function KnowledgeGraphPanel() {
                         y1={a.y}
                         x2={b.x}
                         y2={b.y}
-                        stroke={expired ? "#b3a68f" : "#8a7a63"}
-                        strokeWidth={hovered ? 3 : 2}
-                        strokeOpacity={expired ? 0.45 : 0.75}
+                        stroke={
+                          highlighted
+                            ? "#c45c26"
+                            : expired
+                              ? "#b3a68f"
+                              : "#8a7a63"
+                        }
+                        strokeWidth={highlighted || hovered ? 3 : 2}
+                        strokeOpacity={expired ? 0.45 : highlighted ? 0.95 : 0.75}
                         strokeDasharray={edge.provenance === "llm" ? "6 4" : undefined}
                         onMouseEnter={() => setHoveredEdgeId(edge.id)}
                         onMouseLeave={() => setHoveredEdgeId(null)}
@@ -349,16 +493,41 @@ export function KnowledgeGraphPanel() {
                   const isCenter = node.id === data.center.id;
                   const style = nodeStyle(node.node_type);
                   const label = nodeLabel(node);
+                  const selected = selectedIds.has(node.id);
+                  const locked = lockedIds.has(node.id);
+                  const highlighted = highlightIds.has(node.id);
                   return (
                     <g
                       key={node.id}
                       transform={`translate(${p.x}, ${p.y})`}
                       className="cursor-pointer"
-                      onClick={() => {
+                      onClick={(event) => {
+                        if (event.shiftKey) {
+                          setSelectedIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(node.id)) next.delete(node.id);
+                            else next.add(node.id);
+                            return next;
+                          });
+                          return;
+                        }
                         if (!isCenter) {
                           setEntity(node.name);
                           void load(node.name, hops, includeExpired);
                         }
+                      }}
+                      onPointerDown={(event) => {
+                        if (event.button !== 0 || event.shiftKey) return;
+                        event.preventDefault();
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                        dragRef.current = {
+                          nodeId: node.id,
+                          pointerId: event.pointerId,
+                          originX: event.clientX,
+                          originY: event.clientY,
+                          startX: p.x,
+                          startY: p.y,
+                        };
                       }}
                       data-testid={`kg-node-${node.id}`}
                     >
@@ -366,8 +535,14 @@ export function KnowledgeGraphPanel() {
                       <circle
                         r={isCenter ? 15 : 10}
                         fill={style.color}
-                        stroke="#fffdf9"
-                        strokeWidth={2}
+                        stroke={
+                          selected || highlighted
+                            ? "#c45c26"
+                            : locked
+                              ? "#2f8f6b"
+                              : "#fffdf9"
+                        }
+                        strokeWidth={selected || highlighted || locked ? 3 : 2}
                       />
                       <text
                         y={isCenter ? 30 : 24}
@@ -510,7 +685,7 @@ export function KnowledgeGraphPanel() {
                           </Typography.Paragraph>
                           <div className="flex flex-wrap items-center gap-1">
                             <Tag className="!text-[11px]">
-                              {edge.provenance === "llm" ? "LLM 观点" : "硬数据"}
+                              {provenanceLabel(edge.provenance)}
                             </Tag>
                             {edge.confidence != null ? (
                               <Tag className="!text-[11px]">
@@ -527,6 +702,13 @@ export function KnowledgeGraphPanel() {
                               <Typography.Text type="secondary" className="!text-[11px]">
                                 {edge.source_ref}
                               </Typography.Text>
+                            ) : null}
+                            {!expired ? (
+                              <ManualRelationActions
+                                edge={edge}
+                                revision={data.revision}
+                                onChanged={reloadCurrent}
+                              />
                             ) : null}
                           </div>
                         </div>

@@ -1612,9 +1612,11 @@ export function AssistantPage() {
               <Button size="small" type="primary" onClick={() => void handleResolveApproval("approve_once")}>
                 允许一次
               </Button>
-              <Button size="small" onClick={() => void handleResolveApproval("approve_always")}>
-                本会话总是允许
-              </Button>
+              {pendingApproval.allow_always !== false ? (
+                <Button size="small" onClick={() => void handleResolveApproval("approve_always")}>
+                  本会话总是允许
+                </Button>
+              ) : null}
               <Button size="small" danger onClick={() => void handleResolveApproval("reject")}>
                 拒绝
               </Button>

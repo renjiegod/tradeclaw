@@ -38,19 +38,33 @@ export function layoutNeighborhood(
     centerId: string;
     iterations?: number;
     padding?: number;
+    lockedIds?: Iterable<string>;
+    seedPositions?: Map<string, NodePosition> | Record<string, NodePosition>;
   },
 ): Map<string, NodePosition> {
   const { width, height, centerId } = options;
   const iterations = options.iterations ?? 220;
   const padding = options.padding ?? 48;
+  const locked = new Set(options.lockedIds ?? []);
+  locked.add(centerId);
   const cx = width / 2;
   const cy = height / 2;
+
+  const seed =
+    options.seedPositions instanceof Map
+      ? options.seedPositions
+      : new Map(Object.entries(options.seedPositions ?? {}));
 
   const positions = new Map<string, NodePosition>();
   if (nodes.length === 0) return positions;
 
   const ringRadius = Math.min(width, height) / 3;
   for (const node of nodes) {
+    const seeded = seed.get(node.id);
+    if (seeded) {
+      positions.set(node.id, { x: seeded.x, y: seeded.y });
+      continue;
+    }
     if (node.id === centerId) {
       positions.set(node.id, { x: cx, y: cy });
       continue;
@@ -119,7 +133,7 @@ export function layoutNeighborhood(
     }
 
     for (const id of ids) {
-      if (id === centerId) continue; // 中心钉死
+      if (locked.has(id)) continue; // 锁定节点不参与力导位移
       const p = positions.get(id)!;
       const f = forces.get(id)!;
       // 轻微向心力，防孤立节点漂出画布。

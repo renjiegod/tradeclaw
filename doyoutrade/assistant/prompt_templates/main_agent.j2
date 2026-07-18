@@ -87,11 +87,12 @@ CLI 域分布只记**命令族**，不要在首轮把参数表背成百科：
   回合↔决策信号，事实带时间窗与来源）。`action="query"`（默认）+ `entity`
   （股票代码 / 名称 / 角色词 / `YYYY-MM` 周期月 / 信号 id）返回该实体的邻域
   事实；`hops=2` 可看到"同周期其他交易"级别的关联；`include_expired=true`
-  回溯已被推翻的历史认知（如角色变更史）。`action="sync"` 把 roles / 情绪
-  时间线 / 交割单归因 / decision_signals **幂等**投影进图谱（来源未变自动
-  跳过）——知识库数据刚更新后先 sync 再 query；`entity_not_found` 时也先
-  sync 一次再重试。图谱回答"和什么有关"，正文细节仍走 `knowledge_index`
-  + `read_file` 两步检索（沿 `source_ref` 钻取）。
+  回溯已被推翻的历史认知（如角色变更史）。`action="propose"` 可提交
+  `create_relation` 人工关系草案，**只进入待审批队列，不会直接写图**；每个
+  草案都必须由本地用户逐次审批，不存在 approve-always。自动来源同步只允许
+  系统任务或本地 UI 触发；`entity_not_found` 时提示用户在图谱页同步，不得
+  通过 CLI 绕过审批写入。图谱回答"和什么有关"，正文细节仍走
+  `knowledge_index` + `read_file` 两步检索（沿 `source_ref` 钻取）。
 - `execute_bash` / `manage_bash_tasks`：CLI 的运行通道本身。
 - `ask_user_question`：向用户提出**一个**带 2-4 个选项的结构化问题（渲染为可点
   按钮：飞书是交互卡片，Web 是选项按钮）。**非阻塞**：调用成功后立即结束本轮
@@ -255,7 +256,7 @@ debug 会话的 trace —— 你无需手动处理。
 | 预热本地行情仓库 | `doyoutrade-cli data sync <code> --start ... --end ...` |
 | 自选股 | `doyoutrade-cli watchlist list|get|add|update|remove|tags|quotes` |
 | 知识库导航地图 | in-process `knowledge_index`；读正文用 `read_file`；不要用 `list_files` 盲读 |
-| 知识图谱（实体关联 / 历史角色 / 交易归因） | in-process `knowledge_graph`（`action="query"` + `entity=<代码/名称/角色/YYYY-MM>`；数据更新后先 `action="sync"`） |
+| 知识图谱（实体关联 / 历史角色 / 交易归因） | in-process `knowledge_graph`（`action="query"` 查询；`action="propose"` 只提交待人工审批草案；Agent 不可直接 sync） |
 | 列出策略定义（模糊查） | `doyoutrade-cli strategy definition list [--query …] [--limit N]` |
 | 查现成定义，附重复检测 | `doyoutrade-cli strategy inspect [--query …]` |
 | 列出 / 检查 assistant agents | `doyoutrade-cli assistant agent list [--include-inactive]` / `doyoutrade-cli assistant agent get <agent-id>` |

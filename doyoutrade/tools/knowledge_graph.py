@@ -1,4 +1,4 @@
-"""knowledge_graph — 私有知识库之上的实体关系图谱（查询 + 同步）。
+"""knowledge_graph — 私有知识库之上的实体关系图谱（查询 + 变更提案）。
 
 与 ``knowledge_index``（文件导航地图）互补的第二层检索面：图谱回答
 "这个实体和什么有关"（个股↔角色↔周期↔交易↔信号），返回紧凑事实句
@@ -10,9 +10,9 @@
 * ``action="query"``（默认）—— 按名称/代码解析实体，取 N 跳邻域子图，
   渲染成 markdown。``include_expired=true`` 时附带已失效的历史认知
   （bi-temporal 回溯——"当时怎么看这只票"）。
-* ``action="sync"`` —— 幂等地把确定性来源（roles.jsonl / 情绪时间线 /
-  交割单归因 / decision_signals）重新投影进图谱。来源 content_hash 均
-  未变时快速跳过；``force=true`` 强制重投影。
+* ``action="propose"`` —— Agent 只能创建持久化变更草案，图谱不会立即
+  改动；本地用户审批完全一致的 proposal hash 后才原子落库。自动来源同步
+  由系统任务或本地用户入口触发，不暴露给 Agent。
 
 Error codes (stable skill-doc tokens):
 
@@ -33,7 +33,7 @@ from doyoutrade.debug import emit_debug_event
 from doyoutrade.tools import OperationHandler, ToolResult
 from doyoutrade.tools._prose import format_error_text, format_unknown_args
 
-_ACTIONS = ("query", "sync")
+_ACTIONS = ("query", "propose")
 
 
 class KnowledgeGraphTool(OperationHandler):
@@ -45,8 +45,8 @@ class KnowledgeGraphTool(OperationHandler):
         "include_expired=true 可回溯已被推翻的历史认知。"
         "对话涉及『这只票什么来头/我做过它几次/那轮周期我怎么操作的』时，"
         "先查图谱拿关联，再用 knowledge_index + read_file 钻取原文。"
-        "action=sync：把 roles/情绪时间线/交割单/决策信号幂等投影进图谱"
-        "（来源未变化时自动跳过；数据刚更新后建议先 sync 再 query）。"
+        "action=propose：提交人工关系或 custom Schema 变更草案；只进入待"
+        "审批队列，绝不直接写入图谱。"
     )
     category = "agent"
     parameters = {
@@ -56,7 +56,7 @@ class KnowledgeGraphTool(OperationHandler):
             "action": {
                 "type": "string",
                 "enum": list(_ACTIONS),
-                "description": "query=查询实体邻域（默认）；sync=重建确定性投影。",
+                "description": "query=查询实体邻域（默认）；propose=提交待审批变更草案。",
             },
             "entity": {
                 "type": "string",
@@ -76,9 +76,20 @@ class KnowledgeGraphTool(OperationHandler):
                 "type": "boolean",
                 "description": "true 时附带已失效的历史事实（角色变更史等），默认 false。",
             },
-            "force": {
-                "type": "boolean",
-                "description": "仅 action=sync：忽略来源水位强制重投影，默认 false。",
+            "operations": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 100,
+                "items": {"type": "object"},
+                "description": (
+                    "仅 action=propose：create/revise/retract_relation 或 "
+                    "upsert/deprecate_schema_item 操作数组；服务端按受保护 "
+                    "Schema 校验，草案获人工审批前不会写图。"
+                ),
+            },
+            "summary": {
+                "type": "string",
+                "description": "仅 action=propose：给审批人的变更摘要。",
             },
         },
         "required": [],
@@ -154,8 +165,13 @@ class KnowledgeGraphTool(OperationHandler):
             f"operation_{self.name}.request",
             {**base_payload, "session_id": session_id, "action": action},
         )
-        if action == "sync":
-            return await self._execute_sync(base_payload, force=bool(args.get("force")))
+        if action == "propose":
+            return await self._execute_propose(
+                base_payload,
+                operations=args.get("operations"),
+                summary=args.get("summary"),
+                actor_id=str(session_id or "agent"),
+            )
         return await self._execute_query(
             base_payload,
             entity=args.get("entity"),
@@ -163,32 +179,52 @@ class KnowledgeGraphTool(OperationHandler):
             include_expired=bool(args.get("include_expired")),
         )
 
-    # -- sync ---------------------------------------------------------------
+    # -- propose ------------------------------------------------------------
 
-    async def _execute_sync(self, base_payload: dict[str, Any], *, force: bool) -> ToolResult:
-        from doyoutrade.knowledge.graph import sync_deterministic_projection
-        from doyoutrade.tools._sandbox import knowledge_root
+    async def _execute_propose(
+        self,
+        base_payload: dict[str, Any],
+        *,
+        operations: Any,
+        summary: Any,
+        actor_id: str,
+    ) -> ToolResult:
+        from doyoutrade.knowledge.editing import (
+            GraphEditError,
+            KnowledgeGraphCommandService,
+        )
 
+        session_factory = getattr(self._repository, "session_factory", None)
+        if session_factory is None:
+            return ToolResult(
+                text=format_error_text(
+                    "knowledge_graph_unwired",
+                    "this runtime has no graph editor persistence wiring",
+                ),
+                is_error=True,
+            )
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         try:
-            result = await sync_deterministic_projection(
-                self._repository, knowledge_root(), now=now, force=force
+            result = await KnowledgeGraphCommandService(
+                session_factory
+            ).create_agent_draft(
+                operations,
+                summary=str(summary or ""),
+                actor_id=actor_id,
+                now=now,
             )
-        except Exception as exc:
+        except GraphEditError as exc:
             await emit_debug_event(
                 f"operation_{self.name}.failed",
                 {
                     **base_payload,
-                    "error_code": "knowledge_graph_failed",
-                    "error_type": type(exc).__name__,
+                    "action": "propose",
+                    "error_code": exc.error_code,
                     "message": str(exc),
                 },
             )
             return ToolResult(
-                text=format_error_text(
-                    "knowledge_graph_failed",
-                    f"projection sync failed ({type(exc).__name__}): {exc}",
-                ),
+                text=format_error_text(exc.error_code, str(exc)),
                 is_error=True,
             )
 
@@ -196,49 +232,22 @@ class KnowledgeGraphTool(OperationHandler):
             f"operation_{self.name}.created",
             {
                 **base_payload,
-                "action": "sync",
-                "skipped": result["skipped"],
-                "changed_sources": result["changed_sources"],
-                "apply": result.get("apply"),
-                "counts": result.get("counts"),
-                "warning_count": len(result.get("warnings") or []),
+                "action": "propose",
+                "change_set_id": result["id"],
+                "base_revision": result["base_revision"],
+                "proposal_hash": result["proposal_hash"],
             },
         )
-
-        counts = result.get("counts") or {}
-        size_line = (
-            f"图谱规模：{counts.get('nodes', '?')} 节点 / "
-            f"{counts.get('active_edges', '?')} 有效边 / "
-            f"{counts.get('expired_edges', '?')} 历史边"
-        )
-        if result["skipped"]:
-            return ToolResult(
-                text=(
-                    "知识图谱同步：所有来源自上次同步以来未变化，已跳过（幂等）。\n"
-                    f"{size_line}\n如需强制重投影传 force=true。"
-                ),
-                is_error=False,
-            )
-        apply_stats = result.get("apply") or {}
-        lines = [
-            "知识图谱同步完成。",
-            f"变更来源：{', '.join(result['changed_sources']) or '(force)'}",
-            (
-                f"本次写入：节点 +{apply_stats.get('nodes_created', 0)}"
-                f"/~{apply_stats.get('nodes_updated', 0)}，"
-                f"边 +{apply_stats.get('edges_created', 0)}"
-                f"（未变 {apply_stats.get('edges_unchanged', 0)}，"
-                f"失效 {apply_stats.get('edges_expired', 0)}）"
+        return ToolResult(
+            text=(
+                "知识图谱变更草案已创建，待人工审批。\n"
+                f"- change_set_id: {result['id']}\n"
+                f"- base_revision: {result['base_revision']}\n"
+                f"- proposal_hash: {result['proposal_hash']}\n"
+                "审批前图谱事实未发生变化；草案不支持 approve-always。"
             ),
-            size_line,
-        ]
-        warnings = result.get("warnings") or []
-        if warnings:
-            lines.append(
-                f"警告 {len(warnings)} 条（脏行已跳过并记录日志），"
-                f"首条：{warnings[0].get('reason')}"
-            )
-        return ToolResult(text="\n".join(lines), is_error=False)
+            is_error=False,
+        )
 
     # -- query ---------------------------------------------------------------
 

@@ -445,6 +445,7 @@ export type AssistantPendingApproval = {
   description: string;
   command_preview: string;
   timeout_seconds: number;
+  allow_always?: boolean;
   created_at: string;
 };
 
@@ -1642,12 +1643,16 @@ export type KgNode = {
   name: string;
   display_name: string | null;
   attrs: Record<string, unknown> | null;
+  status?: "active" | "retired" | "merged";
+  retired_at?: string | null;
+  redirect_to_id?: string | null;
 };
 
 /**
  * One knowledge-graph fact edge. ``provenance`` grades the fact:
  * ``deterministic`` = hard-data projection (roles / trades / signals),
- * ``llm`` = 观点候选 extracted from 复盘 journals (weight by ``confidence``).
+ * ``llm`` = 观点候选 extracted from 复盘 journals (weight by ``confidence``),
+ * ``manual`` = local-user edit or individually approved Agent proposal.
  * ``expired_at`` non-null = superseded history (bi-temporal), shown only when
  * the user asks for it.
  */
@@ -1659,7 +1664,7 @@ export type KgEdge = {
   /** Natural-language fact sentence — the primary display text. */
   fact: string;
   attrs: Record<string, unknown> | null;
-  provenance: "deterministic" | "llm";
+  provenance: "deterministic" | "llm" | "manual";
   confidence: number | null;
   /** Where the fact came from: ``kb:<relpath>`` or ``db:<table>/<id>``. */
   source_ref: string | null;
@@ -1674,10 +1679,222 @@ export type KgEdge = {
  * other same-name candidates, and its N-hop neighborhood subgraph.
  */
 export type KnowledgeGraphNeighborhood = {
+  /** Monotonic revision used as the optimistic-lock token for manual edits. */
+  revision: number;
   center: KgNode;
   candidates: KgNode[];
   nodes: KgNode[];
   edges: KgEdge[];
+};
+
+export type KnowledgeGraphEntityTypeDefinition = {
+  key: string;
+  label: string;
+  parent_key: string | null;
+  protected: boolean;
+  namespace?: "system" | "custom";
+  status?: "active" | "deprecated";
+  version?: number;
+};
+
+export type KnowledgeGraphRelationTypeDefinition = {
+  key: string;
+  label: string;
+  source_type: string;
+  target_type: string;
+  symmetric: boolean;
+  transitive: boolean;
+  inverse_key: string | null;
+  protected: boolean;
+  namespace?: "system" | "custom";
+  status?: "active" | "deprecated";
+  version?: number;
+};
+
+export type KnowledgeGraphPropertyDefinition = {
+  key: string;
+  label: string;
+  owner_kind: "entity_type" | "relation_type";
+  owner_key?: string;
+  value_type: string;
+  required: boolean;
+  multiple: boolean;
+  constraints: Record<string, unknown> | null;
+  protected: boolean;
+  namespace?: "system" | "custom";
+  status?: "active" | "deprecated";
+  version?: number;
+};
+
+export type KnowledgeGraphSchema = {
+  namespace: string;
+  version: number;
+  revision?: number;
+  entity_types: KnowledgeGraphEntityTypeDefinition[];
+  relation_types: KnowledgeGraphRelationTypeDefinition[];
+  property_definitions: KnowledgeGraphPropertyDefinition[];
+};
+
+export type KnowledgeGraphCreateRelationOperation = {
+  op: "create_relation";
+  source: { type: string; name: string; display_name?: string | null };
+  relation: string;
+  target: { type: string; name: string; display_name?: string | null };
+  fact: string;
+  attrs?: Record<string, unknown> | null;
+  confidence?: number | null;
+  valid_at?: string | null;
+  invalid_at?: string | null;
+  edge_id?: string;
+  revision?: number;
+};
+
+export type KnowledgeGraphReviseRelationOperation = {
+  op: "revise_relation";
+  edge_id: string;
+  fact?: string;
+  attrs?: Record<string, unknown> | null;
+  confidence?: number | null;
+  valid_at?: string | null;
+  invalid_at?: string | null;
+};
+
+export type KnowledgeGraphRetractRelationOperation = {
+  op: "retract_relation";
+  edge_id: string;
+  reason?: string;
+};
+
+export type KnowledgeGraphCreateEntityOperation = {
+  op: "create_entity";
+  type: string;
+  name: string;
+  display_name?: string | null;
+  attrs?: Record<string, unknown> | null;
+};
+
+export type KnowledgeGraphUpdateEntityOperation = {
+  op: "update_entity";
+  entity_id: string;
+  display_name?: string | null;
+  attrs?: Record<string, unknown> | null;
+  type?: string;
+};
+
+export type KnowledgeGraphRetireEntityOperation = {
+  op: "retire_entity";
+  entity_id: string;
+  reason?: string;
+};
+
+export type KnowledgeGraphMergeEntitiesOperation = {
+  op: "merge_entities";
+  survivor_id: string;
+  merge_ids: string[];
+  reason?: string;
+};
+
+export type KnowledgeGraphOverrideRelationOperation = {
+  op: "override_relation";
+  edge_id?: string;
+  dedupe_key?: string;
+  fact: string;
+  attrs?: Record<string, unknown> | null;
+  confidence?: number | null;
+};
+
+export type KnowledgeGraphResolveConflictOperation = {
+  op: "resolve_conflict";
+  conflict_id: string;
+  decision: "keep_left" | "keep_right" | "override" | "dismiss";
+  override?: Record<string, unknown> | null;
+};
+
+export type KnowledgeGraphAttachEvidenceOperation = {
+  op: "attach_evidence";
+  target_kind: "node" | "edge";
+  target_id: string;
+  kind: "kb_ref" | "url" | "quote" | "file";
+  uri: string;
+  excerpt?: string;
+  attrs?: Record<string, unknown> | null;
+};
+
+export type KnowledgeGraphDetachEvidenceOperation = {
+  op: "detach_evidence";
+  evidence_id: string;
+};
+
+export type KnowledgeGraphSaveLayoutOperation = {
+  op: "save_layout";
+  scope_key: string;
+  positions: Record<string, { x: number; y: number }>;
+  locked_ids?: string[];
+  highlight_ids?: string[];
+};
+
+export type KnowledgeGraphChangeOperation =
+  | KnowledgeGraphCreateRelationOperation
+  | KnowledgeGraphReviseRelationOperation
+  | KnowledgeGraphRetractRelationOperation
+  | KnowledgeGraphCreateEntityOperation
+  | KnowledgeGraphUpdateEntityOperation
+  | KnowledgeGraphRetireEntityOperation
+  | KnowledgeGraphMergeEntitiesOperation
+  | KnowledgeGraphOverrideRelationOperation
+  | KnowledgeGraphResolveConflictOperation
+  | KnowledgeGraphAttachEvidenceOperation
+  | KnowledgeGraphDetachEvidenceOperation
+  | KnowledgeGraphSaveLayoutOperation;
+
+export type KnowledgeGraphConflict = {
+  id: string;
+  conflict_type: string;
+  status: "open" | "resolved" | "dismissed";
+  subject_key: string;
+  left: Record<string, unknown>;
+  right: Record<string, unknown>;
+  detected_at: string;
+  resolved_at: string | null;
+  resolution: Record<string, unknown> | null;
+};
+
+export type KnowledgeGraphEvidence = {
+  id: string;
+  target_kind: "node" | "edge";
+  target_id: string;
+  kind: "kb_ref" | "url" | "quote" | "file";
+  uri: string;
+  excerpt: string;
+  attrs: Record<string, unknown> | null;
+  status: "active" | "detached";
+};
+
+export type KnowledgeGraphCanvasLayout = {
+  id: string;
+  scope_key: string;
+  version: number;
+  positions: Record<string, { x: number; y: number }>;
+  locked_ids: string[];
+  highlight_ids: string[];
+  actor_id: string;
+  change_set_id: string;
+  created_at: string;
+};
+
+export type KnowledgeGraphChangeSet = {
+  id: string;
+  status: "pending" | "applied" | "rejected" | "stale" | "cancelled";
+  actor_type: "local_user" | "agent" | "system";
+  actor_id: string;
+  base_revision: number;
+  revision: number | null;
+  proposal_hash: string;
+  summary: string;
+  created_at: string;
+  applied_at: string | null;
+  edge_ids: string[];
+  operations?: KnowledgeGraphChangeOperation[];
 };
 
 /**
