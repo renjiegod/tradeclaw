@@ -20,6 +20,7 @@ on:
       - "tests/test_install_win_bootstrap.py"
       - "tests/test_windows_launcher_bat.py"
       - "tests/test_windows_installer_hardening.py"
+      - "tests/test_install_console_diagnostics.py"
       - ".github/workflows/windows-installer-guard.yml"
       - ".github/workflows/build-windows-installer.yml"
   push:
@@ -35,6 +36,7 @@ on:
       - "tests/test_install_win_bootstrap.py"
       - "tests/test_windows_launcher_bat.py"
       - "tests/test_windows_installer_hardening.py"
+      - "tests/test_install_console_diagnostics.py"
       - ".github/workflows/windows-installer-guard.yml"
       - ".github/workflows/build-windows-installer.yml"
   workflow_dispatch:
@@ -61,6 +63,7 @@ jobs:
             tests.test_install_win_bootstrap \
             tests.test_windows_launcher_bat \
             tests.test_windows_installer_hardening \
+            tests.test_install_console_diagnostics \
             -v
 
       - name: Install Inno Setup

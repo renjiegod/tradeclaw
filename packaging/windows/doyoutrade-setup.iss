@@ -115,7 +115,8 @@ begin
       GInstallSucceeded := False;
       MsgBox(
         'DoYouTrade 安装失败。' + #13#10 + #13#10 +
-        '请查看刚才的 PowerShell 窗口中的错误信息后重试。' + #13#10 +
+        '失败原因与环境信息已直接打印在刚才的命令行窗口' + #13#10 +
+        '（标题含「[诊断]」的黄色段落）。请根据该输出排查后重试。' + #13#10 + #13#10 +
         '常见原因：无法访问 GitHub / astral.sh，或杀毒软件拦截了脚本。',
         mbError, MB_OK);
       RaiseException('DoYouTrade 组件安装失败，安装已中止。');

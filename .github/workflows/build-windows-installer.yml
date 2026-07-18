@@ -31,6 +31,8 @@ jobs:
             tests.test_installer_no_bom \
             tests.test_install_win_bootstrap \
             tests.test_windows_launcher_bat \
+            tests.test_windows_installer_hardening \
+            tests.test_install_console_diagnostics \
             -v
 
       - name: 解析版本号
