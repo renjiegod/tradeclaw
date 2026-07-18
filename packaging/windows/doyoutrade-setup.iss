@@ -2,8 +2,9 @@
 ;
 ; Wraps repo-root install-win.ps1 (ASCII) -> install.ps1 (UTF-8 no BOM):
 ;   1. Copy install-win.ps1 + install.ps1 + launcher bat into {app}
-;   2. Silently run install-win.ps1 -Force (uv + uv tool install doyoutrade[qmt-proxy])
+;   2. From [Code], run install-win.ps1 -Force and abort on non-zero exit
 ;   3. Create Start Menu / desktop shortcuts to the launcher bat
+;   4. Offer "立即启动" only when install succeeded (Check: InstallSucceeded)
 ;
 ; Build locally (requires https://jrsoftware.org/isinfo.php):
 ;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\windows\doyoutrade-setup.iss
@@ -62,11 +63,9 @@ Name: "{group}\卸载 DoYouTrade"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\DoYouTrade"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{sys}\shell32.dll"; IconIndex: 13; Tasks: desktopicon
 
 [Run]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install-win.ps1"" -Force"; \
-    StatusMsg: "正在安装 DoYouTrade（首次安装需要拉取依赖，可能要几分钟，请勿关闭窗口）..."; \
-    Flags: runascurrentuser waituntilterminated
-Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 DoYouTrade"; Flags: postinstall nowait skipifsilent shellexec
+; install-win.ps1 is invoked from [Code] (exit code checked). Only the
+; optional post-install launch remains here, gated on InstallSucceeded.
+Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 DoYouTrade"; Flags: postinstall nowait skipifsilent shellexec; Check: InstallSucceeded
 
 [UninstallRun]
 ; 卸载向导只删自己装的 install.ps1 / 启动器脚本；uv tool install 的 doyoutrade 命令
@@ -74,3 +73,53 @@ Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 DoYouTrade"; Flags
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
     Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""if (Get-Command uv -ErrorAction SilentlyContinue) {{ uv tool uninstall doyoutrade }"""; \
     Flags: runascurrentuser waituntilterminated; RunOnceId: "UninstallDoYouTradeTool"
+
+[Code]
+var
+  GInstallSucceeded: Boolean;
+
+function InitializeSetup(): Boolean;
+begin
+  GInstallSucceeded := False;
+  Result := True;
+end;
+
+function InstallSucceeded: Boolean;
+begin
+  Result := GInstallSucceeded;
+end;
+
+function RunInstallWinPs1(): Boolean;
+var
+  ResultCode: Integer;
+  PsExe: String;
+  Params: String;
+begin
+  PsExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\install-win.ps1') + '" -Force';
+  if not Exec(PsExe, Params, ExpandConstant('{app}'), SW_SHOW, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Result := False;
+    Exit;
+  end;
+  Result := (ResultCode = 0);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    WizardForm.StatusLabel.Caption := '正在安装 DoYouTrade（首次安装需要拉取依赖，可能要几分钟，请勿关闭窗口）...';
+    if not RunInstallWinPs1() then
+    begin
+      GInstallSucceeded := False;
+      MsgBox(
+        'DoYouTrade 安装失败。' + #13#10 + #13#10 +
+        '请查看刚才的 PowerShell 窗口中的错误信息后重试。' + #13#10 +
+        '常见原因：无法访问 GitHub / astral.sh，或杀毒软件拦截了脚本。',
+        mbError, MB_OK);
+      RaiseException('DoYouTrade 组件安装失败，安装已中止。');
+    end;
+    GInstallSucceeded := True;
+  end;
+end;

@@ -103,8 +103,35 @@ function Confirm-Reinstall {
     }
 }
 
+function Get-UvToolBinDir {
+    # Prefer uv's own answer (honours UV_TOOL_BIN_DIR / XDG_BIN_HOME); fall back
+    # to the documented default so older uv without `tool dir --bin` still works.
+    $fallback = Join-Path $env:USERPROFILE ".local\bin"
+    try {
+        $out = & uv tool dir --bin 2>$null
+        if (($LASTEXITCODE -eq 0) -and $out) {
+            $dir = ($out | Select-Object -First 1).ToString().Trim()
+            if (-not [string]::IsNullOrWhiteSpace($dir)) { return $dir }
+        }
+    } catch {
+        # fall through to default
+    }
+    return $fallback
+}
+
+function Write-ToolBinDirMarker {
+    param([Parameter(Mandatory = $true)][string]$BinDir)
+    # Launcher bat reads this when PATH / default .local\bin miss the shim.
+    $markerDir = Join-Path $env:USERPROFILE ".doyoutrade"
+    New-Item -ItemType Directory -Force -Path $markerDir | Out-Null
+    $marker = Join-Path $markerDir "tool-bin-dir.txt"
+    $line = $BinDir.Trim().TrimEnd('\', '/')
+    [System.IO.File]::WriteAllText($marker, $line + [Environment]::NewLine)
+    Write-Ok "已写入工具目录标记：$marker -> $line"
+}
+
 function Update-ShellPath {
-    $uvBin = Join-Path $env:USERPROFILE ".local\bin"
+    $uvBin = Get-UvToolBinDir
     $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
     if ($userPath -like "*$uvBin*") {
         Write-Ok "PATH 已包含 $uvBin"
@@ -163,12 +190,16 @@ function Install-DoYouTrade {
     # Make the new shim visible in *this* session, then verify it exists.
     # Without this, a GUI installer that immediately launches the shortcut
     # can still report "doyoutrade not found" even after a successful install.
-    $uvBin = Join-Path $env:USERPROFILE ".local\bin"
+    # Also persist the real bin dir (may differ from ~/.local/bin when
+    # UV_TOOL_BIN_DIR / XDG_BIN_HOME is set) so the .bat launcher can find it
+    # even when Explorer inherits a stale PATH.
+    $uvBin = Get-UvToolBinDir
     if (Test-Path $uvBin) { $env:Path = "$uvBin;$env:Path" }
     $shim = Join-Path $uvBin "doyoutrade.exe"
     if (-not (Get-Command doyoutrade -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $shim)) {
         Write-Die "uv tool install 成功，但未找到 doyoutrade 命令（期望路径：$shim）。请重开终端后运行 uv tool list 排查。"
     }
+    Write-ToolBinDirMarker -BinDir $uvBin
 
     Write-Ok "doyoutrade 安装完成（已内置 qmt-proxy）。"
 }
