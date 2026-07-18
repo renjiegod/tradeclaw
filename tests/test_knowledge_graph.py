@@ -3,7 +3,8 @@
 覆盖的契约：
 
 - ``build_deterministic_projection``：roles / sentiment / trades /
-  decision_signals 四来源 → 节点与边意图；脏行进 ``warnings``（不静默）。
+  strong_timeline / decision_signals 五来源 → 节点与边意图；脏行进
+  ``warnings``（不静默）。
 - ``SqlAlchemyKnowledgeGraphRepository.apply_projection``：幂等（重放
   unchanged）、内容变更 expire+insert、``state_key`` 单值状态组失效
   （角色变更史保留为 expired 边）。
@@ -132,8 +133,8 @@ class ProjectionBuildTests(unittest.TestCase):
         self.assertEqual(role_edge.state_key, "role|300059")
         self.assertEqual(role_edge.dedupe_key, "role|300059|龙头")
         self.assertIn("hit", next(e for e in projection.edges if e.relation == "signals").fact)
-        # 四个来源都要有 content_hash 水位。
-        self.assertEqual(len(projection.source_hashes), 4)
+        # 五个来源都要有 content_hash 水位。
+        self.assertEqual(len(projection.source_hashes), 5)
 
     def test_dirty_rows_surface_as_warnings_not_silently_dropped(self) -> None:
         (self.kb / "symbols" / "roles.jsonl").write_text(
@@ -444,7 +445,30 @@ class KnowledgeGraphToolTests(unittest.IsolatedAsyncioTestCase):
         result = await self._tool(self.repo).execute(entity="不存在的实体")
         self.assertTrue(result.is_error)
         self.assertIn("entity_not_found", result.text)
-        self.assertIn("sync", result.text)
+        self.assertIn("graph-sync", result.text)
+        self.assertNotIn('action="sync"', result.text)
+
+    async def test_propose_schema_error_includes_repair_hint(self) -> None:
+        result = await self._tool(self.repo).execute(
+            action="propose",
+            summary="坏 payload",
+            operations=[
+                {
+                    "op": "create_relation",
+                    "from_entity": "000957.SZ",
+                    "to_entity": "龙头",
+                    "relation_type": "lifecycle_event",
+                    "fact": "should fail",
+                }
+            ],
+            session_id="agent-session-bad",
+        )
+        self.assertTrue(result.is_error)
+        self.assertIn("graph_schema_validation_error", result.text)
+        self.assertIn("Hint:", result.text)
+        self.assertIn("belongs_to_theme", result.text)
+        self.assertIn("_EntityRef", result.text)
+        self.assertIn("graph-sync", result.text)
 
     async def test_query_happy_path_after_system_sync(self) -> None:
         await sync_deterministic_projection(
