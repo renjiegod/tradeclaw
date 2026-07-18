@@ -1068,6 +1068,8 @@ class TestFeishuToolApprovalCallback(unittest.TestCase):
             action="approve_once",
             source="feishu_card",
             resolver_id="ou_resolver",
+            reason="",
+            command_prefix="",
         )
         MockCardKit.return_value.patch_message.assert_called_once()
         args = MockCardKit.return_value.patch_message.call_args.args

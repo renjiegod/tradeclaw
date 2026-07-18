@@ -9,9 +9,17 @@ banner); a button click resolves the future through
 structured ``approval_rejected`` / ``approval_timeout`` error the model can
 react to.
 
-``approve_always`` remembers the rule for the session in
-``session.config["approval_allowlist"]``; later matches auto-approve with a
-visible ``approval.auto_approved`` event — never silently.
+Remember scopes (ClaudeCode-style multi-choice):
+
+* ``approve_once`` — run this call only.
+* ``approve_always`` — remember for the current session
+  (``session.config["approval_allowlist"]`` / ``approval_command_prefixes``).
+* ``approve_persist`` — remember in ``~/.doyoutrade/config.yaml``
+  (``assistant.approval_allowlist``) across sessions/restarts.
+* ``reject`` — block; optional ``reason`` is surfaced to the model.
+
+Later matches auto-approve with a visible ``approval.auto_approved`` event —
+never silently.
 """
 
 from __future__ import annotations
@@ -27,11 +35,17 @@ from doyoutrade.observability import get_logger
 
 logger = get_logger(__name__)
 
-ApprovalAction = Literal["approve_once", "approve_always", "reject"]
+ApprovalAction = Literal[
+    "approve_once",
+    "approve_always",
+    "approve_persist",
+    "reject",
+]
 
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
 
 APPROVAL_ALLOWLIST_CONFIG_KEY = "approval_allowlist"
+APPROVAL_COMMAND_PREFIXES_CONFIG_KEY = "approval_command_prefixes"
 
 
 @dataclass(frozen=True)
@@ -41,7 +55,7 @@ class ApprovalRule:
     ``tool`` is the tool name to match. ``command_pattern`` (regex,
     ``re.search``) further narrows ``execute_bash``-style calls by their
     ``command`` argument; ``None`` gates every call of the tool. ``key`` is
-    the stable identifier the session allowlist remembers.
+    the stable identifier the session/settings allowlist remembers.
     """
 
     key: str
@@ -123,12 +137,74 @@ def match_approval_rule(
     return None
 
 
+def suggest_command_prefix(command: str, *, max_tokens: int = 3) -> str:
+    """ClaudeCode-style editable prefix suggestion (``head tokens`` + ``:*``)."""
+    tokens = [part for part in str(command or "").strip().split() if part]
+    if not tokens:
+        return ""
+    head = tokens[: max(1, max_tokens)]
+    return " ".join(head) + ":*"
+
+
+def normalize_command_prefix(prefix: str) -> str:
+    return str(prefix or "").strip()
+
+
+def command_matches_prefix(command: str, prefix: str) -> bool:
+    """Return True when ``command`` matches a remembered prefix rule.
+
+    Supports ClaudeCode-like ``foo bar:*`` (prefix of tokens) and a bare
+    ``foo bar`` / ``foo bar*`` form. Matching is startswith on the command
+    string after stripping the optional ``:*`` / trailing ``*``.
+    """
+    p = normalize_command_prefix(prefix)
+    if not p:
+        return False
+    if p.endswith(":*"):
+        p = p[:-2].rstrip()
+    elif p.endswith("*"):
+        p = p[:-1].rstrip()
+    if not p:
+        return False
+    cmd = str(command or "").strip()
+    return cmd == p or cmd.startswith(p + " ")
+
+
+def is_auto_approved(
+    *,
+    rule: ApprovalRule,
+    command: str,
+    session_rule_keys: list[str] | tuple[str, ...],
+    session_prefixes: list[str] | tuple[str, ...],
+    persistent_rule_keys: list[str] | tuple[str, ...] = (),
+    persistent_prefixes: list[str] | tuple[str, ...] = (),
+) -> tuple[bool, str]:
+    """Check remembered allowlists. Returns ``(approved, source)``.
+
+    One-time rules (``allow_always=False``) never auto-approve.
+    """
+    if not rule.allow_always:
+        return False, ""
+    for prefix in persistent_prefixes:
+        if command_matches_prefix(command, prefix):
+            return True, "persistent_prefix"
+    if rule.key in set(persistent_rule_keys):
+        return True, "persistent_rule"
+    for prefix in session_prefixes:
+        if command_matches_prefix(command, prefix):
+            return True, "session_prefix"
+    if rule.key in set(session_rule_keys):
+        return True, "session_rule"
+    return False, ""
+
+
 @dataclass(frozen=True)
 class ApprovalResolution:
     action: ApprovalAction | Literal["timeout"]
     source: str  # "feishu_card" | "web" | "timeout" | tests
     resolver_id: str = ""
     reason: str = ""
+    command_prefix: str = ""
 
 
 @dataclass
@@ -146,11 +222,14 @@ class ApprovalRequest:
     timeout_seconds: float
     allow_always: bool
     created_at: str
+    suggested_prefix: str = ""
     _future: asyncio.Future[ApprovalResolution] = field(repr=False, default=None)  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self._future is None:
             self._future = asyncio.get_event_loop().create_future()
+        if not self.suggested_prefix:
+            self.suggested_prefix = suggest_command_prefix(self.command_preview)
 
     async def wait(self) -> ApprovalResolution:
         """Suspend until resolved; a timeout resolves to action="timeout"."""
@@ -184,6 +263,7 @@ class ApprovalRequest:
             "command_preview": self.command_preview,
             "timeout_seconds": self.timeout_seconds,
             "allow_always": self.allow_always,
+            "suggested_prefix": self.suggested_prefix,
             "created_at": self.created_at,
         }
 
@@ -209,6 +289,7 @@ class ApprovalBroker:
         rule: ApprovalRule,
         command_preview: str,
     ) -> ApprovalRequest:
+        preview = command_preview[:500]
         request = ApprovalRequest(
             approval_id=f"appr-{uuid4().hex[:12]}",
             session_id=session_id,
@@ -217,10 +298,11 @@ class ApprovalBroker:
             tool_name=tool_name,
             rule_key=rule.key,
             description=rule.description,
-            command_preview=command_preview[:500],
+            command_preview=preview,
             timeout_seconds=rule.timeout_seconds,
             allow_always=rule.allow_always,
             created_at=datetime.now(timezone.utc).isoformat(),
+            suggested_prefix=suggest_command_prefix(preview),
         )
         self._pending[request.approval_id] = request
         return request
@@ -244,6 +326,7 @@ class ApprovalBroker:
         source: str,
         resolver_id: str = "",
         reason: str = "",
+        command_prefix: str = "",
     ) -> bool:
         """Resolve a pending approval. False = unknown / already resolved.
 
@@ -257,7 +340,11 @@ class ApprovalBroker:
             return False
         accepted = request.resolve(
             ApprovalResolution(
-                action=action, source=source, resolver_id=resolver_id, reason=reason
+                action=action,
+                source=source,
+                resolver_id=resolver_id,
+                reason=reason,
+                command_prefix=normalize_command_prefix(command_prefix),
             )
         )
         if not accepted:

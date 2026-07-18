@@ -672,15 +672,20 @@ class TestCardBuilder(unittest.TestCase):
         self.assertEqual(card["schema"], "2.0")
         self.assertNotIn("action", self._all_tags(card))
         labels = [button["text"]["content"] for button in self._all_buttons(card)]
-        self.assertEqual(labels, ["允许一次", "总是允许", "拒绝"])
+        self.assertEqual(
+            labels, ["允许一次", "本会话总是允许", "写入 settings", "拒绝"]
+        )
         decisions = [button["value"]["decision"] for button in self._all_buttons(card)]
-        self.assertEqual(decisions, ["approve_once", "approve_always", "reject"])
+        self.assertEqual(
+            decisions,
+            ["approve_once", "approve_always", "approve_persist", "reject"],
+        )
         button_rows = [
             element
             for element in card["body"]["elements"]
             if element.get("tag") == "column_set"
         ]
-        self.assertEqual(len(button_rows), 3)
+        self.assertEqual(len(button_rows), 4)
         self.assertTrue(
             all(len(row.get("columns", [])) == 1 for row in button_rows)
         )

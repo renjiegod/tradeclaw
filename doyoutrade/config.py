@@ -248,8 +248,22 @@ class FeishuSettings:
 
 
 @dataclass(frozen=True)
+class AssistantApprovalAllowlist:
+    """Persistent (cross-session) remembered approval grants.
+
+    Stored under ``assistant.approval_allowlist`` in ``~/.doyoutrade/config.yaml``.
+    ``rule_keys`` remember whole :class:`ApprovalRule` keys; ``command_prefixes``
+    are ClaudeCode-style command prefixes (``doyoutrade-cli task start:*``).
+    """
+
+    rule_keys: tuple[str, ...] = ()
+    command_prefixes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class AssistantSettings:
     tool_result_max_chars: int = 50000
+    approval_allowlist: AssistantApprovalAllowlist = AssistantApprovalAllowlist()
 
 
 @dataclass(frozen=True)
@@ -772,11 +786,41 @@ def _parse_feishu_settings(block: dict[str, Any]) -> FeishuSettings:
     )
 
 
+def _parse_assistant_approval_allowlist(block: Any) -> AssistantApprovalAllowlist:
+    if block is None:
+        return AssistantApprovalAllowlist()
+    if not isinstance(block, dict):
+        raise ValueError("assistant.approval_allowlist must be a mapping or omitted")
+    raw_keys = block.get("rule_keys", [])
+    raw_prefixes = block.get("command_prefixes", [])
+    if raw_keys is None:
+        raw_keys = []
+    if raw_prefixes is None:
+        raw_prefixes = []
+    if not isinstance(raw_keys, list):
+        raise ValueError("assistant.approval_allowlist.rule_keys must be a list")
+    if not isinstance(raw_prefixes, list):
+        raise ValueError("assistant.approval_allowlist.command_prefixes must be a list")
+    rule_keys = tuple(
+        str(item).strip() for item in raw_keys if str(item).strip()
+    )
+    command_prefixes = tuple(
+        str(item).strip() for item in raw_prefixes if str(item).strip()
+    )
+    return AssistantApprovalAllowlist(
+        rule_keys=rule_keys,
+        command_prefixes=command_prefixes,
+    )
+
+
 def _parse_assistant_settings(block: dict[str, Any]) -> AssistantSettings:
     if not isinstance(block, dict):
         raise ValueError("assistant must be a mapping or omitted")
     return AssistantSettings(
         tool_result_max_chars=int(block.get("tool_result_max_chars", 50000)),
+        approval_allowlist=_parse_assistant_approval_allowlist(
+            block.get("approval_allowlist")
+        ),
     )
 
 

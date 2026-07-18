@@ -882,11 +882,17 @@ export async function stopAssistantSession(sessionId: string): Promise<Assistant
 
 export async function resolveAssistantApproval(
   approvalId: string,
-  action: "approve_once" | "approve_always" | "reject",
+  action: "approve_once" | "approve_always" | "approve_persist" | "reject",
+  options?: { reason?: string; command_prefix?: string; resolver_id?: string },
 ): Promise<{ status: string; approval_id: string; action: string }> {
   return request(`/assistant/approvals/${encodeURIComponent(approvalId)}/resolve`, {
     method: "POST",
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({
+      action,
+      reason: options?.reason ?? "",
+      command_prefix: options?.command_prefix ?? "",
+      resolver_id: options?.resolver_id ?? "",
+    }),
   });
 }
 

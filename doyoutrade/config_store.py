@@ -116,6 +116,9 @@ HOT_RELOAD_FIELDS: tuple[str, ...] = (
     "auto_update.enabled",
     "auto_update.check_interval_hours",
     "auto_update.repo",
+    # Approval allowlist is re-read via get_config() on every tool gate.
+    "assistant.approval_allowlist.rule_keys",
+    "assistant.approval_allowlist.command_prefixes",
 )
 
 #: Every editable leaf path (restart + hot). Used for best-effort field
@@ -208,7 +211,15 @@ def _masked_values(cfg: config.AppConfig) -> dict[str, Any]:
             "prune_interval_hours": cfg.retention.prune_interval_hours,
             "prune_on_startup": cfg.retention.prune_on_startup,
         },
-        "assistant": {"tool_result_max_chars": cfg.assistant.tool_result_max_chars},
+        "assistant": {
+            "tool_result_max_chars": cfg.assistant.tool_result_max_chars,
+            "approval_allowlist": {
+                "rule_keys": list(cfg.assistant.approval_allowlist.rule_keys),
+                "command_prefixes": list(
+                    cfg.assistant.approval_allowlist.command_prefixes
+                ),
+            },
+        },
         "auto_update": {
             "enabled": cfg.auto_update.enabled,
             "check_interval_hours": cfg.auto_update.check_interval_hours,

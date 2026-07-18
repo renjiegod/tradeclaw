@@ -613,10 +613,16 @@ class FeishuChannel(BaseChannel):
                     or open_message_id
                 )
                 broker = getattr(self._assistant_service, "approval_broker", None)
+                allowed = (
+                    "approve_once",
+                    "approve_always",
+                    "approve_persist",
+                    "reject",
+                )
                 if (
                     broker is None
                     or self._asyncio_loop is None
-                    or decision not in ("approve_once", "approve_always", "reject")
+                    or decision not in allowed
                 ):
                     logger.error(
                         "Feishu approval action unusable approval_id=%s decision=%r "
@@ -627,6 +633,22 @@ class FeishuChannel(BaseChannel):
                         bool(self._asyncio_loop),
                     )
                     return
+
+                def _form_field(name: str) -> str:
+                    raw = form_value.get(name) if isinstance(form_value, dict) else None
+                    if isinstance(raw, dict):
+                        return str(raw.get("value") or "").strip()
+                    if raw is None:
+                        return ""
+                    return str(raw).strip()
+
+                command_prefix = _form_field("approval_command_prefix")
+                if not command_prefix:
+                    command_prefix = str(
+                        _pick(action_value, "suggested_prefix", "") or ""
+                    ).strip()
+                reason = _form_field("approval_reject_reason")
+
                 self._asyncio_loop.call_soon_threadsafe(
                     functools.partial(
                         broker.resolve,
@@ -634,6 +656,8 @@ class FeishuChannel(BaseChannel):
                         action=decision,
                         source="feishu_card",
                         resolver_id=user_id or "",
+                        reason=reason,
+                        command_prefix=command_prefix,
                     )
                 )
                 asyncio.run_coroutine_threadsafe(
@@ -643,6 +667,8 @@ class FeishuChannel(BaseChannel):
                         resolver_id=user_id or "",
                         card_id=card_id,
                         action_value=action_value,
+                        reason=reason,
+                        command_prefix=command_prefix,
                     ),
                     self._asyncio_loop,
                 )
@@ -834,6 +860,8 @@ class FeishuChannel(BaseChannel):
         resolver_id: str,
         card_id: str,
         action_value: Any,
+        reason: str = "",
+        command_prefix: str = "",
     ) -> None:
         """Best-effort visual refresh for assistant tool-call approval cards."""
         from .card.builder import build_approval_resolved_card
@@ -859,7 +887,11 @@ class FeishuChannel(BaseChannel):
             "command_preview": str(_pick(action_value, "command_preview", "") or ""),
         }
         card = build_approval_resolved_card(
-            payload, decision=decision, resolver=resolver_id
+            payload,
+            decision=decision,
+            resolver=resolver_id,
+            reason=reason,
+            command_prefix=command_prefix,
         )
         cardkit = CardKitClient(
             app_id=self.app_id, app_secret=self.app_secret, domain=self.domain

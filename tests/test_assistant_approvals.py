@@ -86,6 +86,62 @@ class ApprovalRuleMatchTests(unittest.TestCase):
             )
 
 
+class ApprovalPrefixHelpersTests(unittest.TestCase):
+    def test_suggest_and_match_command_prefix(self):
+        from doyoutrade.assistant.approvals import (
+            command_matches_prefix,
+            is_auto_approved,
+            suggest_command_prefix,
+        )
+
+        command = "doyoutrade-cli task start task-1"
+        prefix = suggest_command_prefix(command)
+        self.assertEqual(prefix, "doyoutrade-cli task start:*")
+        self.assertTrue(command_matches_prefix(command, prefix))
+        self.assertTrue(
+            command_matches_prefix("doyoutrade-cli task start other", prefix)
+        )
+        self.assertFalse(command_matches_prefix("doyoutrade-cli task stop x", prefix))
+
+        rule = ApprovalRule(
+            key="task_start",
+            tool="execute_bash",
+            description="启动交易任务",
+            command_pattern=r"\btask\s+start\b",
+        )
+        ok, source = is_auto_approved(
+            rule=rule,
+            command=command,
+            session_rule_keys=[],
+            session_prefixes=[],
+            persistent_rule_keys=[],
+            persistent_prefixes=[prefix],
+        )
+        self.assertTrue(ok)
+        self.assertEqual(source, "persistent_prefix")
+
+    def test_one_time_rule_never_auto_approves_even_with_prefix(self):
+        from doyoutrade.assistant.approvals import is_auto_approved
+
+        rule = ApprovalRule(
+            key="knowledge_graph_write",
+            tool="execute_bash",
+            description="修改知识图谱",
+            command_pattern=r"graph-sync",
+            allow_always=False,
+        )
+        ok, source = is_auto_approved(
+            rule=rule,
+            command="doyoutrade-cli knowledge graph-sync",
+            session_rule_keys=["knowledge_graph_write"],
+            session_prefixes=["doyoutrade-cli knowledge:*"],
+            persistent_rule_keys=["knowledge_graph_write"],
+            persistent_prefixes=["doyoutrade-cli knowledge:*"],
+        )
+        self.assertFalse(ok)
+        self.assertEqual(source, "")
+
+
 class ApprovalServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self._services: list[AssistantService] = []
@@ -110,7 +166,9 @@ class ApprovalServiceTests(unittest.IsolatedAsyncioTestCase):
         events = await service.list_events(session_id, limit=200)
         return [e["event_type"] for e in events]
 
-    async def _resolve_when_pending(self, service, action: str) -> str:
+    async def _resolve_when_pending(
+        self, service, action: str, *, reason: str = "", command_prefix: str = ""
+    ) -> str:
         """Wait for a pending approval to appear, then resolve it."""
         for _ in range(200):
             pending = service.approval_broker.list_pending()
@@ -118,7 +176,12 @@ class ApprovalServiceTests(unittest.IsolatedAsyncioTestCase):
                 approval_id = pending[0]["approval_id"]
                 self.assertTrue(
                     service.approval_broker.resolve(
-                        approval_id, action=action, source="test", resolver_id="tester"
+                        approval_id,
+                        action=action,
+                        source="test",
+                        resolver_id="tester",
+                        reason=reason,
+                        command_prefix=command_prefix,
                     )
                 )
                 return approval_id
@@ -169,6 +232,90 @@ class ApprovalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool.executed, [], "rejected tool must not execute")
         events = await self._event_types(service, sid)
         self.assertIn("approval.resolved", events)
+        adapter.assert_exhausted()
+
+    async def test_reject_with_reason_surfaces_to_model(self):
+        def _expect_reason_visible(messages, _tools):
+            joined = "\n".join(str(getattr(m, "content", "")) for m in messages)
+            assert "approval_rejected" in joined
+            assert "市场未开盘" in joined
+
+        adapter = ScriptedModelAdapter(
+            [
+                call_tool("execute_bash", {"command": "doyoutrade-cli task start task-1"}),
+                say("已按拒绝原因停止。", expect=_expect_reason_visible),
+            ]
+        )
+        service, repo, tool = self._build(adapter)
+        session = await service.create_session(agent_id="a", title="reject-reason")
+        sid = session["session_id"]
+
+        send = asyncio.create_task(service.send_message(session_id=sid, content="启动"))
+        await self._resolve_when_pending(service, "reject", reason="市场未开盘")
+        await send
+
+        self.assertEqual(tool.executed, [])
+        adapter.assert_exhausted()
+
+    async def test_approve_persist_prefix_auto_approves_next_call(self):
+        from unittest.mock import patch
+
+        from doyoutrade.config import AssistantApprovalAllowlist, AssistantSettings
+
+        remembered: dict = {"rule_keys": [], "command_prefixes": []}
+
+        class _Cfg:
+            assistant = AssistantSettings(
+                approval_allowlist=AssistantApprovalAllowlist()
+            )
+
+        def _write(patch_doc):
+            allow = patch_doc["assistant"]["approval_allowlist"]
+            remembered["rule_keys"] = list(allow["rule_keys"])
+            remembered["command_prefixes"] = list(allow["command_prefixes"])
+            _Cfg.assistant = AssistantSettings(
+                approval_allowlist=AssistantApprovalAllowlist(
+                    rule_keys=tuple(remembered["rule_keys"]),
+                    command_prefixes=tuple(remembered["command_prefixes"]),
+                )
+            )
+            return {"path": "test", "restart_required": False}
+
+        adapter = ScriptedModelAdapter(
+            [
+                call_tool("execute_bash", {"command": "doyoutrade-cli task start task-1"}),
+                say("第一次完成。"),
+                call_tool("execute_bash", {"command": "doyoutrade-cli task start task-2"}),
+                say("第二次完成。"),
+            ]
+        )
+        service, repo, tool = self._build(adapter)
+        session = await service.create_session(agent_id="a", title="persist")
+        sid = session["session_id"]
+
+        with (
+            patch("doyoutrade.assistant.service.get_config", lambda: _Cfg()),
+            patch("doyoutrade.config_store.write_config", side_effect=_write),
+        ):
+            send = asyncio.create_task(
+                service.send_message(session_id=sid, content="启动1")
+            )
+            await self._resolve_when_pending(
+                service,
+                "approve_persist",
+                command_prefix="doyoutrade-cli task start:*",
+            )
+            await send
+            await service.send_message(session_id=sid, content="启动2")
+
+        self.assertEqual(len(tool.executed), 2)
+        self.assertEqual(
+            remembered["command_prefixes"], ["doyoutrade-cli task start:*"]
+        )
+        events = await self._event_types(service, sid)
+        self.assertIn("approval.remembered", events)
+        self.assertIn("approval.auto_approved", events)
+        self.assertEqual(events.count("approval.requested"), 1)
         adapter.assert_exhausted()
 
     async def test_approve_always_remembers_for_session(self):
@@ -335,9 +482,28 @@ class ApprovalFeishuCardTests(unittest.TestCase):
 
         buttons = _buttons(card)
         decisions = [b["value"]["decision"] for b in buttons]
-        self.assertEqual(decisions, ["approve_once", "approve_always", "reject"])
+        self.assertEqual(
+            decisions,
+            ["approve_once", "approve_always", "approve_persist", "reject"],
+        )
         self.assertTrue(all(b["value"]["action"] == "approval_resolve" for b in buttons))
         self.assertTrue(all(b["value"]["approval_id"] == "appr-1" for b in buttons))
+        # Editable prefix + reject-reason inputs must be present.
+        names = []
+
+        def _names(value):
+            if isinstance(value, dict):
+                if value.get("tag") == "input" and value.get("name"):
+                    names.append(value["name"])
+                for child in value.values():
+                    _names(child)
+            elif isinstance(value, list):
+                for child in value:
+                    _names(child)
+
+        _names(card)
+        self.assertIn("approval_command_prefix", names)
+        self.assertIn("approval_reject_reason", names)
 
     def test_one_time_card_omits_approve_always(self):
         from doyoutrade.assistant.channels.feishu.card.builder import build_approval_card

@@ -64,7 +64,10 @@ const baseConfig: DoyoutradeConfigResponse = {
       prune_interval_hours: 24,
       prune_on_startup: true,
     },
-    assistant: { tool_result_max_chars: 50000 },
+    assistant: {
+      tool_result_max_chars: 50000,
+      approval_allowlist: { rule_keys: [], command_prefixes: [] },
+    },
     auto_update: { enabled: true, check_interval_hours: 6.0, repo: "renjiegod/doyoutrade" },
     database: { url: "sqlite:///main.db", echo: false, pool_pre_ping: true },
     qmt_proxy: {
