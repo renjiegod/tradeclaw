@@ -208,6 +208,42 @@ class KnowledgeGraphRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replay["edges_unchanged"], 2)
         self.assertEqual(replay["edges_expired"], 0)
 
+    async def test_apply_projection_audit_changeset_respects_fk_order(self) -> None:
+        """Postgres-style FK: change_set must exist before operations/revisions.
+
+        SQLite hides this unless ``PRAGMA foreign_keys=ON``. Regression for the
+        sync path that writes system_projection audit rows.
+        """
+        from sqlalchemy import event, text
+
+        @event.listens_for(self.engine.sync_engine, "connect")
+        def _enable_fk(dbapi_connection, _connection_record):  # noqa: ANN001
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        async with self.engine.begin() as conn:
+            await conn.execute(text("PRAGMA foreign_keys=ON"))
+
+        projection = build_deterministic_projection(self.kb)
+        stats = await self.repo.apply_projection(
+            projection.nodes,
+            projection.edges,
+            now=datetime(2026, 7, 17, 10, 0),
+            reconcile_source_keys=set(projection.source_hashes),
+            source_hashes=projection.source_hashes,
+        )
+        self.assertGreater(stats["edges_created"], 0)
+        # Second force-style apply with hashes must also succeed (revision bump).
+        stats2 = await self.repo.apply_projection(
+            projection.nodes,
+            projection.edges,
+            now=datetime(2026, 7, 17, 10, 5),
+            reconcile_source_keys=set(projection.source_hashes),
+            source_hashes=projection.source_hashes,
+        )
+        self.assertEqual(stats2["edges_created"], 0)
+
     async def test_state_key_change_expires_old_edge_and_keeps_history(self) -> None:
         p1 = build_deterministic_projection(self.kb)
         await self.repo.apply_projection(p1.nodes, p1.edges, now=datetime(2026, 7, 17, 10, 0))

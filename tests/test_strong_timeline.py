@@ -160,6 +160,21 @@ class ReadStrongTimelineTests(unittest.TestCase):
         self.assertTrue(item["ongoing"])
         self.assertIsNone(item["end_date"])
 
+    def test_ongoing_via_calendar_days_when_end_empty(self) -> None:
+        _write_timeline(
+            self.kb / "cycles" / "_strong_timeline.csv",
+            [
+                _sample_row(
+                    end="",
+                    calendar_days="进行中",
+                    tag="",
+                )
+            ],
+        )
+        item = read_strong_timeline(root=self.kb)["items"][0]
+        self.assertTrue(item["ongoing"])
+        self.assertIsNone(item["end_date"])
+
     def test_sell_target_with_chinese_commas_stays_one_field(self) -> None:
         """主升期望卖点里用中文逗号时，不应挤歪后面的高点列。"""
         _write_timeline(

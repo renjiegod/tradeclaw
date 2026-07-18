@@ -5498,6 +5498,11 @@ class SqlAlchemyKnowledgeGraphRepository:
                         rejected_at=None,
                     )
                 )
+                # Postgres enforces FKs on flush; without an ORM relationship,
+                # child rows (operations / revisions) can be INSERTed before the
+                # parent change_set. Flush the parent first so sync works on PG
+                # (SQLite often skips FK checks and hides this).
+                await session.flush()
                 session.add(
                     KnowledgeGraphChangeOperationRecord(
                         id=f"kgop-{uuid.uuid4().hex[:12]}",
