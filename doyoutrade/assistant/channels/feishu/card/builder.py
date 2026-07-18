@@ -293,11 +293,17 @@ def build_approval_card(payload: dict[str, Any]) -> dict[str, Any]:
     ``payload`` is ``ApprovalRequest.payload()``. Buttons carry
     ``action="approval_resolve"`` + the decision; the channel resolves the
     broker future directly (no synthetic message round-trip).
+
+    Four choices when ``allow_always`` (ClaudeCode-style): once / session /
+    persist-with-editable-prefix / reject-with-reason. Form inputs carry the
+    editable command prefix and optional reject reason.
     """
     approval_id = str(payload.get("approval_id") or "")
     description = str(payload.get("description") or "高危操作")
     command_preview = str(payload.get("command_preview") or "")
     timeout_seconds = int(payload.get("timeout_seconds") or 0)
+    suggested_prefix = str(payload.get("suggested_prefix") or "").strip()
+    allow_always = bool(payload.get("allow_always", True))
 
     elements: list[dict[str, Any]] = [
         {
@@ -321,10 +327,59 @@ def build_approval_card(payload: dict[str, Any]) -> dict[str, Any]:
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": f"<font color='grey'>{timeout_seconds} 秒内未响应将自动取消执行。</font>",
+                    "content": (
+                        f"<font color='grey'>{timeout_seconds} 秒内未响应将自动取消执行。</font>"
+                    ),
                 },
             }
         )
+
+    if allow_always:
+        elements.append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        "**命令前缀**（「本会话总是允许 / 写入 settings」可改；"
+                        "留空则按规则记住）"
+                    ),
+                },
+            }
+        )
+        elements.append(
+            {
+                "tag": "input",
+                "name": "approval_command_prefix",
+                "element_id": f"approval_prefix_{approval_id}",
+                "default_value": suggested_prefix,
+                "placeholder": {
+                    "tag": "plain_text",
+                    "content": suggested_prefix or "例如 doyoutrade-cli task start:*",
+                },
+            }
+        )
+
+    elements.append(
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "**拒绝原因**（点「拒绝」时可选填写）",
+            },
+        }
+    )
+    elements.append(
+        {
+            "tag": "input",
+            "name": "approval_reject_reason",
+            "element_id": f"approval_reason_{approval_id}",
+            "placeholder": {
+                "tag": "plain_text",
+                "content": "说明为什么拒绝，便于 Agent 调整方案…",
+            },
+        }
+    )
 
     def _button(label: str, decision: str, btn_type: str) -> dict[str, Any]:
         return {
@@ -337,12 +392,14 @@ def build_approval_card(payload: dict[str, Any]) -> dict[str, Any]:
                 "decision": decision,
                 "description": description,
                 "command_preview": command_preview,
+                "suggested_prefix": suggested_prefix,
             },
         }
 
     buttons = [_button("允许一次", "approve_once", "primary")]
-    if payload.get("allow_always", True):
-        buttons.append(_button("总是允许", "approve_always", "default"))
+    if allow_always:
+        buttons.append(_button("本会话总是允许", "approve_always", "default"))
+        buttons.append(_button("写入 settings", "approve_persist", "default"))
     buttons.append(_button("拒绝", "reject", "danger"))
     elements.extend(_button_stack(buttons))
 
@@ -362,11 +419,15 @@ def build_approval_resolved_card(
     *,
     decision: str,
     resolver: str = "",
+    reason: str = "",
+    command_prefix: str = "",
 ) -> dict[str, Any]:
     """Terminal card for a resolved assistant tool-call approval."""
-    approved = str(decision or "").strip().lower() in (
+    decision_norm = str(decision or "").strip().lower()
+    approved = decision_norm in (
         "approve_once",
         "approve_always",
+        "approve_persist",
         "approve",
         "approved",
     )
@@ -377,10 +438,18 @@ def build_approval_resolved_card(
         template = "green"
         title = "✅ 操作审批 · 已批准"
         status_line = "审批已通过，Agent 将继续执行该操作。"
+        if decision_norm == "approve_always":
+            status_line = "已批准，并在本会话记住该授权。"
+        elif decision_norm == "approve_persist":
+            status_line = "已批准，并写入 settings 持久记住。"
+        if command_prefix:
+            status_line += f"\n前缀：`{command_prefix}`"
     else:
         template = "grey"
         title = "🚫 操作审批 · 已拒绝"
         status_line = "审批已拒绝，该操作不会执行。"
+        if reason:
+            status_line += f"\n原因：{reason}"
 
     elements: list[dict[str, Any]] = [
         {"tag": "div", "text": {"tag": "lark_md", "content": status_line}},

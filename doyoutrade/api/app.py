@@ -1669,10 +1669,18 @@ def create_app(
         """Resolve a pending blocking tool-call approval (web counterpart of
         the Feishu approval card buttons)."""
         action = str(payload.get("action") or "")
-        if action not in ("approve_once", "approve_always", "reject"):
+        if action not in (
+            "approve_once",
+            "approve_always",
+            "approve_persist",
+            "reject",
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="action must be approve_once | approve_always | reject",
+                detail=(
+                    "action must be approve_once | approve_always | "
+                    "approve_persist | reject"
+                ),
             )
         broker = getattr(assistant_service, "approval_broker", None)
         if broker is None:
@@ -1682,6 +1690,8 @@ def create_app(
             action=action,
             source="web",
             resolver_id=str(payload.get("resolver_id") or ""),
+            reason=str(payload.get("reason") or ""),
+            command_prefix=str(payload.get("command_prefix") or ""),
         )
         if not accepted:
             # Already resolved on another surface, timed out, or unknown —

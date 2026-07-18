@@ -10,7 +10,7 @@ import {
   ToolOutlined,
   UpOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Card, Empty, Input, List, Select, Space, Spin, Switch, Tabs, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Card, Empty, Input, List, Modal, Select, Space, Spin, Switch, Tabs, Tag, Tooltip, Typography, message } from "antd";
 import type { TextAreaRef } from "antd/es/input/TextArea";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -374,7 +374,10 @@ export function AssistantPage() {
     stream.addEventListener("approval.requested", (rawEvent) => {
       try {
         const payload = JSON.parse((rawEvent as MessageEvent).data) as AssistantPendingApproval;
-        if (payload.approval_id) setPendingApproval(payload);
+        if (payload.approval_id) {
+          setPendingApproval(payload);
+          setApprovalPrefix(payload.suggested_prefix || "");
+        }
       } catch {
         // Ignore malformed live event payloads.
       }
@@ -425,19 +428,51 @@ export function AssistantPage() {
     },
     [sessionId],
   );
+  const [approvalPrefix, setApprovalPrefix] = useState("");
   const handleResolveApproval = useCallback(
-    async (action: "approve_once" | "approve_always" | "reject") => {
+    async (
+      action: "approve_once" | "approve_always" | "approve_persist" | "reject",
+      options?: { reason?: string },
+    ) => {
       if (!pendingApproval) return;
       const approvalId = pendingApproval.approval_id;
+      const commandPrefix = approvalPrefix.trim();
       setPendingApproval(null);
+      setApprovalPrefix("");
       try {
-        await resolveAssistantApproval(approvalId, action);
+        await resolveAssistantApproval(approvalId, action, {
+          reason: options?.reason ?? "",
+          command_prefix:
+            action === "approve_always" || action === "approve_persist"
+              ? commandPrefix
+              : "",
+        });
       } catch {
         message.warning("该审批已在其它端处理或已超时。");
       }
     },
-    [pendingApproval],
+    [pendingApproval, approvalPrefix],
   );
+  const handleRejectApproval = useCallback(() => {
+    if (!pendingApproval) return;
+    let reason = "";
+    Modal.confirm({
+      title: "拒绝该操作",
+      content: (
+        <Input.TextArea
+          rows={3}
+          placeholder="可选：说明拒绝原因，便于 Agent 调整方案"
+          onChange={(event) => {
+            reason = event.target.value;
+          }}
+        />
+      ),
+      okText: "确认拒绝",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      onOk: () => handleResolveApproval("reject", { reason: reason.trim() }),
+    });
+  }, [pendingApproval, handleResolveApproval]);
 
   // Live-trading order approvals (execution-side QueuedApprovalGate) are a
   // SEPARATE system from the tool-call approval above — they are not bound to
@@ -923,7 +958,11 @@ export function AssistantPage() {
       return;
     }
     void listPendingAssistantApprovals(sessionId)
-      .then((result) => setPendingApproval(result.items[0] ?? null))
+      .then((result) => {
+        const item = result.items[0] ?? null;
+        setPendingApproval(item);
+        setApprovalPrefix(item?.suggested_prefix || "");
+      })
       .catch(() => {});
     // Same refresh-recovery for a turn suspended on an ask_user_question.
     void listPendingAssistantQuestions(sessionId)
@@ -1690,16 +1729,35 @@ export function AssistantPage() {
                 {pendingApproval.command_preview}
               </pre>
             ) : null}
-            <div className="flex gap-2">
+            {pendingApproval.allow_always !== false ? (
+              <div className="mb-2">
+                <div className="mb-1 text-xs text-gray-600">
+                  命令前缀（本会话总是允许 / 写入 settings 可改；留空则按规则记住）
+                </div>
+                <Input
+                  size="small"
+                  value={approvalPrefix}
+                  onChange={(event) => setApprovalPrefix(event.target.value)}
+                  placeholder={pendingApproval.suggested_prefix || "例如 doyoutrade-cli task start:*"}
+                  data-testid="assistant-approval-prefix"
+                />
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
               <Button size="small" type="primary" onClick={() => void handleResolveApproval("approve_once")}>
                 允许一次
               </Button>
               {pendingApproval.allow_always !== false ? (
-                <Button size="small" onClick={() => void handleResolveApproval("approve_always")}>
-                  本会话总是允许
-                </Button>
+                <>
+                  <Button size="small" onClick={() => void handleResolveApproval("approve_always")}>
+                    本会话总是允许
+                  </Button>
+                  <Button size="small" onClick={() => void handleResolveApproval("approve_persist")}>
+                    写入 settings
+                  </Button>
+                </>
               ) : null}
-              <Button size="small" danger onClick={() => void handleResolveApproval("reject")}>
+              <Button size="small" danger onClick={() => handleRejectApproval()}>
                 拒绝
               </Button>
             </div>

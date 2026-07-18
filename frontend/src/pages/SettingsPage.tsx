@@ -368,7 +368,13 @@ function toSystemFormValues(v: DoyoutradeConfigValues): Record<string, unknown> 
       prune_interval_hours: v.retention.prune_interval_hours,
       prune_on_startup: v.retention.prune_on_startup,
     },
-    assistant: { tool_result_max_chars: v.assistant.tool_result_max_chars },
+    assistant: {
+      tool_result_max_chars: v.assistant.tool_result_max_chars,
+      approval_allowlist: {
+        rule_keys: [...(v.assistant.approval_allowlist?.rule_keys ?? [])],
+        command_prefixes: [...(v.assistant.approval_allowlist?.command_prefixes ?? [])],
+      },
+    },
     auto_update: {
       enabled: v.auto_update.enabled,
       check_interval_hours: v.auto_update.check_interval_hours,
@@ -940,7 +946,10 @@ function SystemConfigTab() {
               key: "assistant",
               forceRender: true,
               label: (
-                <PanelLabel title="assistant · 助手" hint="助手工具结果截断长度，保持默认即可" />
+                <PanelLabel
+                  title="assistant · 助手"
+                  hint="工具结果截断与高危操作审批白名单"
+                />
               ),
               children: (
                 <>
@@ -955,6 +964,42 @@ function SystemConfigTab() {
             }
           >
             <InputNumber className="w-full" min={0} />
+          </Form.Item>
+          <Form.Item
+            name={["assistant", "approval_allowlist", "rule_keys"]}
+            label={
+              <FieldLabel
+                text="approval_allowlist.rule_keys"
+                restart={false}
+                help="持久记住的审批规则 key（如 task_start）。对话里点「写入 settings」可自动追加。热生效，无需重启。"
+              />
+            }
+          >
+            <Select
+              mode="tags"
+              className="w-full"
+              tokenSeparators={[","]}
+              placeholder="例如 task_start"
+              allowClear
+            />
+          </Form.Item>
+          <Form.Item
+            name={["assistant", "approval_allowlist", "command_prefixes"]}
+            label={
+              <FieldLabel
+                text="approval_allowlist.command_prefixes"
+                restart={false}
+                help="持久记住的命令前缀（ClaudeCode 风格，如 doyoutrade-cli task start:*）。匹配到的高危命令将自动放行。"
+              />
+            }
+          >
+            <Select
+              mode="tags"
+              className="w-full"
+              tokenSeparators={[","]}
+              placeholder="例如 doyoutrade-cli task start:*"
+              allowClear
+            />
           </Form.Item>
                 </>
               ),

@@ -86,6 +86,12 @@ market_data:
 
 assistant:
   tool_result_max_chars: 50000
+  # Persistent remembered approvals (written by "总是允许并写入 settings").
+  # rule_keys: ApprovalRule keys (e.g. task_start). command_prefixes: ClaudeCode-
+  # style prefixes (e.g. "doyoutrade-cli task start:*").
+  approval_allowlist:
+    rule_keys: []
+    command_prefixes: []
 
 # Release-based update notifications (设置页「自动更新」). When enabled, a
 # background loop polls https://github.com/<repo>/releases every

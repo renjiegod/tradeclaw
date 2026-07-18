@@ -446,8 +446,15 @@ export type AssistantPendingApproval = {
   command_preview: string;
   timeout_seconds: number;
   allow_always?: boolean;
+  suggested_prefix?: string;
   created_at: string;
 };
+
+export type AssistantApprovalAction =
+  | "approve_once"
+  | "approve_always"
+  | "approve_persist"
+  | "reject";
 
 export type AssistantUserQuestionOption = {
   label: string;
@@ -2988,6 +2995,10 @@ export type DoyoutradeConfigValues = {
   };
   assistant: {
     tool_result_max_chars: number;
+    approval_allowlist: {
+      rule_keys: string[];
+      command_prefixes: string[];
+    };
   };
   /** Release-based 自动更新 (all leaves hot-reload, no restart needed). */
   auto_update: {

@@ -42,10 +42,13 @@ from doyoutrade.assistant.main_agent import builtin_skill_names, is_main_agent
 from doyoutrade.tools import OperationRegistry, build_default_tool_registry
 from doyoutrade.assistant.approvals import (
     APPROVAL_ALLOWLIST_CONFIG_KEY,
+    APPROVAL_COMMAND_PREFIXES_CONFIG_KEY,
     DEFAULT_APPROVAL_RULES,
     ApprovalBroker,
     ApprovalRule,
+    is_auto_approved,
     match_approval_rule,
+    normalize_command_prefix,
 )
 from doyoutrade.assistant.questions import QuestionBroker, QuestionResolution
 from doyoutrade.assistant.channels.base import ChannelDeliveryHandle
@@ -1198,7 +1201,7 @@ class AssistantService:
         if rule is None:
             return None
 
-        # Session-remembered "approve always" — visible, never silent.
+        # Session + persistent remembered grants — visible, never silent.
         try:
             session = await self.repository.get_session(session_id)
         except Exception as exc:
@@ -1210,13 +1213,37 @@ class AssistantService:
                 exc,
             )
             session = None
-        allowlist = list(
-            ((session or {}).get("config") or {}).get(APPROVAL_ALLOWLIST_CONFIG_KEY) or []
+        session_config = (session or {}).get("config") or {}
+        allowlist = list(session_config.get(APPROVAL_ALLOWLIST_CONFIG_KEY) or [])
+        session_prefixes = list(
+            session_config.get(APPROVAL_COMMAND_PREFIXES_CONFIG_KEY) or []
         )
         command_preview = str(arguments.get("command") or "") or json.dumps(
             arguments, ensure_ascii=False, default=str
         )
-        if rule.allow_always and rule.key in allowlist:
+        try:
+            persistent = get_config().assistant.approval_allowlist
+            persistent_rule_keys = list(persistent.rule_keys)
+            persistent_prefixes = list(persistent.command_prefixes)
+        except Exception as exc:
+            logger.error(
+                "approval persistent allowlist read failed err=%s: %s "
+                "(continuing with session allowlist only)",
+                type(exc).__name__,
+                exc,
+            )
+            persistent_rule_keys = []
+            persistent_prefixes = []
+
+        approved, auto_source = is_auto_approved(
+            rule=rule,
+            command=command_preview,
+            session_rule_keys=allowlist,
+            session_prefixes=session_prefixes,
+            persistent_rule_keys=persistent_rule_keys,
+            persistent_prefixes=persistent_prefixes,
+        )
+        if approved:
             await self.repository.append_event(
                 session_id=session_id,
                 event_type="approval.auto_approved",
@@ -1226,14 +1253,16 @@ class AssistantService:
                     "tool": tool_name,
                     "rule_key": rule.key,
                     "command_preview": command_preview[:500],
+                    "source": auto_source,
                     **_current_span_payload(),
                 },
             )
             logger.info(
-                "approval auto-approved session_id=%s rule=%s tool=%s",
+                "approval auto-approved session_id=%s rule=%s tool=%s source=%s",
                 session_id,
                 rule.key,
                 tool_name,
+                auto_source,
             )
             return None
 
@@ -1297,6 +1326,8 @@ class AssistantService:
             "action": resolution.action,
             "source": resolution.source,
             "resolver_id": resolution.resolver_id,
+            "reason": resolution.reason,
+            "command_prefix": resolution.command_prefix,
             **_current_span_payload(),
         }
         if resolution.action == "timeout":
@@ -1324,49 +1355,150 @@ class AssistantService:
             resolution.source,
         )
         if resolution.action == "reject":
+            reason_text = str(resolution.reason or "").strip()
+            reason_clause = f" 拒绝原因：{reason_text}。" if reason_text else ""
             return (
                 f"[error:approval_rejected] 用户拒绝了该操作：{rule.description}。"
-                "该操作未执行。\n"
+                f"{reason_clause}该操作未执行。\n"
                 "hint: 不要立即重试同一命令；向用户说明操作已被拒绝，并询问是否需要"
                 "调整方案。"
             )
-        if resolution.action == "approve_always" and not rule.allow_always:
+        if resolution.action in ("approve_always", "approve_persist") and not rule.allow_always:
             logger.warning(
-                "approval always rejected for one-time rule approval_id=%s rule=%s",
+                "approval always rejected for one-time rule approval_id=%s rule=%s action=%s",
                 request.approval_id,
                 rule.key,
+                resolution.action,
             )
             return (
                 "[error:approval_always_forbidden] 该操作必须逐次人工审批，"
                 "不支持“总是允许”。本次操作未执行。"
             )
         if resolution.action == "approve_always":
-            merged = sorted({*allowlist, rule.key})
-            try:
-                await self.repository.update_session_config(
-                    session_id, {APPROVAL_ALLOWLIST_CONFIG_KEY: merged}
-                )
-                await self.repository.append_event(
-                    session_id=session_id,
-                    event_type="approval.remembered",
-                    payload={
-                        "approval_id": request.approval_id,
-                        "rule_key": rule.key,
-                        "allowlist": merged,
-                    },
-                )
-            except Exception as exc:
-                # Remembering failing only degrades to asking again next
-                # time — but it must be visible, not swallowed.
-                logger.error(
-                    "approval allowlist write failed session_id=%s rule=%s err=%s: %s",
-                    session_id,
-                    rule.key,
-                    type(exc).__name__,
-                    exc,
-                )
+            await self._remember_session_approval(
+                session_id=session_id,
+                approval_id=request.approval_id,
+                rule_key=rule.key,
+                allowlist=allowlist,
+                session_prefixes=session_prefixes,
+                command_prefix=resolution.command_prefix,
+            )
+        elif resolution.action == "approve_persist":
+            await self._remember_persistent_approval(
+                session_id=session_id,
+                approval_id=request.approval_id,
+                rule_key=rule.key,
+                command_prefix=resolution.command_prefix
+                or request.suggested_prefix,
+            )
         return None
 
+    async def _remember_session_approval(
+        self,
+        *,
+        session_id: str,
+        approval_id: str,
+        rule_key: str,
+        allowlist: list[str],
+        session_prefixes: list[str],
+        command_prefix: str,
+    ) -> None:
+        prefix = normalize_command_prefix(command_prefix)
+        patch: dict[str, Any] = {}
+        remembered: dict[str, Any] = {
+            "approval_id": approval_id,
+            "rule_key": rule_key,
+            "scope": "session",
+        }
+        if prefix:
+            merged_prefixes = list(dict.fromkeys([*session_prefixes, prefix]))
+            patch[APPROVAL_COMMAND_PREFIXES_CONFIG_KEY] = merged_prefixes
+            remembered["command_prefix"] = prefix
+            remembered["command_prefixes"] = merged_prefixes
+        else:
+            merged = sorted({*allowlist, rule_key})
+            patch[APPROVAL_ALLOWLIST_CONFIG_KEY] = merged
+            remembered["allowlist"] = merged
+        try:
+            await self.repository.update_session_config(session_id, patch)
+            await self.repository.append_event(
+                session_id=session_id,
+                event_type="approval.remembered",
+                payload=remembered,
+            )
+        except Exception as exc:
+            logger.error(
+                "approval session allowlist write failed session_id=%s rule=%s err=%s: %s",
+                session_id,
+                rule_key,
+                type(exc).__name__,
+                exc,
+            )
+
+    async def _remember_persistent_approval(
+        self,
+        *,
+        session_id: str,
+        approval_id: str,
+        rule_key: str,
+        command_prefix: str,
+    ) -> None:
+        """Write grant into ``~/.doyoutrade/config.yaml`` (hot-reloaded)."""
+        from doyoutrade import config_store
+
+        prefix = normalize_command_prefix(command_prefix)
+        try:
+            current = get_config().assistant.approval_allowlist
+            rule_keys = list(current.rule_keys)
+            prefixes = list(current.command_prefixes)
+            if prefix:
+                if prefix not in prefixes:
+                    prefixes.append(prefix)
+            elif rule_key not in rule_keys:
+                rule_keys.append(rule_key)
+            config_store.write_config(
+                {
+                    "assistant": {
+                        "approval_allowlist": {
+                            "rule_keys": rule_keys,
+                            "command_prefixes": prefixes,
+                        }
+                    }
+                }
+            )
+            await self.repository.append_event(
+                session_id=session_id,
+                event_type="approval.remembered",
+                payload={
+                    "approval_id": approval_id,
+                    "rule_key": rule_key,
+                    "scope": "persistent",
+                    "command_prefix": prefix or None,
+                    "allowlist": {
+                        "rule_keys": rule_keys,
+                        "command_prefixes": prefixes,
+                    },
+                },
+            )
+        except Exception as exc:
+            logger.error(
+                "approval persistent allowlist write failed session_id=%s rule=%s err=%s: %s",
+                session_id,
+                rule_key,
+                type(exc).__name__,
+                exc,
+            )
+            await self.repository.append_event(
+                session_id=session_id,
+                event_type="approval.remember_failed",
+                payload={
+                    "approval_id": approval_id,
+                    "rule_key": rule_key,
+                    "scope": "persistent",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
+            )
     async def _maybe_advance_flow(
         self,
         session_id: str,
