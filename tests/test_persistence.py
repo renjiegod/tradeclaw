@@ -485,9 +485,24 @@ class PersistenceRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 # 功能 5: decision signal lifecycle + backtest verification.
                 "decision_signals",
                 "decision_signal_outcomes",
+                # Knowledge graph: base projection (nodes/edges/source_state)
+                # plus the audited manual-edit / agent-proposal-approval schema
+                # (change sets + operations, revisions, evidence, entity
+                # lineage, conflicts, canvas layouts, custom schema items,
+                # one-time approval decisions, and the locked graph_state row).
                 "kg_nodes",
                 "kg_edges",
                 "kg_source_state",
+                "kg_graph_state",
+                "kg_change_sets",
+                "kg_change_operations",
+                "kg_revisions",
+                "kg_evidence",
+                "kg_entity_lineage",
+                "kg_conflicts",
+                "kg_canvas_layouts",
+                "kg_schema_items",
+                "kg_approval_decisions",
                 # Pre-existing swarm orchestration tables (already in the schema
                 # via the swarm migration; the expected set had not been synced).
                 "swarm_runs",
