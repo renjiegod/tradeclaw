@@ -31,7 +31,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-D22128?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="License"></a>
-  <img src="https://img.shields.io/badge/version-0.1.3-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.1.4-blue?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square" alt="PRs Welcome">
 </p>

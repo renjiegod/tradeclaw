@@ -50,7 +50,104 @@ $ErrorActionPreference = "Stop"
 function Write-Info { param($m) Write-Host "==> $m" -ForegroundColor Cyan }
 function Write-Ok   { param($m) Write-Host "[OK] $m" -ForegroundColor Green }
 function Write-Warn { param($m) Write-Host "[!] $m" -ForegroundColor Yellow }
-function Write-Die  { param($m) Write-Host "[x] $m" -ForegroundColor Red; exit 1 }
+
+function Invoke-QuietCapture {
+    # Best-effort command capture for diagnostics; never throws.
+    param([scriptblock]$Script)
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    try {
+        $out = & $Script 2>&1 | Out-String
+        return $out.Trim()
+    } catch {
+        return "(capture failed: $($_.Exception.Message))"
+    } finally {
+        $ErrorActionPreference = $oldEap
+    }
+}
+
+function Write-InstallDiagnostics {
+    param(
+        [string]$Stage = "unknown",
+        [object]$ExitCode,
+        [string]$Detail
+    )
+    # Printed directly to the console so GUI-installer users can read it in
+    # the PowerShell window Inno opens (SW_SHOW) — no log file required.
+    Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Yellow
+    Write-Host "[诊断] 安装失败详情（请整段复制给支持人员）" -ForegroundColor Yellow
+    Write-Host "============================================================" -ForegroundColor Yellow
+    Write-Host "  阶段: $Stage"
+    if ($null -ne $ExitCode -and "$ExitCode" -ne "") {
+        Write-Host "  退出码: $ExitCode"
+    }
+    Write-Host "  时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Write-Host "  Source: $Source"
+    Write-Host "  Force: $Force"
+    Write-Host "  USERPROFILE: $env:USERPROFILE"
+    Write-Host "  UV_TOOL_BIN_DIR: $(if ($env:UV_TOOL_BIN_DIR) { $env:UV_TOOL_BIN_DIR } else { '(unset)' })"
+    Write-Host "  XDG_BIN_HOME: $(if ($env:XDG_BIN_HOME) { $env:XDG_BIN_HOME } else { '(unset)' })"
+    if (-not [string]::IsNullOrWhiteSpace($Detail)) {
+        Write-Host "  详情: $Detail"
+    }
+
+    $uvVer = Invoke-QuietCapture { uv --version }
+    Write-Host "  uv --version: $(if ($uvVer) { $uvVer } else { '(uv 不可用)' })"
+
+    $toolBinRaw = Invoke-QuietCapture { uv tool dir --bin }
+    if ($toolBinRaw) {
+        $toolBin = ($toolBinRaw -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1).Trim()
+    } else {
+        $toolBin = Join-Path $env:USERPROFILE ".local\bin"
+    }
+    Write-Host "  uv tool dir --bin: $toolBin"
+    $shim = Join-Path $toolBin "doyoutrade.exe"
+    Write-Host "  期望 shim: $shim  存在=$(Test-Path -LiteralPath $shim)"
+
+    $toolList = Invoke-QuietCapture { uv tool list }
+    Write-Host "  --- uv tool list ---"
+    if ($toolList) {
+        foreach ($line in ($toolList -split "`r?`n")) {
+            if (-not [string]::IsNullOrWhiteSpace($line)) {
+                Write-Host "    $line"
+            }
+        }
+    } else {
+        Write-Host "    (empty / unavailable)"
+    }
+
+    $pathUser = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    Write-Host "  User PATH 含 tool bin: $($pathUser -like "*$toolBin*")"
+    Write-Host "============================================================" -ForegroundColor Yellow
+    Write-Host ""
+}
+
+function Pause-OnInstallFailure {
+    # Keep the console open when launched from the GUI installer so the
+    # diagnostics block above stays readable. CI / automation can skip.
+    if ($env:DOYOUTRADE_INSTALL_NO_PAUSE -eq "1") { return }
+    if ($env:CI -eq "true") { return }
+    Write-Host "以上诊断已打印在本命令行窗口。看完后按 Enter 关闭..." -ForegroundColor Yellow
+    try {
+        [void](Read-Host)
+    } catch {
+        Start-Sleep -Seconds 60
+    }
+}
+
+function Write-Die {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [string]$Stage = "unknown",
+        [object]$ExitCode,
+        [string]$Detail
+    )
+    Write-Host "[x] $Message" -ForegroundColor Red
+    Write-InstallDiagnostics -Stage $Stage -ExitCode $ExitCode -Detail $Detail
+    Pause-OnInstallFailure
+    exit 1
+}
 
 function Ensure-Uv {
     if (Get-Command uv -ErrorAction SilentlyContinue) {
@@ -61,13 +158,15 @@ function Ensure-Uv {
     try {
         Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
     } catch {
-        Write-Die "uv 安装失败，请参考 https://docs.astral.sh/uv/ 手动安装后重试。"
+        Write-Die -Message "uv 安装失败，请参考 https://docs.astral.sh/uv/ 手动安装后重试。" `
+            -Stage "uv-install" -Detail $_.Exception.Message
     }
     # 让 uv 在当前会话内立即可用（安装器已写入用户环境变量，供以后的终端使用）。
     $uvBin = Join-Path $env:USERPROFILE ".local\bin"
     if (Test-Path $uvBin) { $env:Path = "$uvBin;$env:Path" }
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Write-Die "uv 安装后仍不可用，请重开一个 PowerShell 窗口再运行本脚本。"
+        Write-Die -Message "uv 安装后仍不可用，请重开一个 PowerShell 窗口再运行本脚本。" `
+            -Stage "uv-post-install" -Detail "uv.exe not on PATH after astral install; checked $uvBin"
     }
     Write-Ok "uv 安装完成 ($(uv --version))"
 }
@@ -168,8 +267,23 @@ function Install-DoYouTrade {
             }
             Write-Info "用户确认重新安装，正在卸载现有版本 ..."
         }
+        Write-Info "重装前 uv tool list："
+        $beforeList = Invoke-QuietCapture { uv tool list }
+        if ($beforeList) {
+            foreach ($line in ($beforeList -split "`r?`n")) {
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    Write-Host "    $line"
+                }
+            }
+        } else {
+            Write-Host "    (empty / unavailable)"
+        }
+        Write-Info "正在卸载现有 doyoutrade ..."
         uv tool uninstall doyoutrade
-        if ($LASTEXITCODE -ne 0) { Write-Die "卸载失败。" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Die -Message "卸载失败。" -Stage "uv-tool-uninstall" -ExitCode $LASTEXITCODE
+        }
+        Write-Ok "旧版本已卸载，开始重新安装。"
     }
 
     Write-Info "正在安装 doyoutrade[qmt-proxy]（源：$Source）…"
@@ -183,7 +297,11 @@ function Install-DoYouTrade {
     # 并终止脚本，明明在正常解析/下载也会被误判成失败。stderr 直接落到控制台，靠
     # `$LASTEXITCODE` 判定真正的成败。下方 `uv tool uninstall` 同理。
     uv tool install "doyoutrade[qmt-proxy] @ $Source"
-    if ($LASTEXITCODE -ne 0) { Write-Die "安装失败，请检查网络 / 安装源后重试。" }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Die -Message "安装失败，请检查网络 / 安装源后重试。" `
+            -Stage "uv-tool-install" -ExitCode $LASTEXITCODE `
+            -Detail "command: uv tool install `"doyoutrade[qmt-proxy] @ $Source`""
+    }
 
     Update-ShellPath
 
@@ -197,7 +315,8 @@ function Install-DoYouTrade {
     if (Test-Path $uvBin) { $env:Path = "$uvBin;$env:Path" }
     $shim = Join-Path $uvBin "doyoutrade.exe"
     if (-not (Get-Command doyoutrade -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $shim)) {
-        Write-Die "uv tool install 成功，但未找到 doyoutrade 命令（期望路径：$shim）。请重开终端后运行 uv tool list 排查。"
+        Write-Die -Message "uv tool install 成功，但未找到 doyoutrade 命令（期望路径：$shim）。" `
+            -Stage "shim-verify" -Detail "Get-Command miss and shim file missing at $shim"
     }
     Write-ToolBinDirMarker -BinDir $uvBin
 
