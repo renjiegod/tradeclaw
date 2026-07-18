@@ -22,7 +22,8 @@ set "DOYOUTRADE_CMD="
 where doyoutrade >nul 2>nul
 if not errorlevel 1 goto found_path
 if exist "%USERPROFILE%\.local\bin\doyoutrade.exe" goto found_local
-goto not_found
+if exist "%USERPROFILE%\.doyoutrade\tool-bin-dir.txt" goto try_marker
+goto try_uv_bin
 
 :found_path
 set "DOYOUTRADE_CMD=doyoutrade"
@@ -33,12 +34,43 @@ set "DOYOUTRADE_CMD=%USERPROFILE%\.local\bin\doyoutrade.exe"
 set "PATH=%USERPROFILE%\.local\bin;%PATH%"
 goto start
 
+:try_marker
+set "DOYOUTRADE_BIN_DIR="
+set /p DOYOUTRADE_BIN_DIR=<"%USERPROFILE%\.doyoutrade\tool-bin-dir.txt"
+if not defined DOYOUTRADE_BIN_DIR goto try_uv_bin
+if exist "%DOYOUTRADE_BIN_DIR%\doyoutrade.exe" goto found_marker
+goto try_uv_bin
+
+:found_marker
+set "DOYOUTRADE_CMD=%DOYOUTRADE_BIN_DIR%\doyoutrade.exe"
+set "PATH=%DOYOUTRADE_BIN_DIR%;%PATH%"
+goto start
+
+:try_uv_bin
+if exist "%USERPROFILE%\.local\bin\uv.exe" set "PATH=%USERPROFILE%\.local\bin;%PATH%"
+where uv >nul 2>nul
+if errorlevel 1 goto not_found
+for /f "usebackq delims=" %%I in (`uv tool dir --bin 2^>nul`) do (
+  if exist "%%I\doyoutrade.exe" (
+    set "DOYOUTRADE_CMD=%%I\doyoutrade.exe"
+    set "PATH=%%I;%PATH%"
+    goto found_uv_bin
+  )
+)
+goto not_found
+
+:found_uv_bin
+goto start
+
 :not_found
 echo [x] 未找到 doyoutrade 命令。
 echo.
-echo     请先双击 安装DoYouTrade.bat 完成安装；
-echo     如果确认已经装过，重开一个新的窗口再试一次。
-echo     PATH 需要新窗口才能刷新生效。
+echo     请先双击 安装DoYouTrade.bat 完成安装。
+echo.
+echo     若确认已装过，新开 PowerShell 运行：  uv tool list
+echo     列表里应出现 doyoutrade；没有则重新安装。
+echo     有的话再运行：  uv tool update-shell
+echo     然后关掉本窗口，重新双击本脚本。
 echo.
 pause
 exit /b 1
