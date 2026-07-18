@@ -136,6 +136,13 @@ def _parse_row(
     role = (row.get("标签") or "").strip()
     note = (row.get("说明") or "").strip()
     sell_target = (row.get("主升期望卖点") or "").strip()
+    rally_trading_days = (row.get("拉升交易日(启动→高点)") or "").strip() or None
+    calendar_days = (row.get("整段日历天(启动→结束)") or "").strip() or None
+    # 部分行把「进行中」写在日历天列、结束日留空（如利通电子）。
+    if not ongoing and calendar_days and any(
+        marker in calendar_days for marker in _ONGOING_MARKERS
+    ):
+        ongoing = True
 
     item: dict[str, Any] = {
         "symbol": symbol,
@@ -149,12 +156,8 @@ def _parse_row(
         "max_gain_pct": (row.get("最高涨幅%") or "").strip() or None,
         "end_date": end_date,
         "ongoing": ongoing,
-        "rally_trading_days": (
-            (row.get("拉升交易日(启动→高点)") or "").strip() or None
-        ),
-        "calendar_days": (
-            (row.get("整段日历天(启动→结束)") or "").strip() or None
-        ),
+        "rally_trading_days": rally_trading_days,
+        "calendar_days": calendar_days,
         "theme": theme,
         "note": note,
         "role": role,
