@@ -18,6 +18,10 @@ kg_edges 在 API server 的 DB 里），因此走 HTTP（``invoke_api``），保
     → ``GET /knowledge/graph``（实体邻域子图）。
 ``knowledge graph-sync [--force]``
     → ``POST /knowledge/graph/sync``（确定性投影幂等重建）。
+
+确定性投影来源：``symbols/roles.jsonl``、``cycles/*/_sentiment.jsonl``、
+``trades/`` 交割单归因、``cycles/_strong_timeline.csv``（或遗留
+``cycles/强势股时间线.csv``）、``decision_signals`` 表。
 """
 
 from __future__ import annotations
@@ -210,7 +214,8 @@ def knowledge_graph_sync(force: bool) -> None:
     """Idempotently re-project deterministic sources into the knowledge graph.
 
     来源：symbols/roles.jsonl、cycles/*/_sentiment.jsonl、trades/ 交割单
-    归因、decision_signals 表。所有来源未变化时快速跳过（``skipped: true``）。
+    归因、cycles/_strong_timeline.csv（或 cycles/强势股时间线.csv）、
+    decision_signals 表。所有来源未变化时快速跳过（``skipped: true``）。
     """
     from doyoutrade.cli._api import invoke_api
     from doyoutrade.cli.main import run_async_command

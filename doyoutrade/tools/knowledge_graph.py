@@ -35,6 +35,63 @@ from doyoutrade.tools._prose import format_error_text, format_unknown_args
 
 _ACTIONS = ("query", "propose")
 
+_ENTITY_REF_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["type", "name"],
+    "properties": {
+        "type": {
+            "type": "string",
+            "description": (
+                "实体类型：symbol / role / theme / cycle / signal / playbook "
+                "（或已批准的 custom.*）"
+            ),
+        },
+        "name": {
+            "type": "string",
+            "description": "实体名：规范代码 / 角色词 / 题材名 / YYYY-MM / 信号 id",
+        },
+        "display_name": {
+            "type": "string",
+            "description": "可选显示名（如股票中文名）",
+        },
+    },
+}
+
+_CREATE_RELATION_EXAMPLE: dict[str, Any] = {
+    "op": "create_relation",
+    "source": {"type": "symbol", "name": "300059"},
+    "relation": "belongs_to_theme",
+    "target": {"type": "theme", "name": "券商"},
+    "fact": "东方财富属于券商题材。",
+}
+
+
+def _allowed_relation_hints() -> str:
+    from doyoutrade.knowledge.schema import SYSTEM_KNOWLEDGE_GRAPH_SCHEMA
+
+    parts = [
+        f"{item.key} ({item.source_type}->{item.target_type})"
+        for item in SYSTEM_KNOWLEDGE_GRAPH_SCHEMA.relation_types
+    ]
+    return ", ".join(parts)
+
+
+def _propose_repair_hint(message: str) -> str:
+    """Self-heal hint for graph_schema_validation_error (agent-facing)."""
+    return (
+        "create_relation 必填字段：op, source{_EntityRef}, relation, target{_EntityRef}, "
+        "fact。source/target 必须是对象 {\"type\":\"symbol\",\"name\":\"300059\"}，"
+        "不是裸字符串。"
+        f" 受保护 relation：{_allowed_relation_hints()}。"
+        " 可选：confidence (0..1), valid_at/invalid_at (ISO datetime), attrs。"
+        " 不要臆造 lifecycle_event / active_in_cycle / thematic_role / role 等关系名；"
+        "强势股时间线 CSV 请放进 cycles/_strong_timeline.csv 或 cycles/强势股时间线.csv "
+        "后由本地用户执行 graph-sync（Agent 不可 sync）。"
+        f" 最小示例：{_CREATE_RELATION_EXAMPLE!r}。"
+        f" 原始校验：{message}"
+    )
+
 
 class KnowledgeGraphTool(OperationHandler):
     name = "knowledge_graph"
@@ -47,6 +104,8 @@ class KnowledgeGraphTool(OperationHandler):
         "先查图谱拿关联，再用 knowledge_index + read_file 钻取原文。"
         "action=propose：提交人工关系或 custom Schema 变更草案；只进入待"
         "审批队列，绝不直接写入图谱。"
+        "批量强势股时间线不要走 propose：写入 cycles/_strong_timeline.csv "
+        "（或 cycles/强势股时间线.csv）后请用户 graph-sync。"
     )
     category = "agent"
     parameters = {
@@ -80,12 +139,49 @@ class KnowledgeGraphTool(OperationHandler):
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 100,
-                "items": {"type": "object"},
                 "description": (
-                    "仅 action=propose：create/revise/retract_relation 或 "
-                    "upsert/deprecate_schema_item 操作数组；服务端按受保护 "
-                    "Schema 校验，草案获人工审批前不会写图。"
+                    "仅 action=propose。create_relation 示例："
+                    '{"op":"create_relation","source":{"type":"symbol","name":"300059"},'
+                    '"relation":"belongs_to_theme","target":{"type":"theme","name":"券商"},'
+                    '"fact":"..."}。'
+                    "受保护 relation：belongs_to_theme / has_role / leads_theme / "
+                    "linked_with / observed_in / signals / traded_in / uses_playbook。"
+                    "禁止臆造 lifecycle_event 等关系名。"
                 ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "op": {
+                            "type": "string",
+                            "enum": [
+                                "create_relation",
+                                "revise_relation",
+                                "retract_relation",
+                                "upsert_schema_item",
+                                "deprecate_schema_item",
+                            ],
+                        },
+                        "source": _ENTITY_REF_SCHEMA,
+                        "target": _ENTITY_REF_SCHEMA,
+                        "relation": {"type": "string"},
+                        "fact": {"type": "string"},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "valid_at": {"type": "string"},
+                        "invalid_at": {"type": "string"},
+                        "attrs": {"type": "object"},
+                        "edge_id": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": ["entity_type", "relation_type", "property"],
+                        },
+                        "key": {"type": "string"},
+                        "expected_version": {"type": "integer", "minimum": 0},
+                        "definition": {"type": "object"},
+                    },
+                    "required": ["op"],
+                    "additionalProperties": True,
+                },
             },
             "summary": {
                 "type": "string",
@@ -223,8 +319,11 @@ class KnowledgeGraphTool(OperationHandler):
                     "message": str(exc),
                 },
             )
+            hint = None
+            if exc.error_code == "graph_schema_validation_error":
+                hint = _propose_repair_hint(str(exc))
             return ToolResult(
-                text=format_error_text(exc.error_code, str(exc)),
+                text=format_error_text(exc.error_code, str(exc), hint),
                 is_error=True,
             )
 
@@ -299,8 +398,11 @@ class KnowledgeGraphTool(OperationHandler):
                     text=format_error_text(
                         "entity_not_found",
                         f"no graph node matches {entity!r}",
-                        "若数据是新写入的，先执行 knowledge_graph(action=\"sync\") "
-                        "再查询；也可换股票代码 / 全名重试",
+                        "若该实体应来自 roles.jsonl / trades / 强势股时间线 / "
+                        "decision_signals 等确定性源，请本地用户在图谱页执行"
+                        "「同步投影」或运行 doyoutrade-cli knowledge graph-sync "
+                        "后再查；Agent 不能 action=sync。"
+                        "也可换股票代码 / 全名重试。",
                     ),
                     is_error=True,
                 )

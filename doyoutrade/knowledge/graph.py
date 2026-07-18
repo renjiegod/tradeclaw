@@ -2,7 +2,7 @@
 
 把知识库中已经结构化的事实投影成 ``kg_nodes`` / ``kg_edges``（存储与写入
 语义见 :mod:`doyoutrade.persistence.models` 与
-``SqlAlchemyKnowledgeGraphRepository.apply_projection``）。四个来源，全部
+``SqlAlchemyKnowledgeGraphRepository.apply_projection``）。五个来源，全部
 **零 LLM 成本**、幂等、可整体重跑：
 
 - ``symbols/roles.jsonl``      → (个股)-[has_role]->(角色)，单值状态组
@@ -11,6 +11,11 @@
   attrs 聚合当月涨停/炸板/连板高度。
 - ``trades/**/*.csv``（经 :func:`read_trade_attribution` FIFO 配对）→
   (个股)-[traded_in]->(周期月)，一笔 round-trip 一条边，盈亏进 attrs。
+- ``cycles/_strong_timeline.csv``（或遗留 ``cycles/强势股时间线.csv``）→
+  (个股)-[has_role]->(角色) + (个股)-[belongs_to_theme]->(题材) +
+  (个股)-[traded_in]->(启动月周期)；启动/高点/退潮等进边 attrs，
+  ``source_ref`` 指回 CSV 行。时间线 ``has_role`` **不用**
+  ``role|<symbol>`` state_key，避免与 roles.jsonl 抢当前角色。
 - ``decision_signals`` 表（调用方传入投影行）→ (信号)-[signals]->(个股)，
   回测 outcome 变化时旧边 expire、新边携带最新验证结果。
 
@@ -41,6 +46,7 @@ from typing import Any
 from doyoutrade.knowledge.attribution import read_trade_attribution
 from doyoutrade.knowledge.review import read_sentiment_timeline
 from doyoutrade.knowledge.roles import read_symbol_roles
+from doyoutrade.knowledge.strong_timeline import read_strong_timeline
 from doyoutrade.persistence.repositories import (
     KnowledgeGraphEdgeSnapshot,
     KnowledgeGraphEdgeSpec,
@@ -56,16 +62,20 @@ NODE_SYMBOL = "symbol"
 NODE_ROLE = "role"
 NODE_CYCLE = "cycle"
 NODE_SIGNAL = "signal"
+NODE_THEME = "theme"
 
 REL_HAS_ROLE = "has_role"
 REL_TRADED_IN = "traded_in"
 REL_SIGNALS = "signals"
+REL_BELONGS_TO_THEME = "belongs_to_theme"
 
 #: kg_source_state 的来源键（``kb:`` = 知识库文件派生，``db:`` = 业务表派生）。
 SOURCE_ROLES = "kb:symbols/roles.jsonl"
 SOURCE_SENTIMENT = "kb:cycles/_sentiment.jsonl"
 SOURCE_TRADES = "kb:trades"
 SOURCE_SIGNALS = "db:decision_signals"
+#: 稳定来源键（与磁盘文件名解耦；文件可以是规范名或中文遗留名）。
+SOURCE_TIMELINE = "kb:cycles/strong_timeline"
 
 #: 情绪时间线读取窗口（月）。取足够大以覆盖整库——投影是全量幂等重建，
 #: 不做"最近 N 月"截断（截断属于检索侧的事）。
@@ -400,6 +410,137 @@ def _project_decision_signals(
         )
 
 
+def _timeline_wave_attrs(item: dict[str, Any]) -> dict[str, Any]:
+    """Attrs shared across a timeline wave's projected edges."""
+    return {
+        "wave_name": item.get("name") or None,
+        "start_date": item.get("start_date"),
+        "start_price": item.get("start_price"),
+        "watch_date": item.get("watch_date"),
+        "sell_target": item.get("sell_target"),
+        "peak_date": item.get("peak_date"),
+        "peak_price": item.get("peak_price"),
+        "max_gain_pct": item.get("max_gain_pct"),
+        "end_date": item.get("end_date"),
+        "ongoing": bool(item.get("ongoing")),
+        "rally_trading_days": item.get("rally_trading_days"),
+        "calendar_days": item.get("calendar_days"),
+        "note": item.get("note") or None,
+        "line_number": item.get("line_number"),
+    }
+
+
+def _project_strong_timeline(
+    items: list[dict[str, Any]],
+    nodes: _NodeAccumulator,
+    edges: list[KnowledgeGraphEdgeSpec],
+    warnings: list[dict[str, Any]],
+) -> None:
+    """Project strong-stock timeline rows into role / theme / cycle edges."""
+    for item in items:
+        symbol = str(item.get("symbol") or "").strip()
+        start_date = str(item.get("start_date") or "").strip()
+        if not symbol or len(start_date) < 7:
+            warnings.append(
+                {
+                    "source": SOURCE_TIMELINE,
+                    "reason": "timeline_item_missing_symbol_or_start",
+                    "raw": {
+                        k: item.get(k) for k in ("symbol", "start_date", "line_number")
+                    },
+                }
+            )
+            continue
+
+        display = item.get("name") if isinstance(item.get("name"), str) else None
+        month = start_date[:7]
+        relpath = str(item.get("relpath") or "cycles/strong_timeline.csv")
+        line_number = item.get("line_number")
+        source_ref = f"kb:{relpath}"
+        if isinstance(line_number, int):
+            source_ref = f"{source_ref}#L{line_number}"
+
+        valid_at = _parse_naive_utc(start_date)
+        invalid_at = (
+            None
+            if item.get("ongoing")
+            else _parse_naive_utc(item.get("end_date"))
+        )
+        wave_attrs = _timeline_wave_attrs(item)
+        label = display or symbol
+        window = f"{start_date}→{item.get('end_date') or '进行中'}"
+
+        nodes.add(NODE_SYMBOL, symbol, display_name=display)
+        nodes.add(NODE_CYCLE, month, display_name=f"{month} 情绪周期")
+
+        role = str(item.get("role") or "").strip()
+        if role:
+            nodes.add(NODE_ROLE, role)
+            edges.append(
+                KnowledgeGraphEdgeSpec(
+                    src=(NODE_SYMBOL, symbol),
+                    dst=(NODE_ROLE, role),
+                    relation=REL_HAS_ROLE,
+                    fact=(
+                        f"{label}（{symbol}）在强势股时间线波次 {window} "
+                        f"角色：{role}"
+                    ),
+                    dedupe_key=f"timeline|role|{symbol}|{start_date}|{role}",
+                    # 故意不设 state_key：历史波次角色可与 roles.jsonl 当前角色并存。
+                    attrs=wave_attrs,
+                    valid_at=valid_at,
+                    invalid_at=invalid_at,
+                    source_key=SOURCE_TIMELINE,
+                    source_ref=source_ref,
+                )
+            )
+
+        theme = str(item.get("theme") or "").strip()
+        if theme:
+            nodes.add(NODE_THEME, theme)
+            edges.append(
+                KnowledgeGraphEdgeSpec(
+                    src=(NODE_SYMBOL, symbol),
+                    dst=(NODE_THEME, theme),
+                    relation=REL_BELONGS_TO_THEME,
+                    fact=(
+                        f"{label}（{symbol}）在强势股时间线波次 {window} "
+                        f"属于题材：{theme}"
+                    ),
+                    dedupe_key=f"timeline|theme|{symbol}|{start_date}|{theme}",
+                    attrs=wave_attrs,
+                    valid_at=valid_at,
+                    invalid_at=invalid_at,
+                    source_key=SOURCE_TIMELINE,
+                    source_ref=source_ref,
+                )
+            )
+
+        peak_bit = ""
+        if item.get("peak_date") or item.get("max_gain_pct"):
+            peak_bit = (
+                f"；高点 {item.get('peak_date') or '?'}"
+                f" / 最高涨幅 {item.get('max_gain_pct') or '?'}%"
+            )
+        edges.append(
+            KnowledgeGraphEdgeSpec(
+                src=(NODE_SYMBOL, symbol),
+                dst=(NODE_CYCLE, month),
+                relation=REL_TRADED_IN,
+                fact=(
+                    f"{label}（{symbol}）强势股时间线主升活跃于 {month}"
+                    f"（{window}）{peak_bit}"
+                ),
+                dedupe_key=f"timeline|cycle|{symbol}|{start_date}|{month}",
+                attrs=wave_attrs,
+                valid_at=valid_at,
+                invalid_at=invalid_at,
+                source_key=SOURCE_TIMELINE,
+                source_ref=source_ref,
+            )
+        )
+
+
 def build_deterministic_projection(
     kb_root: Path,
     *,
@@ -407,9 +548,9 @@ def build_deterministic_projection(
 ) -> DeterministicProjection:
     """Build the full deterministic projection from KB files + signal rows.
 
-    纯函数（除读文件外无副作用）：读 roles / sentiment / trades 三个文件
-    来源与调用方传入的 ``decision_signal_rows``，返回节点/边意图与每个
-    来源的 content_hash。任何被跳过的脏行都进 ``warnings``。
+    纯函数（除读文件外无副作用）：读 roles / sentiment / trades / strong
+    timeline 四个文件来源与调用方传入的 ``decision_signal_rows``，返回
+    节点/边意图与每个来源的 content_hash。任何被跳过的脏行都进 ``warnings``。
     """
     projection = DeterministicProjection()
     nodes = _NodeAccumulator()
@@ -439,6 +580,41 @@ def build_deterministic_projection(
             "kg projection: %d unparsed trade rows surfaced by attribution", len(unparsed)
         )
     projection.source_hashes[SOURCE_TRADES] = _content_hash(round_trips)
+
+    timeline = read_strong_timeline(root=kb_root)
+    projection.warnings.extend(timeline.get("warnings") or [])
+    timeline_items = timeline.get("items") or []
+    _project_strong_timeline(
+        timeline_items, nodes, projection.edges, projection.warnings
+    )
+    projection.source_hashes[SOURCE_TIMELINE] = _content_hash(
+        [
+            {
+                k: item.get(k)
+                for k in (
+                    "symbol",
+                    "name",
+                    "start_date",
+                    "start_price",
+                    "watch_date",
+                    "sell_target",
+                    "peak_date",
+                    "peak_price",
+                    "max_gain_pct",
+                    "end_date",
+                    "ongoing",
+                    "rally_trading_days",
+                    "calendar_days",
+                    "theme",
+                    "note",
+                    "role",
+                    "line_number",
+                    "relpath",
+                )
+            }
+            for item in timeline_items
+        ]
+    )
 
     signal_rows = decision_signal_rows or []
     _project_decision_signals(signal_rows, nodes, projection.edges, projection.warnings)
@@ -620,12 +796,15 @@ __all__ = [
     "NODE_ROLE",
     "NODE_SIGNAL",
     "NODE_SYMBOL",
+    "NODE_THEME",
+    "REL_BELONGS_TO_THEME",
     "REL_HAS_ROLE",
     "REL_SIGNALS",
     "REL_TRADED_IN",
     "SOURCE_ROLES",
     "SOURCE_SENTIMENT",
     "SOURCE_SIGNALS",
+    "SOURCE_TIMELINE",
     "SOURCE_TRADES",
     "build_deterministic_projection",
     "render_neighborhood_markdown",
