@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
     true,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -1453,12 +1454,21 @@ class KnowledgeGraphNodeRecord(Base):
     （``kgn-`` 前缀）。节点由确定性投影（roles.jsonl / 交割单归因 /
     decision_signals / 情绪时间线）或后续的 LLM 抽取产生；同一实体在两条
     来源里出现时经自然键对齐为一个节点。
+
+    Manual lifecycle: ``status`` is ``active`` / ``retired`` / ``merged``.
+    Merged losers keep their row and point ``redirect_to_id`` at the survivor;
+    rows are never hard-deleted (edges FK CASCADE).
     """
 
     __tablename__ = "kg_nodes"
     __table_args__ = (
         UniqueConstraint("node_type", "name", name="uq_kg_nodes_type_name"),
+        CheckConstraint(
+            "status IN ('active', 'retired', 'merged')",
+            name="ck_kg_nodes_status",
+        ),
         Index("ix_kg_nodes_name", "name"),
+        Index("ix_kg_nodes_status", "status"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -1468,6 +1478,9 @@ class KnowledgeGraphNodeRecord(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     attrs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    redirect_to_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -1490,27 +1503,37 @@ class KnowledgeGraphEdgeRecord(Base):
 
     幂等与失效：
 
-    - ``dedupe_key`` 是事实身份（同一事实重复投影只保留一条 active 边；
-      不加 UNIQUE 约束——历史里同 key 的 expired 边合法存在）。
+    - ``dedupe_key`` 是事实身份；部分唯一索引保证同一 key 最多一条 active
+      边，历史里同 key 的 expired 边仍可保留。
     - ``state_key``（可空）标记"单值状态组"：同组内同一时刻只允许一条
       active 边。个股角色是典型——``role|<symbol>`` 组里新角色边写入时，
       旧角色边被置 ``expired_at``（写入方 ``apply_projection`` 实现）。
 
     ``provenance`` 区分事实等级（codegraph 的 provenance 设计）：
     ``deterministic`` = 交割单/信号等硬数据投影；``llm`` = 复盘文本抽取的
-    观点（带 ``confidence``）。检索侧据此分级呈现。``source_ref`` 指回
-    原始出处（``kb:<relpath>`` 或 ``db:<table>/<id>``），agent 可钻取原文。
+    观点（带 ``confidence``）；``manual`` = 本地用户直接编辑或逐次审批通过
+    的 Agent 草案。检索侧据此分级呈现。``source_key`` 标识完整来源快照的
+    所有权，``source_ref`` 指回原始出处
+    （``kb:<relpath>`` 或 ``db:<table>/<id>``），agent 可钻取原文。
     """
 
     __tablename__ = "kg_edges"
     __table_args__ = (
         CheckConstraint(
-            "provenance IN ('deterministic', 'llm')",
+            "provenance IN ('deterministic', 'llm', 'manual')",
             name="ck_kg_edges_provenance",
+        ),
+        Index(
+            "uq_kg_edges_active_dedupe",
+            "dedupe_key",
+            unique=True,
+            sqlite_where=text("expired_at IS NULL"),
+            postgresql_where=text("expired_at IS NULL"),
         ),
         Index("ix_kg_edges_src_active", "src_id", "expired_at"),
         Index("ix_kg_edges_dst_active", "dst_id", "expired_at"),
         Index("ix_kg_edges_dedupe", "dedupe_key", "expired_at"),
+        Index("ix_kg_edges_source_active", "source_key", "expired_at"),
         Index("ix_kg_edges_state_key", "state_key"),
     )
 
@@ -1529,6 +1552,10 @@ class KnowledgeGraphEdgeRecord(Base):
     state_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provenance: Mapped[str] = mapped_column(String(16), nullable=False)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: Stable ownership key used to reconcile one complete source snapshot.
+    #: ``source_ref`` may point at a specific row while ``source_key`` groups
+    #: every row emitted by that source (for example ``db:decision_signals``).
+    source_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     valid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     invalid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -1551,3 +1578,260 @@ class KnowledgeGraphSourceStateRecord(Base):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     synced_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     stats: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class KnowledgeGraphStateRecord(Base):
+    """Singleton optimistic-lock state for audited graph changes."""
+
+    __tablename__ = "kg_graph_state"
+
+    state_key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    head_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class KnowledgeGraphSchemaItemRecord(Base):
+    """Versioned custom ontology item; system items remain code-protected."""
+
+    __tablename__ = "kg_schema_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "kind",
+            "key",
+            name="uq_kg_schema_items_kind_key",
+        ),
+        CheckConstraint(
+            "kind IN ('entity_type', 'relation_type', 'property')",
+            name="ck_kg_schema_items_kind",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'deprecated')",
+            name="ck_kg_schema_items_status",
+        ),
+        Index("ix_kg_schema_items_kind_status", "kind", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    namespace: Mapped[str] = mapped_column(String(32), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    definition_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class KnowledgeGraphChangeSetRecord(Base):
+    """One local edit or immutable Agent proposal."""
+
+    __tablename__ = "kg_change_sets"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'applied', 'rejected', 'stale', 'cancelled')",
+            name="ck_kg_change_sets_status",
+        ),
+        CheckConstraint(
+            "actor_type IN ('local_user', 'agent', 'system')",
+            name="ck_kg_change_sets_actor_type",
+        ),
+        Index("ix_kg_change_sets_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    base_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True)
+    proposal_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class KnowledgeGraphChangeOperationRecord(Base):
+    """One ordered operation and its reversible before/after payload."""
+
+    __tablename__ = "kg_change_operations"
+    __table_args__ = (
+        UniqueConstraint(
+            "change_set_id",
+            "position",
+            name="uq_kg_change_operations_position",
+        ),
+        Index("ix_kg_change_operations_change_set", "change_set_id", "position"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    change_set_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("kg_change_sets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    op_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    before_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    after_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class KnowledgeGraphRevisionRecord(Base):
+    """Applied graph revision; sequence is monotonic and never rewound."""
+
+    __tablename__ = "kg_revisions"
+
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    parent_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    change_set_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("kg_change_sets.id"),
+        nullable=False,
+        unique=True,
+    )
+    reverts_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    replays_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class KnowledgeGraphApprovalDecisionRecord(Base):
+    """Durable one-time human decision for an Agent graph proposal."""
+
+    __tablename__ = "kg_approval_decisions"
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('approved', 'rejected')",
+            name="ck_kg_approval_decisions_decision",
+        ),
+        UniqueConstraint(
+            "change_set_id",
+            name="uq_kg_approval_decisions_change_set",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    change_set_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("kg_change_sets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    proposal_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    resolver_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    decision_source: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class KnowledgeGraphEntityLineageRecord(Base):
+    """Durable merge/split lineage for entity identity redirects."""
+
+    __tablename__ = "kg_entity_lineage"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('merge', 'split')",
+            name="ck_kg_entity_lineage_kind",
+        ),
+        Index("ix_kg_entity_lineage_survivor", "survivor_id"),
+        Index("ix_kg_entity_lineage_revision", "revision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    survivor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    result_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    change_set_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class KnowledgeGraphConflictRecord(Base):
+    """Detected graph conflicts awaiting or recording human adjudication."""
+
+    __tablename__ = "kg_conflicts"
+    __table_args__ = (
+        CheckConstraint(
+            "conflict_type IN ("
+            "'dedupe', 'state_key', 'manual_vs_auto', 'identity', 'draft_stale'"
+            ")",
+            name="ck_kg_conflicts_type",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'resolved', 'dismissed')",
+            name="ck_kg_conflicts_status",
+        ),
+        Index("ix_kg_conflicts_status_detected", "status", "detected_at"),
+        Index("ix_kg_conflicts_subject", "subject_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conflict_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    subject_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    left_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    right_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolution: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    change_set_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class KnowledgeGraphEvidenceRecord(Base):
+    """Multi-attachment provenance bound to a node or edge."""
+
+    __tablename__ = "kg_evidence"
+    __table_args__ = (
+        CheckConstraint(
+            "target_kind IN ('node', 'edge')",
+            name="ck_kg_evidence_target_kind",
+        ),
+        CheckConstraint(
+            "kind IN ('kb_ref', 'url', 'quote', 'file')",
+            name="ck_kg_evidence_kind",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'detached')",
+            name="ck_kg_evidence_status",
+        ),
+        Index("ix_kg_evidence_target", "target_kind", "target_id"),
+        Index("ix_kg_evidence_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    uri: Mapped[str] = mapped_column(Text, nullable=False)
+    excerpt: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    attrs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    change_set_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    detached_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class KnowledgeGraphCanvasLayoutRecord(Base):
+    """Versioned canvas layout for one neighborhood scope."""
+
+    __tablename__ = "kg_canvas_layouts"
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_key",
+            "version",
+            name="uq_kg_canvas_layouts_scope_version",
+        ),
+        Index("ix_kg_canvas_layouts_scope", "scope_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    positions_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    locked_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    highlight_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    change_set_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

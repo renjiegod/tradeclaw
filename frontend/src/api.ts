@@ -44,7 +44,14 @@ import type {
   PortfolioImportParseResponse,
   SentimentTimeline,
   SymbolRoles,
+  KnowledgeGraphChangeOperation,
+  KnowledgeGraphChangeSet,
+  KnowledgeGraphCanvasLayout,
+  KnowledgeGraphConflict,
+  KnowledgeGraphEvidence,
   KnowledgeGraphNeighborhood,
+  KnowledgeGraphResolveConflictOperation,
+  KnowledgeGraphSchema,
   KnowledgeGraphSyncResult,
   TradeAttribution,
   WatchlistEntry,
@@ -1989,6 +1996,203 @@ export async function getKnowledgeGraph(
 export async function syncKnowledgeGraph(force?: boolean): Promise<KnowledgeGraphSyncResult> {
   const qs = buildQueryString({ force: force ?? false });
   return request(`/knowledge/graph/sync${qs}`, { method: "POST" });
+}
+
+/** Fetch the protected system ontology used to validate graph edits. */
+export async function getKnowledgeGraphSchema(): Promise<KnowledgeGraphSchema> {
+  return request("/knowledge/graph/schema");
+}
+
+export async function upsertKnowledgeGraphSchemaItem(
+  kind: "entity_type" | "relation_type" | "property",
+  key: string,
+  definition: Record<string, unknown>,
+  expectedRevision: number,
+  expectedVersion: number,
+): Promise<KnowledgeGraphChangeSet> {
+  return request(
+    `/knowledge/graph/schema/${kind}/${encodeURIComponent(key)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        definition,
+        expected_revision: expectedRevision,
+        expected_version: expectedVersion,
+      }),
+    },
+  );
+}
+
+export async function deprecateKnowledgeGraphSchemaItem(
+  kind: "entity_type" | "relation_type" | "property",
+  key: string,
+  expectedRevision: number,
+  expectedVersion: number,
+): Promise<KnowledgeGraphChangeSet> {
+  return request(
+    `/knowledge/graph/schema/${kind}/${encodeURIComponent(key)}`,
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        expected_revision: expectedRevision,
+        expected_version: expectedVersion,
+      }),
+    },
+  );
+}
+
+/** Apply one local-user relation changeset with optimistic concurrency. */
+export async function applyKnowledgeGraphChange(
+  operations: KnowledgeGraphChangeOperation[],
+  summary: string,
+  expectedRevision: number,
+): Promise<KnowledgeGraphChangeSet> {
+  return request("/knowledge/graph/changes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      operations,
+      summary,
+      expected_revision: expectedRevision,
+    }),
+  });
+}
+
+/** Undo a manual revision by creating a new compensating revision. */
+export async function undoKnowledgeGraphRevision(
+  revision: number,
+  expectedRevision: number,
+): Promise<KnowledgeGraphChangeSet> {
+  return request(`/knowledge/graph/revisions/${revision}/undo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expected_revision: expectedRevision }),
+  });
+}
+
+/** Replay a manual revision as a new audited revision. */
+export async function redoKnowledgeGraphRevision(
+  revision: number,
+  expectedRevision: number,
+): Promise<KnowledgeGraphChangeSet> {
+  return request(`/knowledge/graph/revisions/${revision}/redo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expected_revision: expectedRevision }),
+  });
+}
+
+/** List graph changesets; ``pending`` is the Agent approval inbox. */
+export async function getKnowledgeGraphChangeSets(
+  status?: KnowledgeGraphChangeSet["status"],
+): Promise<{ items: KnowledgeGraphChangeSet[] }> {
+  const qs = buildQueryString({ status });
+  return request(`/knowledge/graph/change-sets${qs}`);
+}
+
+/** Approve exactly one immutable Agent proposal. */
+export async function approveKnowledgeGraphChange(
+  changeSetId: string,
+  proposalHash: string,
+): Promise<KnowledgeGraphChangeSet> {
+  return request(
+    `/knowledge/graph/change-drafts/${encodeURIComponent(changeSetId)}/approve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        proposal_hash: proposalHash,
+        resolver_id: "local-user",
+      }),
+    },
+  );
+}
+
+/** Reject exactly one immutable Agent proposal without changing graph facts. */
+export async function rejectKnowledgeGraphChange(
+  changeSetId: string,
+  proposalHash: string,
+  reason = "",
+): Promise<KnowledgeGraphChangeSet> {
+  return request(
+    `/knowledge/graph/change-drafts/${encodeURIComponent(changeSetId)}/reject`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        proposal_hash: proposalHash,
+        resolver_id: "local-user",
+        reason,
+      }),
+    },
+  );
+}
+
+export async function getKnowledgeGraphConflicts(
+  status?: KnowledgeGraphConflict["status"],
+): Promise<{ items: KnowledgeGraphConflict[] }> {
+  const qs = buildQueryString({ status });
+  return request(`/knowledge/graph/conflicts${qs}`);
+}
+
+export async function resolveKnowledgeGraphConflict(
+  conflictId: string,
+  decision: KnowledgeGraphResolveConflictOperation["decision"],
+  expectedRevision: number,
+  override?: Record<string, unknown> | null,
+): Promise<KnowledgeGraphChangeSet> {
+  return request(
+    `/knowledge/graph/conflicts/${encodeURIComponent(conflictId)}/resolve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        decision,
+        override,
+        expected_revision: expectedRevision,
+      }),
+    },
+  );
+}
+
+export async function getKnowledgeGraphEvidence(
+  targetKind: "node" | "edge",
+  targetId: string,
+): Promise<{ items: KnowledgeGraphEvidence[] }> {
+  const qs = buildQueryString({
+    target_kind: targetKind,
+    target_id: targetId,
+  });
+  return request(`/knowledge/graph/evidence${qs}`);
+}
+
+export async function getKnowledgeGraphLayout(
+  scope: string,
+): Promise<{ layout: KnowledgeGraphCanvasLayout | null }> {
+  const qs = buildQueryString({ scope });
+  return request(`/knowledge/graph/layouts${qs}`);
+}
+
+export async function saveKnowledgeGraphLayout(
+  scopeKey: string,
+  positions: Record<string, { x: number; y: number }>,
+  lockedIds: string[],
+  highlightIds: string[],
+  expectedRevision: number,
+): Promise<KnowledgeGraphChangeSet> {
+  return request("/knowledge/graph/layouts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      scope_key: scopeKey,
+      positions,
+      locked_ids: lockedIds,
+      highlight_ids: highlightIds,
+      expected_revision: expectedRevision,
+    }),
+  });
 }
 
 /**

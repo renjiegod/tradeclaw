@@ -49,6 +49,7 @@ class ApprovalRule:
     description: str
     command_pattern: str | None = None
     timeout_seconds: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS
+    allow_always: bool = True
 
     def matches(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         if tool_name != self.tool:
@@ -98,6 +99,16 @@ DEFAULT_APPROVAL_RULES: tuple[ApprovalRule, ...] = (
         command_pattern=r"\baccount\s+(create|update|delete|set-default)\b",
         description="修改交易账户配置",
     ),
+    ApprovalRule(
+        key="knowledge_graph_write",
+        tool="execute_bash",
+        command_pattern=(
+            r"(?:\bknowledge\s+graph-sync\b|"
+            r"/knowledge/graph/(?:sync|changes|change-drafts))"
+        ),
+        description="修改知识图谱或触发图谱重建",
+        allow_always=False,
+    ),
 )
 
 
@@ -133,6 +144,7 @@ class ApprovalRequest:
     description: str
     command_preview: str
     timeout_seconds: float
+    allow_always: bool
     created_at: str
     _future: asyncio.Future[ApprovalResolution] = field(repr=False, default=None)  # type: ignore[assignment]
 
@@ -171,6 +183,7 @@ class ApprovalRequest:
             "description": self.description,
             "command_preview": self.command_preview,
             "timeout_seconds": self.timeout_seconds,
+            "allow_always": self.allow_always,
             "created_at": self.created_at,
         }
 
@@ -206,6 +219,7 @@ class ApprovalBroker:
             description=rule.description,
             command_preview=command_preview[:500],
             timeout_seconds=rule.timeout_seconds,
+            allow_always=rule.allow_always,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
         self._pending[request.approval_id] = request

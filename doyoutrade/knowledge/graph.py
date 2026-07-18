@@ -196,6 +196,7 @@ def _project_symbol_roles(
                     "updated_at": item.get("updated_at"),
                 },
                 valid_at=_parse_naive_utc(item.get("updated_at")),
+                source_key=SOURCE_ROLES,
                 source_ref=SOURCE_ROLES,
             )
         )
@@ -305,6 +306,7 @@ def _project_round_trips(
                 },
                 valid_at=_parse_naive_utc(open_date),
                 invalid_at=_parse_naive_utc(close_date),
+                source_key=SOURCE_TRADES,
                 source_ref=SOURCE_TRADES,
             )
         )
@@ -392,6 +394,7 @@ def _project_decision_signals(
                     else None
                 ),
                 valid_at=parsed_created,
+                source_key=SOURCE_SIGNALS,
                 source_ref=f"db:decision_signals/{signal_id}",
             )
         )
@@ -441,7 +444,21 @@ def build_deterministic_projection(
     _project_decision_signals(signal_rows, nodes, projection.edges, projection.warnings)
     projection.source_hashes[SOURCE_SIGNALS] = _content_hash(
         [
-            {k: row.get(k) for k in ("id", "symbol", "action", "status", "outcomes")}
+            {
+                k: row.get(k)
+                for k in (
+                    "id",
+                    "symbol",
+                    "action",
+                    "source",
+                    "confidence",
+                    "horizon",
+                    "reason",
+                    "status",
+                    "created_at",
+                    "outcomes",
+                )
+            }
             for row in signal_rows
         ]
     )
@@ -489,10 +506,12 @@ async def sync_deterministic_projection(
         return result
 
     apply_stats = await repository.apply_projection(
-        projection.nodes, projection.edges, now=now
+        projection.nodes,
+        projection.edges,
+        now=now,
+        reconcile_source_keys=set(changed_sources),
+        source_hashes=projection.source_hashes,
     )
-    for source, digest in sorted(projection.source_hashes.items()):
-        await repository.set_source_state(source, digest, now=now, stats=apply_stats)
 
     result["apply"] = apply_stats
     result["counts"] = await repository.counts()

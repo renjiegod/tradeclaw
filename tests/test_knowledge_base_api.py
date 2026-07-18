@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,287 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from doyoutrade.api.knowledge_base import build_knowledge_router
+from doyoutrade.persistence.db import (
+    create_engine_and_session_factory,
+    dispose_engine,
+)
+from doyoutrade.persistence.models import Base
+from doyoutrade.persistence.repositories import SqlAlchemyKnowledgeGraphRepository
+
+
+class KnowledgeGraphSchemaApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        app = FastAPI()
+        app.include_router(build_knowledge_router(lambda: self.tmp))
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_returns_protected_system_schema(self) -> None:
+        response = self.client.get("/knowledge/graph/schema")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        entity_types = {item["key"]: item for item in body["entity_types"]}
+        relation_types = {item["key"]: item for item in body["relation_types"]}
+        self.assertEqual(
+            set(entity_types),
+            {"cycle", "playbook", "role", "signal", "symbol", "theme"},
+        )
+        self.assertTrue(all(item["protected"] for item in entity_types.values()))
+        self.assertEqual(
+            relation_types["has_role"]["source_type"],
+            "symbol",
+        )
+        self.assertEqual(
+            relation_types["has_role"]["target_type"],
+            "role",
+        )
+        self.assertTrue(
+            all(item["protected"] for item in relation_types.values())
+        )
+        self.assertEqual(body["namespace"], "system")
+        self.assertEqual(body["version"], 1)
+
+
+class KnowledgeGraphEditingApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.engine, session_factory = create_engine_and_session_factory(
+            f"sqlite+aiosqlite:///{self.tmp / 'runtime.db'}"
+        )
+
+        async def _create_schema() -> None:
+            async with self.engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+
+        asyncio.run(_create_schema())
+        repository = SqlAlchemyKnowledgeGraphRepository(session_factory)
+        app = FastAPI()
+        app.include_router(
+            build_knowledge_router(
+                lambda: self.tmp,
+                knowledge_graph_repository=repository,
+            )
+        )
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        import shutil
+
+        self.client.close()
+        asyncio.run(dispose_engine(self.engine))
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _operation(symbol: str = "300059", theme: str = "券商") -> dict:
+        return {
+            "op": "create_relation",
+            "source": {
+                "type": "symbol",
+                "name": symbol,
+                "display_name": symbol,
+            },
+            "relation": "belongs_to_theme",
+            "target": {"type": "theme", "name": theme},
+            "fact": f"{symbol} 属于 {theme}题材。",
+            "confidence": 1,
+        }
+
+    def test_local_change_is_applied_and_queryable(self) -> None:
+        response = self.client.post(
+            "/knowledge/graph/changes",
+            json={
+                "operations": [self._operation()],
+                "summary": "手工题材标记",
+                "expected_revision": 0,
+            },
+        )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["revision"], 1)
+        graph = self.client.get(
+            "/knowledge/graph",
+            params={"entity": "300059"},
+        )
+        self.assertEqual(graph.status_code, 200)
+        self.assertEqual(graph.json()["edges"][0]["provenance"], "manual")
+
+    def test_graph_mutations_reject_non_local_browser_origins(self) -> None:
+        response = self.client.post(
+            "/knowledge/graph/changes",
+            headers={"Origin": "https://malicious.example"},
+            json={
+                "operations": [self._operation()],
+                "summary": "跨站写入",
+                "expected_revision": 0,
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_manual_relation_revision_undo_and_redo_endpoints(self) -> None:
+        created = self.client.post(
+            "/knowledge/graph/changes",
+            json={
+                "operations": [self._operation()],
+                "summary": "创建关系",
+                "expected_revision": 0,
+            },
+        ).json()
+        revised = self.client.post(
+            "/knowledge/graph/changes",
+            json={
+                "operations": [
+                    {
+                        "op": "revise_relation",
+                        "edge_id": created["edge_ids"][0],
+                        "fact": "东方财富明确属于金融科技题材。",
+                    }
+                ],
+                "summary": "修订关系",
+                "expected_revision": 1,
+            },
+        )
+        self.assertEqual(revised.status_code, 201, revised.text)
+        self.assertEqual(revised.json()["revision"], 2)
+
+        undone = self.client.post(
+            "/knowledge/graph/revisions/2/undo",
+            json={"expected_revision": 2},
+        )
+        self.assertEqual(undone.status_code, 200, undone.text)
+        graph = self.client.get(
+            "/knowledge/graph",
+            params={"entity": "300059"},
+        ).json()
+        active = [edge for edge in graph["edges"] if edge["expired_at"] is None]
+        self.assertEqual(active[0]["fact"], "300059 属于 券商题材。")
+
+        redone = self.client.post(
+            "/knowledge/graph/revisions/2/redo",
+            json={"expected_revision": 3},
+        )
+        self.assertEqual(redone.status_code, 200, redone.text)
+        graph = self.client.get(
+            "/knowledge/graph",
+            params={"entity": "300059"},
+        ).json()
+        active = [edge for edge in graph["edges"] if edge["expired_at"] is None]
+        self.assertEqual(active[0]["fact"], "东方财富明确属于金融科技题材。")
+
+    def test_custom_schema_create_update_and_deprecate_endpoints(self) -> None:
+        created = self.client.put(
+            "/knowledge/graph/schema/entity_type/custom.indicator",
+            json={
+                "definition": {"label": "技术指标", "parent_key": None},
+                "expected_revision": 0,
+                "expected_version": 0,
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertEqual(created.json()["operations"][0]["schema_version"], 1)
+
+        schema = self.client.get("/knowledge/graph/schema").json()
+        custom = {
+            item["key"]: item
+            for item in schema["entity_types"]
+            if item["key"].startswith("custom.")
+        }
+        self.assertEqual(custom["custom.indicator"]["label"], "技术指标")
+        self.assertFalse(custom["custom.indicator"]["protected"])
+
+        updated = self.client.put(
+            "/knowledge/graph/schema/entity_type/custom.indicator",
+            json={
+                "definition": {"label": "交易技术指标", "parent_key": None},
+                "expected_revision": 1,
+                "expected_version": 1,
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        deprecated = self.client.request(
+            "DELETE",
+            "/knowledge/graph/schema/entity_type/custom.indicator",
+            json={"expected_revision": 2, "expected_version": 2},
+        )
+        self.assertEqual(deprecated.status_code, 200, deprecated.text)
+        schema = self.client.get("/knowledge/graph/schema").json()
+        item = next(
+            value
+            for value in schema["entity_types"]
+            if value["key"] == "custom.indicator"
+        )
+        self.assertEqual(item["status"], "deprecated")
+        self.assertEqual(item["version"], 3)
+
+        protected = self.client.put(
+            "/knowledge/graph/schema/entity_type/symbol",
+            json={
+                "definition": {"label": "覆盖系统类型"},
+                "expected_revision": 3,
+                "expected_version": 0,
+            },
+        )
+        self.assertEqual(protected.status_code, 422)
+
+    def test_agent_draft_requires_exact_one_time_human_approval(self) -> None:
+        draft_response = self.client.post(
+            "/knowledge/graph/change-drafts",
+            json={
+                "operations": [self._operation("600519", "白酒")],
+                "summary": "Agent 建议补充题材",
+                "actor_id": "agent-1",
+            },
+        )
+        self.assertEqual(draft_response.status_code, 201, draft_response.text)
+        draft = draft_response.json()
+        self.assertEqual(
+            self.client.get(
+                "/knowledge/graph",
+                params={"entity": "600519"},
+            ).status_code,
+            404,
+        )
+
+        always = self.client.post(
+            f"/knowledge/graph/change-drafts/{draft['id']}/approve",
+            json={
+                "proposal_hash": draft["proposal_hash"],
+                "resolver_id": "local-user",
+                "approve_always": True,
+            },
+        )
+        self.assertEqual(always.status_code, 400)
+
+        approval = self.client.post(
+            f"/knowledge/graph/change-drafts/{draft['id']}/approve",
+            json={
+                "proposal_hash": draft["proposal_hash"],
+                "resolver_id": "local-user",
+            },
+        )
+        self.assertEqual(approval.status_code, 200, approval.text)
+        self.assertEqual(approval.json()["status"], "applied")
+        self.assertEqual(
+            self.client.get(
+                "/knowledge/graph",
+                params={"entity": "600519"},
+            ).status_code,
+            200,
+        )
+        second = self.client.post(
+            f"/knowledge/graph/change-drafts/{draft['id']}/approve",
+            json={
+                "proposal_hash": draft["proposal_hash"],
+                "resolver_id": "local-user",
+            },
+        )
+        self.assertEqual(second.status_code, 409)
 
 
 class KnowledgeJournalsApiTests(unittest.TestCase):

@@ -22,7 +22,9 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from unittest import mock
+
+from sqlalchemy import event, select
+from sqlalchemy.exc import IntegrityError
 
 from doyoutrade.knowledge.graph import (
     NODE_CYCLE,
@@ -34,7 +36,12 @@ from doyoutrade.knowledge.graph import (
     sync_deterministic_projection,
 )
 from doyoutrade.persistence.db import create_engine_and_session_factory, dispose_engine
-from doyoutrade.persistence.models import Base, DecisionSignalRecord
+from doyoutrade.persistence.models import (
+    Base,
+    DecisionSignalRecord,
+    KnowledgeGraphEdgeRecord,
+    KnowledgeGraphSourceStateRecord,
+)
 from doyoutrade.persistence.repositories import (
     KnowledgeGraphEdgeSpec,
     KnowledgeGraphNodeSpec,
@@ -136,6 +143,38 @@ class ProjectionBuildTests(unittest.TestCase):
         reasons = [w["reason"] for w in projection.warnings]
         self.assertIn("role_row_missing_symbol_or_role", reasons)
         self.assertEqual([e for e in projection.edges if e.relation == REL_HAS_ROLE], [])
+
+    def test_signal_watermark_hash_covers_every_projected_field(self) -> None:
+        base = {
+            "id": "dsig-hash",
+            "symbol": "300059",
+            "action": "buy",
+            "source": "assistant",
+            "confidence": 0.8,
+            "horizon": "5d",
+            "reason": "首板确认",
+            "status": "active",
+            "created_at": datetime(2026, 3, 10, 1, 0),
+            "outcomes": [],
+        }
+        baseline = build_deterministic_projection(
+            self.kb, decision_signal_rows=[base]
+        ).source_hashes["db:decision_signals"]
+
+        changes = {
+            "source": "manual",
+            "confidence": 0.6,
+            "horizon": "10d",
+            "reason": "理由已修订",
+            "created_at": datetime(2026, 3, 11, 1, 0),
+        }
+        for field, value in changes.items():
+            with self.subTest(field=field):
+                changed = build_deterministic_projection(
+                    self.kb,
+                    decision_signal_rows=[{**base, field: value}],
+                ).source_hashes["db:decision_signals"]
+                self.assertNotEqual(changed, baseline)
 
 
 class KnowledgeGraphRepositoryTests(unittest.IsolatedAsyncioTestCase):
@@ -248,6 +287,100 @@ class KnowledgeGraphRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0].node_type, "signal")
 
+    async def test_sync_expires_facts_removed_from_their_source_snapshot(self) -> None:
+        await sync_deterministic_projection(
+            self.repo, self.kb, now=datetime(2026, 7, 17, 10, 0)
+        )
+        (self.kb / "symbols" / "roles.jsonl").write_text("", encoding="utf-8")
+        (self.kb / "trades" / "华泰" / "2026-03.csv").write_text(
+            "成交日期,证券代码,证券名称,操作,成交价格,成交数量\n",
+            encoding="utf-8",
+        )
+
+        result = await sync_deterministic_projection(
+            self.repo, self.kb, now=datetime(2026, 7, 17, 11, 0)
+        )
+
+        self.assertFalse(result["skipped"])
+        self.assertEqual(result["apply"]["edges_expired"], 2)
+        matches = await self.repo.find_nodes("300059")
+        _, edges = await self.repo.neighborhood(
+            matches[0].id, hops=1, include_expired=True
+        )
+        self.assertEqual([edge for edge in edges if edge.expired_at is None], [])
+        self.assertEqual(
+            {edge.relation for edge in edges if edge.expired_at is not None},
+            {"has_role", "traded_in"},
+        )
+
+    async def test_database_rejects_duplicate_active_dedupe_key(self) -> None:
+        projection = build_deterministic_projection(self.kb)
+        await self.repo.apply_projection(
+            projection.nodes, projection.edges, now=datetime(2026, 7, 17, 10, 0)
+        )
+
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(KnowledgeGraphEdgeRecord).where(
+                    KnowledgeGraphEdgeRecord.expired_at.is_(None)
+                )
+            )
+            existing = result.scalars().first()
+            self.assertIsNotNone(existing)
+            session.add(
+                KnowledgeGraphEdgeRecord(
+                    id="kge-duplicate-active",
+                    src_id=existing.src_id,
+                    dst_id=existing.dst_id,
+                    relation=existing.relation,
+                    fact=existing.fact,
+                    attrs=existing.attrs,
+                    dedupe_key=existing.dedupe_key,
+                    state_key=existing.state_key,
+                    provenance=existing.provenance,
+                    confidence=existing.confidence,
+                    source_ref=existing.source_ref,
+                    valid_at=existing.valid_at,
+                    invalid_at=existing.invalid_at,
+                    created_at=datetime(2026, 7, 17, 10, 1),
+                    expired_at=None,
+                )
+            )
+            with self.assertRaises(IntegrityError):
+                await session.commit()
+
+    async def test_projection_rolls_back_when_watermark_write_fails(self) -> None:
+        projection = build_deterministic_projection(self.kb)
+
+        def _fail_watermark(*_args) -> None:
+            raise RuntimeError("injected watermark failure")
+
+        event.listen(
+            KnowledgeGraphSourceStateRecord,
+            "before_insert",
+            _fail_watermark,
+        )
+        try:
+            with self.assertRaisesRegex(RuntimeError, "watermark failure"):
+                await self.repo.apply_projection(
+                    projection.nodes,
+                    projection.edges,
+                    now=datetime(2026, 7, 17, 10, 0),
+                    reconcile_source_keys=set(projection.source_hashes),
+                    source_hashes=projection.source_hashes,
+                )
+        finally:
+            event.remove(
+                KnowledgeGraphSourceStateRecord,
+                "before_insert",
+                _fail_watermark,
+            )
+
+        self.assertEqual(
+            await self.repo.counts(),
+            {"nodes": 0, "active_edges": 0, "expired_edges": 0},
+        )
+
     async def test_find_nodes_exact_match_ranks_before_fuzzy(self) -> None:
         p = build_deterministic_projection(self.kb)
         await self.repo.apply_projection(p.nodes, p.edges, now=datetime(2026, 7, 17, 10, 0))
@@ -313,22 +446,56 @@ class KnowledgeGraphToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("entity_not_found", result.text)
         self.assertIn("sync", result.text)
 
-    async def test_sync_then_query_happy_path(self) -> None:
+    async def test_query_happy_path_after_system_sync(self) -> None:
+        await sync_deterministic_projection(
+            self.repo,
+            self.kb,
+            now=datetime(2026, 7, 17, 10, 0),
+        )
         tool = self._tool(self.repo)
-        with mock.patch(
-            "doyoutrade.tools._sandbox.knowledge_root", return_value=self.kb
-        ):
-            synced = await tool.execute(action="sync")
-            self.assertFalse(synced.is_error)
-            self.assertIn("知识图谱同步完成", synced.text)
-            again = await tool.execute(action="sync")
-            self.assertFalse(again.is_error)
-            self.assertIn("已跳过", again.text)
         queried = await tool.execute(entity="东方财富", hops=2, include_expired=True)
         self.assertFalse(queried.is_error)
         self.assertIn("has_role", queried.text)
         self.assertIn("traded_in", queried.text)
         self.assertIn("kb:trades", queried.text)
+
+    async def test_agent_cannot_directly_sync_the_graph(self) -> None:
+        result = await self._tool(self.repo).execute(action="sync")
+
+        self.assertTrue(result.is_error)
+        self.assertIn("validation_error", result.text)
+
+    async def test_agent_propose_creates_pending_change_without_mutation(self) -> None:
+        result = await self._tool(self.repo).execute(
+            action="propose",
+            summary="补充东方财富题材",
+            operations=[
+                {
+                    "op": "create_relation",
+                    "source": {
+                        "type": "symbol",
+                        "name": "300059",
+                        "display_name": "东方财富",
+                    },
+                    "relation": "belongs_to_theme",
+                    "target": {"type": "theme", "name": "券商"},
+                    "fact": "东方财富属于券商题材。",
+                    "confidence": 1.0,
+                }
+            ],
+            session_id="agent-session-1",
+        )
+
+        self.assertFalse(result.is_error)
+        self.assertIn("待人工审批", result.text)
+        self.assertEqual((await self.repo.counts())["active_edges"], 0)
+        from doyoutrade.knowledge.editing import KnowledgeGraphCommandService
+
+        pending = await KnowledgeGraphCommandService(
+            self.session_factory
+        ).list_change_sets(status="pending")
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["actor_type"], "agent")
 
     async def test_query_hops_out_of_range_rejected(self) -> None:
         result = await self._tool(self.repo).execute(entity="300059", hops=9)

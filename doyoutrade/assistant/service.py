@@ -1050,7 +1050,7 @@ class AssistantService:
         command_preview = str(arguments.get("command") or "") or json.dumps(
             arguments, ensure_ascii=False, default=str
         )
-        if rule.key in allowlist:
+        if rule.allow_always and rule.key in allowlist:
             await self.repository.append_event(
                 session_id=session_id,
                 event_type="approval.auto_approved",
@@ -1163,6 +1163,16 @@ class AssistantService:
                 "该操作未执行。\n"
                 "hint: 不要立即重试同一命令；向用户说明操作已被拒绝，并询问是否需要"
                 "调整方案。"
+            )
+        if resolution.action == "approve_always" and not rule.allow_always:
+            logger.warning(
+                "approval always rejected for one-time rule approval_id=%s rule=%s",
+                request.approval_id,
+                rule.key,
+            )
+            return (
+                "[error:approval_always_forbidden] 该操作必须逐次人工审批，"
+                "不支持“总是允许”。本次操作未执行。"
             )
         if resolution.action == "approve_always":
             merged = sorted({*allowlist, rule.key})

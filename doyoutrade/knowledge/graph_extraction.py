@@ -285,6 +285,7 @@ async def resolve_and_apply_candidates(
     *,
     now: datetime,
     source_ref: str,
+    source_digest: str | None = None,
     instrument_catalog_repository: Any | None = None,
 ) -> dict[str, Any]:
     """Resolve entities, map to ``provenance='llm'`` specs, apply idempotently."""
@@ -353,6 +354,7 @@ async def resolve_and_apply_candidates(
                    if candidate["valid_from"] else None},
             provenance="llm",
             confidence=candidate["confidence"],
+            source_key=source_ref,
             source_ref=source_ref,
             valid_at=candidate["valid_from"],
             invalid_at=candidate["valid_to"],
@@ -360,7 +362,13 @@ async def resolve_and_apply_candidates(
 
     edges = list(edges_by_dedupe.values())
     apply_stats = await repository.apply_projection(
-        sorted(nodes.values(), key=lambda n: (n.node_type, n.name)), edges, now=now
+        sorted(nodes.values(), key=lambda n: (n.node_type, n.name)),
+        edges,
+        now=now,
+        reconcile_source_keys={source_ref} if source_digest is not None else None,
+        source_hashes=(
+            {source_ref: source_digest} if source_digest is not None else None
+        ),
     )
     return {
         "apply": apply_stats,
@@ -412,48 +420,28 @@ async def extract_and_apply(
         "candidate_count": len(candidates),
         "warnings": list(extraction["warnings"]),
     }
-    if candidates:
-        try:
-            applied = await resolve_and_apply_candidates(
-                repository,
-                candidates,
-                now=now,
-                source_ref=source_ref,
-                instrument_catalog_repository=instrument_catalog_repository,
-            )
-        except Exception as exc:
-            logger.warning(
-                "kg extraction apply failed source=%r (%s): %s",
-                source_ref, type(exc).__name__, exc,
-            )
-            return {
-                "status": "error",
-                "error_code": "kg_apply_failed",
-                "message": f"{type(exc).__name__}: {exc}",
-            }
-        result["apply"] = applied["apply"]
-        result["edges_submitted"] = applied["edges_submitted"]
-        result["warnings"].extend(applied["warnings"])
-    else:
-        result["apply"] = None
-        result["edges_submitted"] = 0
-
     try:
-        await repository.set_source_state(
-            source_ref, digest, now=now,
-            stats={"candidate_count": len(candidates),
-                   "edges_submitted": result["edges_submitted"]},
+        applied = await resolve_and_apply_candidates(
+            repository,
+            candidates,
+            now=now,
+            source_ref=source_ref,
+            source_digest=digest,
+            instrument_catalog_repository=instrument_catalog_repository,
         )
     except Exception as exc:
-        # 水位写失败只影响下次重复抽取的成本，不影响本次结果——降级为
-        # warning 并显式暴露。
         logger.warning(
-            "kg extraction watermark write failed source=%r (%s): %s",
+            "kg extraction apply failed source=%r (%s): %s",
             source_ref, type(exc).__name__, exc,
         )
-        result["warnings"].append(
-            {"reason": "watermark_write_failed", "source_ref": source_ref}
-        )
+        return {
+            "status": "error",
+            "error_code": "kg_apply_failed",
+            "message": f"{type(exc).__name__}: {exc}",
+        }
+    result["apply"] = applied["apply"]
+    result["edges_submitted"] = applied["edges_submitted"]
+    result["warnings"].extend(applied["warnings"])
     return result
 
 

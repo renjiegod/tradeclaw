@@ -24,7 +24,6 @@ from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from doyoutrade.knowledge.graph import build_deterministic_projection
 from doyoutrade.knowledge.graph_extraction import (
     _parse_extraction_json,
     _validate_candidate,
@@ -262,6 +261,36 @@ class ExtractAndApplyWatermarkTests(_RepoTestCase):
         )
         self.assertEqual(result["status"], "error")
         self.assertIsNone(await self.repo.get_source_state("kb:j.md"))
+
+    async def test_empty_reextract_expires_prior_source_facts(self) -> None:
+        await self._seed_symbol_node()
+        source_ref = "kb:journal/2026/2026-07-17.md"
+        first = await extract_and_apply(
+            self.repo,
+            FakeAdapter(text=_edges_json(_GOOD_EDGE)),
+            "东方财富是本轮券商龙头。",
+            now=datetime(2026, 7, 17, 10, 0),
+            reference_date="2026-07-17",
+            source_ref=source_ref,
+        )
+        self.assertEqual(first["apply"]["edges_created"], 1)
+
+        second = await extract_and_apply(
+            self.repo,
+            FakeAdapter(text=_edges_json()),
+            "今日没有可确认的图谱事实。",
+            now=datetime(2026, 7, 18, 10, 0),
+            reference_date="2026-07-18",
+            source_ref=source_ref,
+        )
+
+        self.assertEqual(second["apply"]["edges_expired"], 1)
+        matches = await self.repo.find_nodes("300059")
+        _, edges = await self.repo.neighborhood(
+            matches[0].id, hops=1, include_expired=True
+        )
+        self.assertEqual([edge for edge in edges if edge.expired_at is None], [])
+        self.assertEqual(len(edges), 1)
 
 
 class _FakeSpan:
