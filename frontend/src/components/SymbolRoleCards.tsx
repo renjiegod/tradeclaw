@@ -79,19 +79,43 @@ function formatUpdatedAt(value: string | null | undefined): string {
   return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
 }
 
+/** ``600519.SH`` / ``600519`` → ``600519`` for cross-format symbol matching. */
+function baseCode(symbol: string | null | undefined): string {
+  return (symbol ?? "").split(".")[0].trim().toUpperCase();
+}
+
+export interface SymbolRoleCardsProps {
+  /**
+   * When set, render *only* the role(s) tagged for this one symbol (per-symbol
+   * mode, used on the 个股详情 page). Matching ignores the exchange suffix, so
+   * ``600519.SH`` matches a stored ``600519``. In this mode the component stays
+   * invisible — renders ``null`` — while loading and whenever the symbol has no
+   * tagged role, so a non-打板 stock never shows an empty card. When omitted,
+   * render the full cross-symbol roster (the original review-workbench grid).
+   */
+  symbol?: string;
+}
+
 /**
- * The 个股角色 (per-symbol role) card grid for the Knowledge review workbench.
- * Renders each role the user has tagged into the private knowledge base as one
- * card: symbol + name, a role tag coloured by {@link roleStyleFor}, the note,
- * an optional strategy hint, and the last-updated time. Pure div + Tailwind +
- * AntD — no chart / extra dependency.
+ * The 个股角色 (per-symbol role) cards. Renders each role the user has tagged
+ * into the private knowledge base as one card: symbol + name, a role tag
+ * coloured by {@link roleStyleFor}, the note, an optional strategy hint, and
+ * the last-updated time. Pure div + Tailwind + AntD — no chart / extra
+ * dependency.
+ *
+ * Two modes (see {@link SymbolRoleCardsProps.symbol}): the full roster (no
+ * ``symbol`` prop) or a single-symbol slice mounted on the 个股详情 page. The
+ * roles vocabulary (龙头 / 龙二 / 中军 …) is 情绪派 / 题材炒作 specific, so it
+ * lives per-symbol on the stock page rather than as a top-level knowledge tab.
  *
  * Data comes from {@link getSymbolRoles}; it never fabricates values — missing
  * fields show ``—`` and an empty base shows a friendly empty state.
  */
-export function SymbolRoleCards() {
+export function SymbolRoleCards({ symbol }: SymbolRoleCardsProps = {}) {
   const [items, setItems] = useState<SymbolRoleCard[] | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const singleMode = !!symbol?.trim();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -110,38 +134,56 @@ export function SymbolRoleCards() {
     });
   }, [load]);
 
-  const showEmpty = !loading && (!items || items.length === 0);
+  // In single-symbol mode, slice to the requested symbol (suffix-insensitive).
+  const visible = useMemo(() => {
+    const all = items ?? [];
+    if (!singleMode) return all;
+    const target = baseCode(symbol);
+    return all.filter((card) => baseCode(card.symbol) === target);
+  }, [items, singleMode, symbol]);
+
+  const showEmpty = !loading && visible.length === 0;
 
   const subtitle = useMemo(() => {
+    if (singleMode) return "对话里给该标的打的角色标签";
     if (!items || items.length === 0) return "对话里给标的打的角色标签";
     return `共 ${items.length} 个标的`;
-  }, [items]);
+  }, [singleMode, items]);
+
+  // Per-symbol mode stays invisible until there's something to show, so a stock
+  // with no tagged role (or before data loads) renders nothing rather than an
+  // empty card cluttering the 个股详情 page.
+  if (singleMode && (loading || visible.length === 0)) {
+    return null;
+  }
 
   return (
     <Card
       className="!border !border-shell-line !bg-card-bg shadow-shell-card"
       title={
         <div className="flex flex-col">
-          <Typography.Text strong>个股角色</Typography.Text>
+          <Typography.Text strong>{singleMode ? "标的角色" : "个股角色"}</Typography.Text>
           <Typography.Text type="secondary" className="!text-xs !font-normal">
             {subtitle}
           </Typography.Text>
         </div>
       }
       extra={
-        <Button
-          size="small"
-          icon={<ReloadOutlined />}
-          loading={loading}
-          onClick={() =>
-            void load().catch((error: unknown) => {
-              const msg = error instanceof Error ? error.message : String(error);
-              message.error(`加载个股角色失败：${msg}`);
-            })
-          }
-        >
-          刷新
-        </Button>
+        singleMode ? undefined : (
+          <Button
+            size="small"
+            icon={<ReloadOutlined />}
+            loading={loading}
+            onClick={() =>
+              void load().catch((error: unknown) => {
+                const msg = error instanceof Error ? error.message : String(error);
+                message.error(`加载个股角色失败：${msg}`);
+              })
+            }
+          >
+            刷新
+          </Button>
+        )
       }
       data-testid="symbol-role-cards"
     >
@@ -158,10 +200,14 @@ export function SymbolRoleCards() {
       ) : (
         <div className="flex flex-col gap-3">
           <div
-            className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3"
+            className={
+              singleMode
+                ? "grid grid-cols-1 gap-3"
+                : "grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3"
+            }
             data-testid="symbol-role-grid"
           >
-            {(items ?? []).map((card) => (
+            {visible.map((card) => (
               <RoleCard key={card.symbol} card={card} />
             ))}
           </div>

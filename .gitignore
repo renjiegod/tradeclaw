@@ -206,6 +206,9 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Trailing-slash forms match only a real directory; the bare forms also match a
+# symlink named node_modules (e.g. a worktree symlinking into the main checkout).
+frontend/node_modules
 frontend/node_modules/
 frontend/node_modules_broken_tmp/
 
