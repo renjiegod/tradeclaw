@@ -33,10 +33,21 @@ import type {
 } from "../types";
 import { KnowledgeGraphEditingActions } from "./KnowledgeGraphEditingActions";
 import { ManualRelationActions } from "./ManualRelationActions";
-import { layoutNeighborhood } from "./knowledgeGraphLayout";
+import {
+  computeHopDepths,
+  hashString,
+  hopRingGeometry,
+  layoutNeighborhood,
+} from "./knowledgeGraphLayout";
 
 const SVG_WIDTH = 760;
-const SVG_HEIGHT = 520;
+const SVG_BASE_HEIGHT = 520;
+const SVG_DENSE_HEIGHT = 660;
+
+/** 节点多（二三跳邻域）时加高虚拟画布，密度不至于挤成一团。 */
+function svgHeightFor(nodeCount: number): number {
+  return nodeCount > 28 ? SVG_DENSE_HEIGHT : SVG_BASE_HEIGHT;
+}
 
 /**
  * 节点类型 → 颜色。Categorical 调色板按固定顺序分配给固定类型（永不因
@@ -97,11 +108,29 @@ function formatWindow(edge: KgEdge): string {
 }
 
 /**
+ * 边的二次贝塞尔路径。轻微弯曲让密集图里的边彼此可分辨（长直线穿过
+ * 节点群是旧版「错乱感」的主因之一）；弯向与弧度由 edge id 的稳定
+ * hash 决定——确定性，且同一对节点间的多条边不会完全重叠。
+ */
+function edgePath(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  edgeId: string,
+): string {
+  const h = hashString(edgeId);
+  const bend = (h % 2 === 0 ? 1 : -1) * (0.06 + ((h >>> 3) % 5) * 0.015);
+  const mx = (a.x + b.x) / 2 - (b.y - a.y) * bend;
+  const my = (a.y + b.y) / 2 + (b.x - a.x) * bend;
+  return `M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`;
+}
+
+/**
  * 知识图谱面板 — 知识库页的「图谱」tab。
  *
  * 输入实体（代码 / 名称 / 角色词 / YYYY-MM / 信号 id）查询其 N 跳邻域，
- * 左侧 SVG 力导向图（节点色 = 实体类型；实线 = 硬数据投影、虚线 = LLM
- * 观点候选、灰 = 已失效历史），右侧按关系分组的事实句列表（时间窗 /
+ * 左侧 SVG 同心环图（中心 = 查询实体，第 N 跳落在第 N 圈参考环上；节点
+ * 色 = 实体类型；实线 = 硬数据投影、虚线 = LLM 观点候选、灰 = 已失效
+ * 历史；悬停节点时聚焦其一跳邻域、其余淡出），右侧按关系分组的事实句列表（时间窗 /
  * provenance / confidence / 来源）。「同步投影」按钮幂等重建确定性投影
  * ——查不到刚写入的数据时先同步再查。纯 SVG + 自写确定性布局，无图库
  * 依赖（与本项目「无 chart 依赖」偏好一致，布局见
@@ -120,6 +149,7 @@ export function KnowledgeGraphPanel() {
   const [summary, setSummary] = useState<KnowledgeGraphSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [positionOverrides, setPositionOverrides] = useState<
     Map<string, { x: number; y: number }>
   >(new Map());
@@ -169,6 +199,8 @@ export function KnowledgeGraphPanel() {
         setPositionOverrides(new Map());
         setSelectedIds(new Set());
         setHighlightIds(new Set());
+        setHoveredNodeId(null);
+        setHoveredEdgeId(null);
         try {
           const layoutRes = await getKnowledgeGraphLayout(res.center.id);
           if (layoutRes.layout) {
@@ -229,16 +261,46 @@ export function KnowledgeGraphPanel() {
     }
   }, [entity, notFoundEntity, hops, includeExpired, load, refreshSummary]);
 
+  const svgHeight = svgHeightFor(data?.nodes.length ?? 0);
+  // 节点多时收小节点与字号，给标签留呼吸空间。
+  const denseGraph = (data?.nodes.length ?? 0) > 26;
+
   const positions = useMemo(() => {
     if (!data) return new Map<string, { x: number; y: number }>();
     return layoutNeighborhood(data.nodes, data.edges, {
       width: SVG_WIDTH,
-      height: SVG_HEIGHT,
+      height: svgHeight,
       centerId: data.center.id,
-      lockedIds,
       seedPositions: positionOverrides,
     });
-  }, [data, lockedIds, positionOverrides]);
+  }, [data, positionOverrides, svgHeight]);
+
+  // 跳数参考环：让「第几跳」在画布上直接可读。用户整体自定义布局
+  //（保存后全量种子坐标）时环不再对应实际位置，隐藏。
+  const hopRings = useMemo(() => {
+    if (!data) return [];
+    const depths = computeHopDepths(data.nodes, data.edges, data.center.id);
+    let maxDepth = 0;
+    for (const depth of depths.values()) maxDepth = Math.max(maxDepth, depth);
+    if (maxDepth === 0) return [];
+    return hopRingGeometry(maxDepth, { width: SVG_WIDTH, height: svgHeight });
+  }, [data, svgHeight]);
+  const showHopRings =
+    data != null && positionOverrides.size < data.nodes.length;
+
+  // 悬停节点 → 一跳邻居集合（用于聚焦淡出）。
+  const neighborsByNode = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const edge of data?.edges ?? []) {
+      const src = map.get(edge.src_id) ?? new Set<string>();
+      src.add(edge.dst_id);
+      map.set(edge.src_id, src);
+      const dst = map.get(edge.dst_id) ?? new Set<string>();
+      dst.add(edge.src_id);
+      map.set(edge.dst_id, dst);
+    }
+    return map;
+  }, [data]);
 
   useEffect(() => {
     if (!data) return;
@@ -552,7 +614,7 @@ export function KnowledgeGraphPanel() {
             {/* 左：SVG 力导向子图 */}
             <div className="min-w-0 flex-1">
               <svg
-                viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
+                viewBox={`0 0 ${SVG_WIDTH} ${svgHeight}`}
                 className="h-auto w-full rounded-card border border-shell-line"
                 role="img"
                 aria-label={`${nodeLabel(data.center)} 的知识图谱邻域`}
@@ -563,7 +625,7 @@ export function KnowledgeGraphPanel() {
                   const svg = event.currentTarget;
                   const rect = svg.getBoundingClientRect();
                   const scaleX = SVG_WIDTH / rect.width;
-                  const scaleY = SVG_HEIGHT / rect.height;
+                  const scaleY = svgHeight / rect.height;
                   const dx = (event.clientX - drag.originX) * scaleX;
                   const dy = (event.clientY - drag.originY) * scaleY;
                   setPositionOverrides((prev) => {
@@ -585,6 +647,32 @@ export function KnowledgeGraphPanel() {
                   dragRef.current = null;
                 }}
               >
+                {showHopRings
+                  ? hopRings.map((ring) => (
+                      <g key={`hop-ring-${ring.depth}`} aria-hidden="true">
+                        <ellipse
+                          cx={SVG_WIDTH / 2}
+                          cy={svgHeight / 2}
+                          rx={ring.rx}
+                          ry={ring.ry}
+                          fill="none"
+                          stroke="#e8e0d0"
+                          strokeWidth={1}
+                          strokeDasharray="3 7"
+                          data-testid={`kg-hop-ring-${ring.depth}`}
+                        />
+                        <text
+                          x={SVG_WIDTH / 2}
+                          y={svgHeight / 2 - ring.ry - 5}
+                          textAnchor="middle"
+                          fontSize={10}
+                          fill="#b3a68f"
+                        >
+                          {ring.depth} 跳
+                        </text>
+                      </g>
+                    ))
+                  : null}
                 {data.edges.map((edge) => {
                   const a = positions.get(edge.src_id);
                   const b = positions.get(edge.dst_id);
@@ -593,13 +681,26 @@ export function KnowledgeGraphPanel() {
                   const hovered = hoveredEdgeId === edge.id;
                   const highlighted =
                     highlightIds.has(edge.src_id) && highlightIds.has(edge.dst_id);
+                  // 悬停节点时只保留其一跳邻域的边，其余淡出——密集图的
+                  // 主要「解乱」手段。无悬停时沿用选中高亮的淡出逻辑。
+                  const focusRelated =
+                    hoveredNodeId == null ||
+                    edge.src_id === hoveredNodeId ||
+                    edge.dst_id === hoveredNodeId;
+                  const dimmed =
+                    hoveredNodeId != null
+                      ? !focusRelated
+                      : highlightIds.size > 0 && !highlighted;
+                  const emphasized =
+                    hovered ||
+                    highlighted ||
+                    (hoveredNodeId != null && focusRelated);
                   return (
                     <g key={edge.id}>
-                      <line
-                        x1={a.x}
-                        y1={a.y}
-                        x2={b.x}
-                        y2={b.y}
+                      <path
+                        d={edgePath(a, b, edge.id)}
+                        fill="none"
+                        strokeLinecap="round"
                         stroke={
                           highlighted
                             ? "#c45c26"
@@ -607,15 +708,23 @@ export function KnowledgeGraphPanel() {
                               ? "#b3a68f"
                               : "#8a7a63"
                         }
-                        strokeWidth={highlighted || hovered ? 3 : 2}
-                        strokeOpacity={expired ? 0.45 : highlighted ? 0.95 : 0.75}
+                        strokeWidth={emphasized ? 3 : 2}
+                        strokeOpacity={
+                          dimmed
+                            ? 0.12
+                            : expired
+                              ? 0.45
+                              : emphasized
+                                ? 0.95
+                                : 0.7
+                        }
                         strokeDasharray={edge.provenance === "llm" ? "6 4" : undefined}
                         onMouseEnter={() => setHoveredEdgeId(edge.id)}
                         onMouseLeave={() => setHoveredEdgeId(null)}
                         data-testid={`kg-edge-${edge.id}`}
                       >
                         <title>{`${relationLabel(edge.relation)}：${edge.fact}`}</title>
-                      </line>
+                      </path>
                     </g>
                   );
                 })}
@@ -628,11 +737,29 @@ export function KnowledgeGraphPanel() {
                   const selected = selectedIds.has(node.id);
                   const locked = lockedIds.has(node.id);
                   const highlighted = highlightIds.has(node.id);
+                  const nodeRadius = isCenter
+                    ? denseGraph
+                      ? 13
+                      : 15
+                    : denseGraph
+                      ? 8
+                      : 10;
+                  const focusRelated =
+                    hoveredNodeId == null ||
+                    node.id === hoveredNodeId ||
+                    (neighborsByNode.get(hoveredNodeId)?.has(node.id) ?? false);
+                  const dimmed =
+                    hoveredNodeId != null
+                      ? !focusRelated
+                      : highlightIds.size > 0 && !highlighted && !selected;
                   return (
                     <g
                       key={node.id}
                       transform={`translate(${p.x}, ${p.y})`}
                       className="cursor-pointer"
+                      opacity={dimmed ? 0.3 : 1}
+                      onMouseEnter={() => setHoveredNodeId(node.id)}
+                      onMouseLeave={() => setHoveredNodeId(null)}
                       onClick={(event) => {
                         if (event.shiftKey) {
                           setSelectedIds((prev) => {
@@ -665,7 +792,7 @@ export function KnowledgeGraphPanel() {
                     >
                       <title>{`${style.label}：${label}（${node.name}）`}</title>
                       <circle
-                        r={isCenter ? 15 : 10}
+                        r={nodeRadius}
                         fill={style.color}
                         stroke={
                           selected || highlighted
@@ -677,11 +804,15 @@ export function KnowledgeGraphPanel() {
                         strokeWidth={selected || highlighted || locked ? 3 : 2}
                       />
                       <text
-                        y={isCenter ? 30 : 24}
+                        y={nodeRadius + (denseGraph ? 13 : 15)}
                         textAnchor="middle"
-                        fontSize={12}
+                        fontSize={denseGraph ? 11 : 12}
                         fill="#4a3f33"
                         fontWeight={isCenter ? 600 : 400}
+                        stroke="#fffdf9"
+                        strokeWidth={3}
+                        strokeLinejoin="round"
+                        paintOrder="stroke"
                       >
                         {label.length > 10 ? `${label.slice(0, 10)}…` : label}
                       </text>
@@ -733,6 +864,25 @@ export function KnowledgeGraphPanel() {
                     LLM 观点
                   </Typography.Text>
                 </span>
+                {showHopRings ? (
+                  <span className="flex items-center gap-1.5 text-xs">
+                    <svg width="18" height="12" aria-hidden="true">
+                      <ellipse
+                        cx="9"
+                        cy="6"
+                        rx="8"
+                        ry="5"
+                        fill="none"
+                        stroke="#cdc2ac"
+                        strokeWidth="1"
+                        strokeDasharray="2 3"
+                      />
+                    </svg>
+                    <Typography.Text type="secondary" className="!text-xs">
+                      虚线环 = 距中心跳数
+                    </Typography.Text>
+                  </span>
+                ) : null}
                 {includeExpired ? (
                   <span className="flex items-center gap-1.5 text-xs">
                     <svg width="26" height="8" aria-hidden="true">
