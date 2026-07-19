@@ -1913,12 +1913,14 @@ export type KnowledgeGraphChangeSet = {
 /**
  * Response of ``POST /knowledge/graph/sync`` — one idempotent deterministic
  * re-projection pass. ``skipped: true`` means every source's content hash was
- * unchanged since the last sync (nothing to do).
+ * unchanged since the last sync (nothing to do — not "import succeeded").
  */
 export type KnowledgeGraphSyncResult = {
   skipped: boolean;
   forced?: boolean;
   changed_sources: string[];
+  /** Human-readable outcome; prefer this over inferring from ``skipped``. */
+  message?: string;
   projected_nodes?: number;
   projected_edges?: number;
   warnings?: unknown[];
@@ -1934,6 +1936,19 @@ export type KnowledgeGraphSyncResult = {
     active_edges: number;
     expired_edges: number;
   };
+};
+
+/**
+ * Response of ``GET /knowledge/graph/summary`` — size snapshot + sample
+ * entry-point nodes for the empty-state exploration chips.
+ */
+export type KnowledgeGraphSummary = {
+  counts: {
+    nodes: number;
+    active_edges: number;
+    expired_edges: number;
+  };
+  entry_points: KgNode[];
 };
 
 // ---------------------------------------------------------------------------

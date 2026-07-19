@@ -11,6 +11,7 @@ import {
   getKnowledgeGraphConflicts,
   getKnowledgeGraphLayout,
   getKnowledgeGraphSchema,
+  getKnowledgeGraphSummary,
   redoKnowledgeGraphRevision,
   rejectKnowledgeGraphChange,
   syncKnowledgeGraph,
@@ -32,6 +33,7 @@ vi.mock("../api", async (importOriginal) => {
     getKnowledgeGraphConflicts: vi.fn(),
     getKnowledgeGraphLayout: vi.fn(),
     getKnowledgeGraphSchema: vi.fn(),
+    getKnowledgeGraphSummary: vi.fn(),
     redoKnowledgeGraphRevision: vi.fn(),
     rejectKnowledgeGraphChange: vi.fn(),
     syncKnowledgeGraph: vi.fn(),
@@ -184,14 +186,62 @@ describe("KnowledgeGraphPanel", () => {
     vi.mocked(getKnowledgeGraphChangeSets).mockResolvedValue({ items: [] });
     vi.mocked(getKnowledgeGraphConflicts).mockResolvedValue({ items: [] });
     vi.mocked(getKnowledgeGraphLayout).mockResolvedValue({ layout: null });
+    vi.mocked(getKnowledgeGraphSummary).mockResolvedValue({
+      counts: { nodes: 3, active_edges: 2, expired_edges: 0 },
+      entry_points: [
+        {
+          id: "kgn-role",
+          node_type: "role",
+          name: "龙头",
+          display_name: null,
+          attrs: null,
+        },
+        {
+          id: "kgn-center",
+          node_type: "symbol",
+          name: "300059",
+          display_name: "东方财富",
+          attrs: null,
+        },
+      ],
+    });
   });
 
   afterEach(cleanup);
 
-  it("renders the guide empty state before any query", () => {
+  it("renders the guide empty state with summary chips before any query", async () => {
     render(<KnowledgeGraphPanel />);
     expect(screen.getByTestId("kg-empty")).toBeInTheDocument();
     expect(vi.mocked(getKnowledgeGraph)).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("kg-summary-counts")).toHaveTextContent(
+      "3 节点",
+    );
+    expect(screen.getByTestId("kg-entry-chips")).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/龙头/));
+    await waitFor(() => {
+      expect(vi.mocked(getKnowledgeGraph)).toHaveBeenCalledWith("龙头", {
+        hops: 1,
+        includeExpired: false,
+      });
+    });
+  });
+
+  it("shows a dedicated hint when searching a source filename", async () => {
+    vi.mocked(getKnowledgeGraph).mockRejectedValue(
+      new ApiError("no graph node matches '强势股时间线'", 404, {
+        errorCode: "kg_source_not_entity",
+        hint: "这是确定性来源文件名，不是图谱实体节点。",
+      }),
+    );
+    render(<KnowledgeGraphPanel />);
+    await queryEntity("强势股时间线");
+    expect(await screen.findByTestId("kg-not-found")).toBeInTheDocument();
+    expect(screen.getByTestId("kg-not-found-hint")).toHaveTextContent(
+      "不是图谱实体节点",
+    );
+    expect(screen.getByTestId("kg-not-found")).toHaveTextContent(
+      "是确定性来源文件名，不是图谱实体",
+    );
   });
 
   it("queries an entity and renders nodes, facts, legend and provenance tags", async () => {

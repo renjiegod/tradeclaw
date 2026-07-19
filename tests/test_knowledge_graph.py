@@ -33,6 +33,8 @@ from doyoutrade.knowledge.graph import (
     NODE_SYMBOL,
     REL_HAS_ROLE,
     build_deterministic_projection,
+    describe_source_query,
+    is_source_like_query,
     render_neighborhood_markdown,
     sync_deterministic_projection,
 )
@@ -90,6 +92,20 @@ def _write_kb(root: Path, *, role: str = "龙头", note: str | None = "券商情
         "2026-03-11,300059,东方财富,卖出,22.50,1000\n",
         encoding="utf-8",
     )
+
+
+class SourceQueryHintTests(unittest.TestCase):
+    def test_strong_timeline_alias_is_source_like(self) -> None:
+        self.assertTrue(is_source_like_query("强势股时间线"))
+        self.assertTrue(is_source_like_query("cycles/强势股时间线.csv"))
+        self.assertTrue(is_source_like_query("_strong_timeline"))
+        self.assertFalse(is_source_like_query("中通客车"))
+        self.assertFalse(is_source_like_query("龙头"))
+        hint = describe_source_query("强势股时间线")
+        self.assertIsNotNone(hint)
+        self.assertIn("不是图谱实体", hint)
+        self.assertIn("graph-sync", hint)
+        self.assertIsNone(describe_source_query("东方财富"))
 
 
 class ProjectionBuildTests(unittest.TestCase):
@@ -288,10 +304,13 @@ class KnowledgeGraphRepositoryTests(unittest.IsolatedAsyncioTestCase):
             self.repo, self.kb, now=datetime(2026, 7, 17, 10, 0)
         )
         self.assertFalse(first["skipped"])
+        self.assertIn("message", first)
         second = await sync_deterministic_projection(
             self.repo, self.kb, now=datetime(2026, 7, 17, 10, 5)
         )
         self.assertTrue(second["skipped"])
+        self.assertIn("未重投影", second["message"])
+        self.assertIn("不是新导入成功", second["message"])
         forced = await sync_deterministic_projection(
             self.repo, self.kb, now=datetime(2026, 7, 17, 10, 6), force=True
         )
@@ -299,7 +318,16 @@ class KnowledgeGraphRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(forced["apply"]["edges_created"], 0)
         self.assertEqual(forced["apply"]["edges_expired"], 0)
 
-    async def test_sync_projects_decision_signals_from_db(self) -> None:
+    async def test_list_entry_points_prefers_role_cycle_symbol(self) -> None:
+        await sync_deterministic_projection(
+            self.repo, self.kb, now=datetime(2026, 7, 17, 10, 0)
+        )
+        entries = await self.repo.list_entry_points(per_type=2, limit=6)
+        self.assertGreater(len(entries), 0)
+        types = {e.node_type for e in entries}
+        self.assertTrue(types & {"role", "cycle", "symbol"})
+        counts = await self.repo.counts()
+        self.assertGreater(counts["nodes"], 0)
         async with self.session_factory() as session:
             session.add(
                 DecisionSignalRecord(
@@ -483,6 +511,13 @@ class KnowledgeGraphToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("entity_not_found", result.text)
         self.assertIn("graph-sync", result.text)
         self.assertNotIn('action="sync"', result.text)
+
+    async def test_query_source_filename_returns_source_not_entity(self) -> None:
+        result = await self._tool(self.repo).execute(entity="强势股时间线")
+        self.assertTrue(result.is_error)
+        self.assertIn("source_not_entity", result.text)
+        self.assertIn("不是图谱实体", result.text)
+        self.assertIn("propose", result.text)
 
     async def test_propose_schema_error_includes_repair_hint(self) -> None:
         result = await self._tool(self.repo).execute(

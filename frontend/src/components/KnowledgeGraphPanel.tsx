@@ -21,10 +21,16 @@ import {
   ApiError,
   getKnowledgeGraph,
   getKnowledgeGraphLayout,
+  getKnowledgeGraphSummary,
   saveKnowledgeGraphLayout,
   syncKnowledgeGraph,
 } from "../api";
-import type { KgEdge, KgNode, KnowledgeGraphNeighborhood } from "../types";
+import type {
+  KgEdge,
+  KgNode,
+  KnowledgeGraphNeighborhood,
+  KnowledgeGraphSummary,
+} from "../types";
 import { KnowledgeGraphEditingActions } from "./KnowledgeGraphEditingActions";
 import { ManualRelationActions } from "./ManualRelationActions";
 import { layoutNeighborhood } from "./knowledgeGraphLayout";
@@ -109,6 +115,10 @@ export function KnowledgeGraphPanel() {
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [notFoundEntity, setNotFoundEntity] = useState<string | null>(null);
+  const [notFoundHint, setNotFoundHint] = useState<string | null>(null);
+  const [notFoundIsSource, setNotFoundIsSource] = useState(false);
+  const [summary, setSummary] = useState<KnowledgeGraphSummary | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
   const [positionOverrides, setPositionOverrides] = useState<
     Map<string, { x: number; y: number }>
@@ -126,12 +136,30 @@ export function KnowledgeGraphPanel() {
     startY: number;
   } | null>(null);
 
+  const refreshSummary = useCallback(async () => {
+    setSummaryLoading(true);
+    try {
+      setSummary(await getKnowledgeGraphSummary());
+    } catch {
+      // Empty-state chips are best-effort; keep the search box usable.
+      setSummary(null);
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSummary();
+  }, [refreshSummary]);
+
   const load = useCallback(
     async (query: string, nextHops: number, nextExpired: boolean) => {
       const text = query.trim();
       if (!text) return;
       setLoading(true);
       setNotFoundEntity(null);
+      setNotFoundHint(null);
+      setNotFoundIsSource(false);
       try {
         const res = await getKnowledgeGraph(text, {
           hops: nextHops,
@@ -159,6 +187,8 @@ export function KnowledgeGraphPanel() {
         if (error instanceof ApiError && error.status === 404) {
           setData(null);
           setNotFoundEntity(text);
+          setNotFoundHint(error.hint);
+          setNotFoundIsSource(error.errorCode === "kg_source_not_entity");
         } else {
           const msg = error instanceof Error ? error.message : String(error);
           message.error(`加载知识图谱失败：${msg}`);
@@ -175,15 +205,17 @@ export function KnowledgeGraphPanel() {
     try {
       const res = await syncKnowledgeGraph();
       if (res.skipped) {
-        message.info("图谱已是最新（所有来源自上次同步未变化）");
+        message.info(res.message ?? "图谱已是最新（所有来源自上次同步未变化）");
       } else {
         const applied = res.apply;
         message.success(
-          `图谱同步完成：边 +${applied?.edges_created ?? 0}` +
-            `（失效 ${applied?.edges_expired ?? 0}）· ` +
-            `共 ${res.counts?.nodes ?? "?"} 节点 / ${res.counts?.active_edges ?? "?"} 有效边`,
+          res.message ??
+            `图谱同步完成：边 +${applied?.edges_created ?? 0}` +
+              `（失效 ${applied?.edges_expired ?? 0}）· ` +
+              `共 ${res.counts?.nodes ?? "?"} 节点 / ${res.counts?.active_edges ?? "?"} 有效边`,
         );
       }
+      await refreshSummary();
       // 同步后若已有查询上下文则自动重查（覆盖 not-found 重试场景）。
       const retry = entity.trim() || notFoundEntity;
       if (retry) {
@@ -195,7 +227,7 @@ export function KnowledgeGraphPanel() {
     } finally {
       setSyncing(false);
     }
-  }, [entity, notFoundEntity, hops, includeExpired, load]);
+  }, [entity, notFoundEntity, hops, includeExpired, load, refreshSummary]);
 
   const positions = useMemo(() => {
     if (!data) return new Map<string, { x: number; y: number }>();
@@ -256,6 +288,55 @@ export function KnowledgeGraphPanel() {
     setEntity(value);
     void load(value, hops, includeExpired);
   };
+
+  const entryLabel = (node: KgNode): string => {
+    if (node.display_name && node.display_name !== node.name) {
+      return node.display_name;
+    }
+    return node.name;
+  };
+
+  const entryChips =
+    summary?.entry_points && summary.entry_points.length > 0 ? (
+      <div
+        className="flex flex-wrap items-center gap-2"
+        data-testid="kg-entry-chips"
+      >
+        {summary.entry_points.map((node) => (
+          <Tag
+            key={node.id}
+            className="!m-0 cursor-pointer"
+            color={nodeStyle(node.node_type).color}
+            onClick={() => {
+              setEntity(node.display_name || node.name);
+              void load(node.display_name || node.name, hops, includeExpired);
+            }}
+            data-testid={`kg-entry-chip-${node.node_type}`}
+          >
+            {nodeStyle(node.node_type).label} · {entryLabel(node)}
+          </Tag>
+        ))}
+      </div>
+    ) : null;
+
+  const summaryLine =
+    summary != null ? (
+      <Typography.Text
+        type="secondary"
+        className="!text-xs"
+        data-testid="kg-summary-counts"
+      >
+        当前图谱 {summary.counts.nodes} 节点 / {summary.counts.active_edges}{" "}
+        有效边
+        {summary.counts.expired_edges > 0
+          ? `（另有 ${summary.counts.expired_edges} 条已失效历史）`
+          : ""}
+      </Typography.Text>
+    ) : summaryLoading ? (
+      <Typography.Text type="secondary" className="!text-xs">
+        正在读取图谱规模…
+      </Typography.Text>
+    ) : null;
 
   const reQuery = (nextHops: number, nextExpired: boolean) => {
     const current = (entity || data?.center.name || "").trim();
@@ -395,24 +476,75 @@ export function KnowledgeGraphPanel() {
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             data-testid="kg-not-found"
             description={
-              <span>
-                图谱里没有「{notFoundEntity}」——若数据是新写入的，先
-                <Button
-                  type="link"
-                  size="small"
-                  className="!px-1"
-                  onClick={() => void runSync()}
-                >
-                  同步投影
-                </Button>
-                再查；也可换股票代码 / 全名重试。
-              </span>
+              <div className="flex max-w-lg flex-col items-center gap-2 text-left">
+                <span>
+                  {notFoundIsSource
+                    ? `「${notFoundEntity}」是确定性来源文件名，不是图谱实体`
+                    : `图谱里没有「${notFoundEntity}」`}
+                  {notFoundIsSource ? null : (
+                    <>
+                      ——若数据是新写入的，先
+                      <Button
+                        type="link"
+                        size="small"
+                        className="!px-1"
+                        onClick={() => void runSync()}
+                      >
+                        同步投影
+                      </Button>
+                      再查；也可换股票代码 / 全名重试。
+                    </>
+                  )}
+                </span>
+                {notFoundHint ? (
+                  <Typography.Text
+                    type="secondary"
+                    className="!text-xs"
+                    data-testid="kg-not-found-hint"
+                  >
+                    {notFoundHint}
+                  </Typography.Text>
+                ) : null}
+                {notFoundIsSource ? (
+                  <Button
+                    type="link"
+                    size="small"
+                    onClick={() => void runSync()}
+                  >
+                    同步投影（从 CSV / roles / trades 重建）
+                  </Button>
+                ) : null}
+                {summaryLine}
+                {entryChips}
+              </div>
             }
           />
         ) : !data ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="输入实体开始探索：一只票的历史角色、题材归属、交易盈亏与相关信号"
+            description={
+              <div className="flex max-w-lg flex-col items-center gap-3">
+                <span>
+                  {summary && summary.counts.nodes === 0
+                    ? "图谱还是空的——先点右上角「同步投影」从知识库导入，再选入口探索"
+                    : "输入实体开始探索，或点下面的入口直接打开邻域"}
+                </span>
+                {summaryLine}
+                {entryChips}
+                {summary && summary.counts.nodes === 0 ? (
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<SyncOutlined />}
+                    loading={syncing}
+                    onClick={() => void runSync()}
+                    data-testid="kg-empty-sync"
+                  >
+                    同步投影
+                  </Button>
+                ) : null}
+              </div>
+            }
             data-testid="kg-empty"
           />
         ) : (
