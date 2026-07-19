@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { KgEdge, KgNode } from "../types";
-import { layoutNeighborhood } from "./knowledgeGraphLayout";
+import {
+  computeHopDepths,
+  hopRingGeometry,
+  layoutNeighborhood,
+} from "./knowledgeGraphLayout";
 
 function node(id: string, nodeType = "symbol"): KgNode {
   return { id, node_type: nodeType, name: id, display_name: null, attrs: null };
@@ -81,5 +85,56 @@ describe("layoutNeighborhood", () => {
       OPTS,
     );
     expect(positions.size).toBe(2);
+  });
+
+  it("places deeper hops on larger rings（同心环 = 跳数）", () => {
+    // center → a → b → c 的三跳链：到中心的距离应随跳数单调增大。
+    const nodes = [node("center"), node("a"), node("b"), node("c")];
+    const edges = [
+      edge("e1", "center", "a"),
+      edge("e2", "a", "b"),
+      edge("e3", "b", "c"),
+    ];
+    const positions = layoutNeighborhood(nodes, edges, OPTS);
+    const center = positions.get("center")!;
+    const dist = (id: string) => {
+      const p = positions.get(id)!;
+      return Math.hypot(p.x - center.x, p.y - center.y);
+    };
+    expect(dist("a")).toBeLessThan(dist("b"));
+    expect(dist("b")).toBeLessThan(dist("c"));
+  });
+
+  it("keeps seeded positions untouched（用户拖拽 / 已保存布局）", () => {
+    const nodes = [node("center"), node("a"), node("b")];
+    const edges = [edge("e1", "center", "a"), edge("e2", "center", "b")];
+    const positions = layoutNeighborhood(nodes, edges, {
+      ...OPTS,
+      seedPositions: { a: { x: 100, y: 90 } },
+    });
+    expect(positions.get("a")).toEqual({ x: 100, y: 90 });
+  });
+});
+
+describe("computeHopDepths", () => {
+  it("returns BFS depth per node, orphans pushed past the last ring", () => {
+    const nodes = [node("center"), node("a"), node("b"), node("lonely")];
+    const edges = [edge("e1", "center", "a"), edge("e2", "a", "b")];
+    const depths = computeHopDepths(nodes, edges, "center");
+    expect(depths.get("center")).toBe(0);
+    expect(depths.get("a")).toBe(1);
+    expect(depths.get("b")).toBe(2);
+    expect(depths.get("lonely")).toBe(3);
+  });
+});
+
+describe("hopRingGeometry", () => {
+  it("splits the padded canvas into evenly spaced rings", () => {
+    const rings = hopRingGeometry(2, { width: 760, height: 520, padding: 48 });
+    expect(rings).toHaveLength(2);
+    expect(rings[0].rx).toBeCloseTo((760 / 2 - 48) / 2);
+    expect(rings[0].ry).toBeCloseTo((520 / 2 - 48) / 2);
+    expect(rings[1].rx).toBeCloseTo(760 / 2 - 48);
+    expect(rings[1].ry).toBeCloseTo(520 / 2 - 48);
   });
 });
