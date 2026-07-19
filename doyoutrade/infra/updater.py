@@ -1,9 +1,9 @@
 """Release-based self-update service (设置页「自动更新」).
 
 DoYouTrade is distributed as a uv tool installed from the GitHub repo
-(``install.sh``: ``uv tool install --force --from git+https://github.com/<repo>.git
-doyoutrade``). This module implements the update flow behind the
-``auto_update`` config section:
+(``install.sh`` / ``install.ps1``: ``uv tool install --force
+"doyoutrade[extras] @ <github source>"``). This module implements the update
+flow behind the ``auto_update`` config section:
 
 * A background loop — enabled by default, hot-toggled via
   ``auto_update.enabled`` (the loop re-reads ``get_config()`` every tick) —
@@ -16,10 +16,11 @@ doyoutrade``). This module implements the update flow behind the
   the running process executes from the very uv-tool venv the installer must
   replace (Windows would hit file locks on ``python.exe``), the install is
   *staged*: the server shuts down gracefully and the process ``exec``s into a
-  shell that runs ``uv tool install --force --from
-  git+https://github.com/<repo>.git@<tag> doyoutrade`` and then starts
-  ``doyoutrade`` again with the original argv. If the install fails the shell
-  falls back to relaunching the still-intact current version.
+  shell that runs ``uv tool install --force "<requirement built by
+  _install_requirement()>"`` (git+ source at the tag, or the GitHub tag
+  archive URL when git is absent; ``[qmt-proxy]`` extra kept on Windows) and
+  then starts ``doyoutrade`` again with the original argv. If the install
+  fails the shell falls back to relaunching the still-intact current version.
 
 Error visibility (CLAUDE.md §错误可见性): every check / apply failure is
 recorded as a structured ``last_error`` (``error_code`` + message) on the
@@ -515,6 +516,39 @@ def _relaunch_argv(which: Callable[[str], str | None] = shutil.which) -> list[st
     return argv or ["doyoutrade"]
 
 
+def _install_requirement(
+    staged: StagedUpdate,
+    *,
+    platform: str | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> str:
+    """PEP 508 direct reference passed to ``uv tool install`` for the update.
+
+    Two field-driven constraints (mirrors install.ps1 / install.sh):
+
+    * Windows installs carry the ``qmt-proxy`` extra (embedded xtquant REST
+      proxy). ``uv tool install --force`` replaces the tool venv with exactly
+      what is requested, so omitting the extra here would silently strip
+      qmt-proxy on the first in-app update — the ``--mode both`` startup
+      would then fail loudly on import. The PEP 508 form is required because
+      uv's ``--from`` rejects ``name[extra]`` positional args.
+    * ``git+`` sources need a git executable, which GUI-installed Windows
+      machines usually lack ("Git executable not found"). Without git, use
+      the GitHub tag archive URL instead — same tree, built from the static
+      pyproject version, no git involved.
+    """
+    plat = platform if platform is not None else sys.platform
+    # Resolved at call time (not a def-time default) so tests can patch
+    # ``shutil.which`` the usual way.
+    resolve = which if which is not None else shutil.which
+    name = "doyoutrade[qmt-proxy]" if plat == "win32" else "doyoutrade"
+    if resolve("git"):
+        source = f"git+https://github.com/{staged.repo}.git@{staged.tag}"
+    else:
+        source = f"https://github.com/{staged.repo}/archive/refs/tags/{staged.tag}.zip"
+    return f"{name} @ {source}"
+
+
 def build_restart_command(staged: StagedUpdate) -> list[str]:
     """Shell argv that reinstalls doyoutrade at the staged tag and relaunches.
 
@@ -524,11 +558,11 @@ def build_restart_command(staged: StagedUpdate) -> list[str]:
     operator is never left without a server; the uv error stays visible in
     the terminal.
     """
-    source = f"git+https://github.com/{staged.repo}.git@{staged.tag}"
+    requirement = _install_requirement(staged)
     relaunch_argv = list(staged.argv) or ["doyoutrade"]
     if sys.platform == "win32":  # pragma: no cover - windows-only branch
         install = subprocess.list2cmdline(
-            [staged.uv_path, "tool", "install", "--force", "--from", source, "doyoutrade"]
+            [staged.uv_path, "tool", "install", "--force", requirement]
         )
         relaunch = subprocess.list2cmdline(relaunch_argv)
         comspec = os.environ.get("COMSPEC", "cmd.exe")
@@ -536,7 +570,7 @@ def build_restart_command(staged: StagedUpdate) -> list[str]:
     import shlex
 
     install = shlex.join(
-        [staged.uv_path, "tool", "install", "--force", "--from", source, "doyoutrade"]
+        [staged.uv_path, "tool", "install", "--force", requirement]
     )
     relaunch = shlex.join(relaunch_argv)
     script = f"{install} && exec {relaunch} || exec {relaunch}"

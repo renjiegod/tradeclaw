@@ -152,5 +152,60 @@ class JunctionFreeFallbackTests(unittest.TestCase):
         self.assertIn("免junction解释器", self.ps1)
 
 
+class NoGitFallbackTests(unittest.TestCase):
+    """0.1.7 field failure: the 448 fallback succeeded but the install then
+    died with uv's "Git executable not found" — GUI-installer machines rarely
+    have git, so a GitHub git+ source must fall back to the archive URL."""
+
+    def setUp(self) -> None:
+        self.ps1 = _INSTALL_PS1.read_text(encoding="utf-8")
+
+    def test_detects_missing_git_before_first_attempt(self) -> None:
+        self.assertIn("Convert-GitSourceToArchiveUrl", self.ps1)
+        self.assertIn("Get-Command git -ErrorAction SilentlyContinue", self.ps1)
+
+    def test_all_install_attempts_use_effective_source(self) -> None:
+        # Both the first attempt and the 448 retry must honour the converted
+        # source; no attempt may keep the raw git+ $Source.
+        self.assertNotIn("doyoutrade[qmt-proxy] @ $Source", self.ps1)
+        self.assertEqual(
+            self.ps1.count("doyoutrade[qmt-proxy] @ $effectiveSource"), 3
+        )
+
+    def test_non_github_git_source_gets_targeted_die(self) -> None:
+        self.assertIn("git-missing", self.ps1)
+        self.assertIn("git-scm.com/download/win", self.ps1)
+
+    def test_git_missing_uv_error_is_classified(self) -> None:
+        # If uv still reports the missing git (custom source, race), the
+        # failure must not be blamed on the network.
+        self.assertIn("Test-IsGitMissingError", self.ps1)
+        self.assertIn("Git executable not found", self.ps1)
+
+    def test_diagnostics_report_git_and_effective_source(self) -> None:
+        self.assertIn("git --version", self.ps1)
+        self.assertIn("EffectiveSource", self.ps1)
+
+
+class UvOutputEncodingTests(unittest.TestCase):
+    """uv (Rust) writes UTF-8 to pipes while Chinese-locale PowerShell 5.1
+    decodes pipes as CP936 — captured uv errors (e.g. the os error 448 text)
+    turned into mojibake in the diagnostics users paste to support."""
+
+    def setUp(self) -> None:
+        self.ps1 = _INSTALL_PS1.read_text(encoding="utf-8")
+
+    def test_capture_helpers_decode_utf8(self) -> None:
+        self.assertIn("Use-Utf8ConsoleDecoding", self.ps1)
+        self.assertIn("Restore-ConsoleDecoding", self.ps1)
+        # Both capture paths must be covered.
+        self.assertEqual(self.ps1.count("Use-Utf8ConsoleDecoding"), 3)
+
+    def test_encoding_is_restored(self) -> None:
+        # The console encoding is process/session state; irm|iex users must
+        # get their original encoding back.
+        self.assertEqual(self.ps1.count("Restore-ConsoleDecoding -Previous"), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -215,12 +215,14 @@ class RestartCommandTests(unittest.TestCase):
 
     @unittest.skipIf(sys.platform == "win32", "posix shell shape")
     def test_posix_command_installs_then_relaunches(self):
-        command = build_restart_command(self._staged())
+        with mock.patch.object(updater.shutil, "which", return_value="/usr/bin/git"):
+            command = build_restart_command(self._staged())
         self.assertEqual(command[:2], ["/bin/sh", "-c"])
         script = command[2]
+        # PEP 508 direct reference (uv's --from rejects name[extra] args).
         self.assertIn(
-            "tool install --force --from "
-            "git+https://github.com/renjiegod/doyoutrade.git@v0.2.0 doyoutrade",
+            "tool install --force "
+            "'doyoutrade @ git+https://github.com/renjiegod/doyoutrade.git@v0.2.0'",
             script,
         )
         # Relaunches whether or not the install succeeded (old version stays
@@ -228,6 +230,48 @@ class RestartCommandTests(unittest.TestCase):
         self.assertEqual(script.count("exec /home/x/.local/bin/doyoutrade"), 2)
         self.assertIn("&&", script)
         self.assertIn("||", script)
+
+    def test_requirement_uses_git_source_when_git_available(self):
+        req = updater._install_requirement(
+            self._staged(), platform="linux", which=lambda name: "/usr/bin/git"
+        )
+        self.assertEqual(
+            req, "doyoutrade @ git+https://github.com/renjiegod/doyoutrade.git@v0.2.0"
+        )
+
+    def test_requirement_falls_back_to_tag_archive_without_git(self):
+        # GUI-installed Windows machines usually have no git; uv would die
+        # with "Git executable not found" on a git+ source.
+        req = updater._install_requirement(
+            self._staged(), platform="linux", which=lambda name: None
+        )
+        self.assertEqual(
+            req,
+            "doyoutrade @ "
+            "https://github.com/renjiegod/doyoutrade/archive/refs/tags/v0.2.0.zip",
+        )
+
+    def test_requirement_keeps_qmt_proxy_extra_on_windows(self):
+        # --force replaces the tool venv with exactly what is requested;
+        # dropping the extra would strip the embedded qmt-proxy on update.
+        req = updater._install_requirement(
+            self._staged(), platform="win32", which=lambda name: "C:\\git\\git.exe"
+        )
+        self.assertEqual(
+            req,
+            "doyoutrade[qmt-proxy] @ "
+            "git+https://github.com/renjiegod/doyoutrade.git@v0.2.0",
+        )
+
+    def test_requirement_windows_without_git_uses_archive_with_extra(self):
+        req = updater._install_requirement(
+            self._staged(), platform="win32", which=lambda name: None
+        )
+        self.assertEqual(
+            req,
+            "doyoutrade[qmt-proxy] @ "
+            "https://github.com/renjiegod/doyoutrade/archive/refs/tags/v0.2.0.zip",
+        )
 
     def test_relaunch_argv_falls_back_to_path_lookup(self):
         with mock.patch.object(sys, "argv", ["-"]):

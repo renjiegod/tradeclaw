@@ -316,6 +316,8 @@ uv run doyoutrade-cli account create \
 - **端口是不是变了？** 内置 qmt-proxy 默认 `:8001`（DoYouTrade 占 `:8000`），可用 `qmt_proxy.port` 或 `--qmt-port` 改。
 - **不配 QMT 会报错吗？** 不会。`auto` 链发现没有带 `base_url` 的默认账户时会静默跳过 QMT。
 - **安装报 `os error 448` / “不受信任的装入点”（untrusted mount point）怎么办？** 一般不用管——新版安装脚本已自动规避，且分两层：① 把 uv 的 Python / 缓存 / 工具目录固定到本地安全路径（优先 `%LOCALAPPDATA%\doyoutrade\uv`，必要时回退到系统盘根 `C:\doyoutrade\uv`），并钉住 Python 3.12；② 关键的一层——这个拦截常是**进程级**的（Windows 的 Redirection Trust 缓解 / OneDrive minifilter），换目录也救不回来，此时脚本会自动清掉 uv 建坏的版本链接（junction），改用「免 junction」解释器完成安装：优先复用已下载的 `cpython-3.12.x` 实体目录，其次系统已装的 Python 3.12，最后静默安装 python.org 官方 3.12（仅当前用户、无需管理员）。若连兜底都失败，请检查两件事再重跑：**不要**右键「以管理员身份运行」安装器（提权进程会被 Redirection Trust 拦截穿越 junction）；退出 / 暂停 OneDrive（或对相关目录关闭「文件按需」）。它不是网络问题；旧版脚本用户升级到新版脚本即可。
+- **安装报 `Git executable not found` 怎么办？** 不用装 Git——新版安装脚本检测到本机没有 git 时，会自动把 GitHub 的 `git+` 安装源转换成归档直链（codeload zip）安装，应用内自动更新同样兼容无 Git 环境。只有自定义了非 GitHub 的 `git+` 安装源时才需要先装 [Git for Windows](https://git-scm.com/download/win)。
+- **诊断输出里有乱码（如「鏃犳硶閬嶅巻…」）？** 那是旧版脚本捕获 uv 输出时的编码问题（uv 输出 UTF-8、中文 PowerShell 按 GBK 解码），新版脚本已在捕获时切换 UTF-8 解码，系统错误信息会正常显示为中文。
 - **提示找不到 `doyoutrade` 命令？** 多是新装的 PATH 没在旧窗口生效：**新开**一个 PowerShell 再运行；图形安装包 / 启动 bat 已内置多重回退（读取工具目录标记 + `uv tool dir --bin`），一般会自动定位到 `doyoutrade.exe`。仍不行就 `uv tool list` 看是否装上，未装则重跑安装。
 
 ---
