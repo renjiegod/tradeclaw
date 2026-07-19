@@ -50,6 +50,7 @@ import type {
   KnowledgeGraphConflict,
   KnowledgeGraphEvidence,
   KnowledgeGraphNeighborhood,
+  KnowledgeGraphPath,
   KnowledgeGraphResolveConflictOperation,
   KnowledgeGraphSchema,
   KnowledgeGraphSummary,
@@ -2060,6 +2061,26 @@ export async function getKnowledgeGraph(
     include_expired: opts?.includeExpired ?? false,
   });
   return request(`/knowledge/graph${qs}`);
+}
+
+/**
+ * Find the shortest chain between two entities (``GET /knowledge/graph/path``).
+ * Either endpoint failing to resolve throws {@link ApiError} 404 (``errorCode``
+ * ``kg_entity_not_found``); a resolvable pair with no connecting path within
+ * ``maxHops`` returns ``found: false`` with empty ``nodes``/``edges``.
+ */
+export async function findKnowledgeGraphPath(
+  source: string,
+  target: string,
+  opts?: { maxHops?: number; includeExpired?: boolean },
+): Promise<KnowledgeGraphPath> {
+  const qs = buildQueryString({
+    source,
+    target,
+    max_hops: opts?.maxHops,
+    include_expired: opts?.includeExpired ?? false,
+  });
+  return request(`/knowledge/graph/path${qs}`);
 }
 
 /**

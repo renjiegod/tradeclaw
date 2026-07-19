@@ -5739,6 +5739,146 @@ class SqlAlchemyKnowledgeGraphRepository:
                 [_kg_edge_snapshot(r) for r in edge_rows],
             )
 
+    async def shortest_path(
+        self,
+        source_id: str,
+        target_id: str,
+        *,
+        max_hops: int = 6,
+        include_expired: bool = False,
+        node_limit: int = 400,
+    ) -> dict[str, Any]:
+        """两实体间的最短路径（BFS，仿 :meth:`neighborhood` 的 frontier 扩张）。
+
+        从 ``source_id`` 出发逐跳查边（``include_expired=False`` 时仅 active
+        边），记录每个节点的前驱边 / 前驱节点，命中 ``target_id`` 即回溯出
+        路径。``source_id == target_id`` 时返回单节点、零边、``found=True``。
+        端点节点不存在 → :class:`RecordNotFoundError`（可见失败）。``max_hops``
+        内（或探到 ``node_limit`` 仍）未连通 → ``found=False``（非异常）。
+
+        遍历顺序按 edge / node id 排序，保证同图同结果的确定性。返回
+        ``{found, path_node_ids, hops, nodes, edges}``，其中 ``nodes`` /
+        ``edges`` 只含路径上的实体与关系（快照对象），``nodes`` 按路径顺序。
+        """
+        if not isinstance(max_hops, int) or not 1 <= max_hops <= 8:
+            raise ValueError(f"max_hops must be an int in 1..8, got {max_hops!r}")
+
+        async def _resolve_active(session: Any, node_id: str) -> KnowledgeGraphNodeRecord:
+            record = await session.get(KnowledgeGraphNodeRecord, node_id)
+            if record is None:
+                raise RecordNotFoundError(f"kg node not found: {node_id}")
+            redirect_hops = 0
+            while (
+                record.status == "merged"
+                and record.redirect_to_id
+                and redirect_hops < 8
+            ):
+                nxt = await session.get(
+                    KnowledgeGraphNodeRecord, record.redirect_to_id
+                )
+                if nxt is None:
+                    break
+                record = nxt
+                redirect_hops += 1
+            return record
+
+        async with self.session_factory() as session:
+            source = await _resolve_active(session, source_id)
+            target = await _resolve_active(session, target_id)
+            source_id, target_id = source.id, target.id
+
+            if source_id == target_id:
+                return {
+                    "found": True,
+                    "path_node_ids": [source_id],
+                    "hops": 0,
+                    "nodes": [_kg_node_snapshot(source)],
+                    "edges": [],
+                }
+
+            predecessor_edge: dict[str, KnowledgeGraphEdgeRecord] = {}
+            predecessor_node: dict[str, str] = {}
+            visited = {source_id}
+            frontier = {source_id}
+            found = False
+            for _ in range(max_hops):
+                if not frontier or len(visited) >= node_limit or found:
+                    break
+                conditions = [
+                    or_(
+                        KnowledgeGraphEdgeRecord.src_id.in_(sorted(frontier)),
+                        KnowledgeGraphEdgeRecord.dst_id.in_(sorted(frontier)),
+                    )
+                ]
+                if not include_expired:
+                    conditions.append(KnowledgeGraphEdgeRecord.expired_at.is_(None))
+                result = await session.execute(
+                    select(KnowledgeGraphEdgeRecord)
+                    .where(*conditions)
+                    .order_by(KnowledgeGraphEdgeRecord.id)
+                )
+                next_frontier: set[str] = set()
+                # 按 edge id 排序遍历，前驱选择确定性（等长路径 tie-break 稳定）。
+                for record in sorted(
+                    result.scalars().all(), key=lambda r: r.id
+                ):
+                    for near, far in (
+                        (record.src_id, record.dst_id),
+                        (record.dst_id, record.src_id),
+                    ):
+                        if near in frontier and far not in visited:
+                            visited.add(far)
+                            predecessor_edge[far] = record
+                            predecessor_node[far] = near
+                            next_frontier.add(far)
+                            if far == target_id:
+                                found = True
+                if found:
+                    break
+                frontier = next_frontier
+
+            if not found:
+                return {
+                    "found": False,
+                    "path_node_ids": [],
+                    "hops": 0,
+                    "nodes": [],
+                    "edges": [],
+                }
+
+            # 从 target 回溯到 source，得到有序路径。
+            path_node_ids: list[str] = [target_id]
+            path_edges: list[KnowledgeGraphEdgeRecord] = []
+            cursor = target_id
+            while cursor != source_id:
+                path_edges.append(predecessor_edge[cursor])
+                cursor = predecessor_node[cursor]
+                path_node_ids.append(cursor)
+            path_node_ids.reverse()
+            path_edges.reverse()
+
+            node_records: dict[str, KnowledgeGraphNodeRecord] = {}
+            for chunk in _chunked(sorted(set(path_node_ids))):
+                result = await session.execute(
+                    select(KnowledgeGraphNodeRecord).where(
+                        KnowledgeGraphNodeRecord.id.in_(chunk)
+                    )
+                )
+                for record in result.scalars().all():
+                    node_records[record.id] = record
+            ordered_nodes = [
+                _kg_node_snapshot(node_records[node_id])
+                for node_id in path_node_ids
+                if node_id in node_records
+            ]
+            return {
+                "found": True,
+                "path_node_ids": path_node_ids,
+                "hops": len(path_edges),
+                "nodes": ordered_nodes,
+                "edges": [_kg_edge_snapshot(edge) for edge in path_edges],
+            }
+
     async def counts(self) -> dict[str, int]:
         """Graph size snapshot for diagnostics / sync summaries."""
         async with self.session_factory() as session:

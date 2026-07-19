@@ -283,6 +283,63 @@ class KnowledgeGraphRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("龙头", expired[0].fact)
         self.assertEqual(expired[0].expired_at, datetime(2026, 7, 17, 11, 0))
 
+    async def test_shortest_path_finds_chain_reports_no_path_and_missing(self) -> None:
+        now = datetime(2026, 7, 17, 10, 0)
+        nodes = [
+            KnowledgeGraphNodeSpec(node_type="symbol", name="300059"),
+            KnowledgeGraphNodeSpec(node_type="symbol", name="600000"),
+            KnowledgeGraphNodeSpec(node_type="theme", name="券商"),
+            KnowledgeGraphNodeSpec(node_type="symbol", name="000001"),  # isolated
+        ]
+        edges = [
+            KnowledgeGraphEdgeSpec(
+                src=("symbol", "300059"),
+                dst=("symbol", "600000"),
+                relation="linked_with",
+                fact="东方财富与浦发银行联动",
+                dedupe_key="linked_with|300059|600000",
+            ),
+            KnowledgeGraphEdgeSpec(
+                src=("symbol", "600000"),
+                dst=("theme", "券商"),
+                relation="belongs_to_theme",
+                fact="浦发银行属于券商板块",
+                dedupe_key="belongs_to_theme|600000|券商",
+            ),
+        ]
+        await self.repo.apply_projection(nodes, edges, now=now)
+
+        src = (await self.repo.find_nodes("300059"))[0]
+        theme = (await self.repo.find_nodes("券商"))[0]
+        result = await self.repo.shortest_path(src.id, theme.id)
+        self.assertTrue(result["found"])
+        self.assertEqual(result["hops"], 2)
+        self.assertEqual(len(result["path_node_ids"]), 3)
+        self.assertEqual(result["path_node_ids"][0], src.id)
+        self.assertEqual(result["path_node_ids"][-1], theme.id)
+        self.assertEqual(len(result["nodes"]), 3)
+        self.assertEqual(len(result["edges"]), 2)
+
+        # 同起终点 → 平凡路径
+        same = await self.repo.shortest_path(src.id, src.id)
+        self.assertTrue(same["found"])
+        self.assertEqual(same["hops"], 0)
+        self.assertEqual(same["path_node_ids"], [src.id])
+        self.assertEqual(same["edges"], [])
+
+        # 孤立节点 → max_hops 内不可达（found=False，非异常）
+        isolated = (await self.repo.find_nodes("000001"))[0]
+        none = await self.repo.shortest_path(isolated.id, theme.id)
+        self.assertFalse(none["found"])
+        self.assertEqual(none["path_node_ids"], [])
+        self.assertEqual(none["edges"], [])
+
+        # 端点节点不存在 → 可见失败
+        from doyoutrade.persistence.errors import RecordNotFoundError
+
+        with self.assertRaises(RecordNotFoundError):
+            await self.repo.shortest_path("kg-does-not-exist", theme.id)
+
     async def test_edge_missing_endpoint_node_raises(self) -> None:
         edge = KnowledgeGraphEdgeSpec(
             src=("symbol", "300059"),

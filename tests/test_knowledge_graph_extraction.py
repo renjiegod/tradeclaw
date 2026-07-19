@@ -27,6 +27,8 @@ from types import SimpleNamespace
 from doyoutrade.knowledge.graph_extraction import (
     _parse_extraction_json,
     _validate_candidate,
+    build_extraction_system_prompt,
+    build_extraction_vocabulary,
     extract_and_apply,
     extract_graph_candidates,
     resolve_and_apply_candidates,
@@ -103,6 +105,90 @@ class ParseAndValidateTests(unittest.TestCase):
         self.assertEqual(candidate["relation"], "leads_theme")
         self.assertEqual(candidate["valid_from"], datetime(2026, 3, 10))
         self.assertIsNone(candidate["valid_to"])
+
+
+_CUSTOM_SCHEMA = {
+    "entity_types": [
+        {
+            "key": "custom.sector",
+            "label": "行业",
+            "namespace": "custom",
+            "status": "active",
+        },
+        {
+            "key": "custom.retired",
+            "label": "作废类型",
+            "namespace": "custom",
+            "status": "deprecated",
+        },
+    ],
+    "relation_types": [
+        {
+            "key": "custom.rivals",
+            "label": "同业竞对",
+            "namespace": "custom",
+            "status": "active",
+            "source_type": "symbol",
+            "target_type": "custom.sector",
+        },
+        {
+            "key": "custom.dangling",
+            "label": "悬空关系",
+            "namespace": "custom",
+            "status": "active",
+            "source_type": "symbol",
+            "target_type": "custom.unknown",
+        },
+    ],
+}
+
+
+class ExtractionVocabularyTests(unittest.TestCase):
+    def test_system_default_vocabulary_matches_hardcoded(self) -> None:
+        vocab = build_extraction_vocabulary(None)
+        self.assertEqual(
+            sorted(vocab.relations),
+            ["belongs_to_theme", "leads_theme", "linked_with",
+             "observed_in", "uses_playbook"],
+        )
+        self.assertIn("symbol", vocab.node_types)
+        self.assertNotIn("custom.sector", vocab.node_types)
+
+    def test_custom_schema_extends_vocabulary(self) -> None:
+        vocab = build_extraction_vocabulary(_CUSTOM_SCHEMA)
+        # active custom entity + relation join the vocabulary…
+        self.assertIn("custom.sector", vocab.node_types)
+        self.assertEqual(vocab.relations["custom.rivals"], ("symbol", "custom.sector"))
+        # …deprecated entity and relations with an unknown endpoint are skipped.
+        self.assertNotIn("custom.retired", vocab.node_types)
+        self.assertNotIn("custom.dangling", vocab.relations)
+
+    def test_custom_labels_appear_in_prompt(self) -> None:
+        vocab = build_extraction_vocabulary(_CUSTOM_SCHEMA)
+        prompt = build_extraction_system_prompt("2026-07-19", vocab)
+        self.assertIn("行业", prompt)
+        self.assertIn("同业竞对", prompt)
+        self.assertIn("custom.rivals", prompt)
+        # 系统词表仍在
+        self.assertIn("leads_theme", prompt)
+
+    def test_custom_relation_candidate_validates_with_vocabulary(self) -> None:
+        vocab = build_extraction_vocabulary(_CUSTOM_SCHEMA)
+        raw = {
+            "src_type": "symbol", "src": "300059", "relation": "custom.rivals",
+            "dst_type": "custom.sector", "dst": "互联网金融",
+            "fact": "东方财富归属互联网金融行业", "confidence": 0.8,
+            "valid_from": None, "valid_to": None,
+        }
+        # 系统词表下未知关系
+        rejected, warning = _validate_candidate(raw, 0)
+        self.assertIsNone(rejected)
+        self.assertEqual(warning["reason"], "unknown_relation")
+        # 自定义词表下通过
+        candidate, warning = _validate_candidate(raw, 0, vocab)
+        self.assertIsNotNone(candidate)
+        self.assertIsNone(warning)
+        self.assertEqual(candidate["relation"], "custom.rivals")
 
 
 class ExtractCandidatesTests(unittest.IsolatedAsyncioTestCase):

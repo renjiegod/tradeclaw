@@ -19,6 +19,9 @@ class EntityTypeDefinition:
 
     key: str
     label: str
+    #: 该类型在图谱可视化里的填充色（``#rrggbb``）。前端据此着色；自定义
+    #: 类型把同名字段存进 ``definition_json``，经 ``get_schema`` 一并下发。
+    color: str | None = None
     parent_key: str | None = None
     protected: bool = True
 
@@ -80,12 +83,12 @@ SYSTEM_KNOWLEDGE_GRAPH_SCHEMA = KnowledgeGraphSchema(
     namespace="system",
     version=1,
     entity_types=(
-        EntityTypeDefinition("cycle", "情绪周期"),
-        EntityTypeDefinition("playbook", "战法"),
-        EntityTypeDefinition("role", "个股角色"),
-        EntityTypeDefinition("signal", "决策信号"),
-        EntityTypeDefinition("symbol", "股票"),
-        EntityTypeDefinition("theme", "题材"),
+        EntityTypeDefinition("cycle", "情绪周期", color="#3b6fd4"),
+        EntityTypeDefinition("playbook", "战法", color="#6b7f2e"),
+        EntityTypeDefinition("role", "个股角色", color="#2f8f6b"),
+        EntityTypeDefinition("signal", "决策信号", color="#7b5fc0"),
+        EntityTypeDefinition("symbol", "股票", color="#b26a1f"),
+        EntityTypeDefinition("theme", "题材", color="#b8508f"),
     ),
     relation_types=(
         RelationTypeDefinition(
