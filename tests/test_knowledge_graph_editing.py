@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import event, func, select, text
 
 from doyoutrade.knowledge.editing import (
     GraphProposalMismatch,
@@ -19,7 +19,12 @@ from doyoutrade.persistence.db import (
     create_engine_and_session_factory,
     dispose_engine,
 )
-from doyoutrade.persistence.models import Base, KnowledgeGraphEdgeRecord
+from doyoutrade.persistence.models import (
+    Base,
+    KnowledgeGraphChangeOperationRecord,
+    KnowledgeGraphChangeSetRecord,
+    KnowledgeGraphEdgeRecord,
+)
 from doyoutrade.persistence.repositories import (
     KnowledgeGraphEdgeSpec,
     KnowledgeGraphNodeSpec,
@@ -85,6 +90,80 @@ class KnowledgeGraphCommandServiceTests(unittest.IsolatedAsyncioTestCase):
         history = await self.service.list_change_sets()
         self.assertEqual(history[0]["id"], result["id"])
         self.assertEqual(history[0]["status"], "applied")
+
+    async def test_agent_draft_respects_fk_order_with_foreign_keys_on(self) -> None:
+        """Postgres-style FK: change_set must exist before operations.
+
+        SQLite hides this unless ``PRAGMA foreign_keys=ON``. Regression for the
+        Agent propose path that previously INSERT operations before the parent
+        change_set was flushed (``kg_change_operations_change_set_id_fkey``).
+        """
+
+        @event.listens_for(self.engine.sync_engine, "connect")
+        def _enable_fk(dbapi_connection, _connection_record):  # noqa: ANN001
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        async with self.engine.begin() as conn:
+            await conn.execute(text("PRAGMA foreign_keys=ON"))
+
+        ops = [
+            _relation_operation(
+                source_name=f"300{i:03d}",
+                target_name=f"题材{i}",
+            )
+            for i in range(30)
+        ]
+        draft = await self.service.create_agent_draft(
+            ops,
+            summary="批量 Agent 关系草案（FK 回归）",
+            actor_id="agent-1",
+            now=self.now,
+        )
+        self.assertEqual(draft["status"], "pending")
+        self.assertEqual(len(draft["operations"]), 30)
+
+        async with self.session_factory() as session:
+            cs_count = await session.execute(
+                select(func.count()).select_from(KnowledgeGraphChangeSetRecord)
+            )
+            op_count = await session.execute(
+                select(func.count()).select_from(KnowledgeGraphChangeOperationRecord)
+            )
+            self.assertEqual(int(cs_count.scalar_one()), 1)
+            self.assertEqual(int(op_count.scalar_one()), 30)
+            orphan = await session.execute(
+                select(KnowledgeGraphChangeOperationRecord).where(
+                    KnowledgeGraphChangeOperationRecord.change_set_id != draft["id"]
+                )
+            )
+            self.assertEqual(list(orphan.scalars().all()), [])
+
+    async def test_local_change_respects_fk_order_with_foreign_keys_on(self) -> None:
+        """Local audited edits must flush change_set before operations on PG."""
+
+        @event.listens_for(self.engine.sync_engine, "connect")
+        def _enable_fk(dbapi_connection, _connection_record):  # noqa: ANN001
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        async with self.engine.begin() as conn:
+            await conn.execute(text("PRAGMA foreign_keys=ON"))
+
+        result = await self.service.apply_local_change(
+            [
+                _relation_operation(source_name="300001", target_name="题材A"),
+                _relation_operation(source_name="300002", target_name="题材B"),
+            ],
+            summary="本地批量手工关系（FK 回归）",
+            expected_revision=0,
+            actor_id="local-user",
+            now=self.now,
+        )
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual((await self.repository.counts())["active_edges"], 2)
 
     async def test_agent_draft_does_not_mutate_until_one_time_approval(self) -> None:
         draft = await self.service.create_agent_draft(

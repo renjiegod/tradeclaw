@@ -938,6 +938,9 @@ class KnowledgeGraphCommandService:
             rejected_at=None,
         )
         session.add(change_set)
+        # Flush parent before child operations so PG FK checks pass
+        # (SQLite often skips FK checks and hides this ordering bug).
+        await session.flush()
         operation_records = self._operation_records(change_set_id, operations)
         session.add_all(operation_records)
         edge_ids = await self._apply_operations(
@@ -1031,6 +1034,11 @@ class KnowledgeGraphCommandService:
                 rejected_at=None,
             )
             session.add(change_set)
+            # Postgres enforces FKs on flush; without an ORM relationship,
+            # child rows (operations) can be INSERTed before the parent
+            # change_set. Flush the parent first (same pattern as
+            # apply_projection audit rows).
+            await session.flush()
             session.add_all(self._operation_records(change_set_id, normalized))
             await session.commit()
             return self._change_set_payload(

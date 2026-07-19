@@ -678,6 +678,10 @@ async def sync_deterministic_projection(
     }
     if not changed_sources and not force:
         result["skipped"] = True
+        result["message"] = (
+            "图谱已是最新（来源未变化，未重投影）——"
+            "不是新导入成功；请用个股/角色/YYYY-MM 查询已有节点"
+        )
         result["counts"] = await repository.counts()
         return result
 
@@ -691,6 +695,11 @@ async def sync_deterministic_projection(
 
     result["apply"] = apply_stats
     result["counts"] = await repository.counts()
+    result["message"] = (
+        "图谱同步完成（已重投影变化来源）"
+        if changed_sources
+        else "图谱强制重投影完成"
+    )
     return result
 
 
@@ -790,6 +799,44 @@ def render_neighborhood_markdown(
     return "\n".join(lines).rstrip() + "\n"
 
 
+#: 用户常把确定性来源文件名当成图实体来搜——这些不是 kg 节点。
+_SOURCE_QUERY_MARKERS: tuple[str, ...] = (
+    "强势股时间线",
+    "_strong_timeline",
+    "strong_timeline",
+    "strong-timeline",
+    "roles.jsonl",
+    "roles.md",
+    "_sentiment.jsonl",
+    "decision_signals",
+    "kb:trades",
+    "kb:cycles",
+)
+
+SOURCE_QUERY_HINT = (
+    "这是确定性来源文件名，不是图谱实体节点。"
+    "请搜个股代码/名称、角色词（如「龙头」）或周期月（YYYY-MM）；"
+    "批量时间线应写入 cycles/_strong_timeline.csv（或 cycles/强势股时间线.csv）"
+    "后由本地用户执行「同步投影」/ doyoutrade-cli knowledge graph-sync，"
+    "不要用 knowledge_graph action=propose 逐条灌入。"
+)
+
+
+def is_source_like_query(entity: str) -> bool:
+    """True when ``entity`` looks like a KB source filename, not a graph node."""
+    text = (entity or "").strip().lower()
+    if not text:
+        return False
+    return any(marker.lower() in text for marker in _SOURCE_QUERY_MARKERS)
+
+
+def describe_source_query(entity: str) -> str | None:
+    """Return a dedicated hint when ``entity`` matches a known source alias."""
+    if not is_source_like_query(entity):
+        return None
+    return SOURCE_QUERY_HINT
+
+
 __all__ = [
     "DeterministicProjection",
     "NODE_CYCLE",
@@ -801,12 +848,15 @@ __all__ = [
     "REL_HAS_ROLE",
     "REL_SIGNALS",
     "REL_TRADED_IN",
+    "SOURCE_QUERY_HINT",
     "SOURCE_ROLES",
     "SOURCE_SENTIMENT",
     "SOURCE_SIGNALS",
     "SOURCE_TIMELINE",
     "SOURCE_TRADES",
     "build_deterministic_projection",
+    "describe_source_query",
+    "is_source_like_query",
     "render_neighborhood_markdown",
     "sync_deterministic_projection",
 ]

@@ -1066,6 +1066,17 @@ def build_knowledge_router(
             "expired_at": _iso_or_none(edge.expired_at),
         }
 
+    @router.get("/knowledge/graph/summary")
+    async def graph_summary() -> dict:
+        """Graph size + sample entry-point nodes for the empty-state UI."""
+        repo = _require_graph_repo()
+        counts = await repo.counts()
+        entry_points = await repo.list_entry_points()
+        return {
+            "counts": counts,
+            "entry_points": [_node_payload(node) for node in entry_points],
+        }
+
     @router.get("/knowledge/graph")
     async def graph_neighborhood(
         entity: str = Query(..., min_length=1, description="实体：代码/名称/角色/YYYY-MM/信号 id"),
@@ -1073,13 +1084,37 @@ def build_knowledge_router(
         include_expired: bool = Query(False),
     ) -> dict:
         """Resolve ``entity`` and return its N-hop neighborhood subgraph."""
+        from doyoutrade.knowledge.graph import describe_source_query
+
         repo = _require_graph_repo()
         try:
             matches = await repo.find_nodes(entity.strip())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not matches:
-            raise HTTPException(status_code=404, detail=f"no graph node matches {entity!r}")
+            source_hint = describe_source_query(entity)
+            if source_hint is not None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error_code": "kg_source_not_entity",
+                        "message": f"no graph node matches {entity!r}",
+                        "hint": source_hint,
+                        "query": entity.strip(),
+                    },
+                )
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error_code": "kg_entity_not_found",
+                    "message": f"no graph node matches {entity!r}",
+                    "hint": (
+                        "若数据是新写入的确定性源，先「同步投影」再查；"
+                        "也可换股票代码 / 全名 / 角色词 / YYYY-MM 重试。"
+                    ),
+                    "query": entity.strip(),
+                },
+            )
         center = matches[0]
         nodes, edges = await repo.neighborhood(
             center.id, hops=hops, include_expired=include_expired

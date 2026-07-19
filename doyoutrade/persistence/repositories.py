@@ -5759,6 +5759,84 @@ class SqlAlchemyKnowledgeGraphRepository:
                 "expired_edges": int(expired.scalar_one()),
             }
 
+    async def list_entry_points(
+        self, *, per_type: int = 4, limit: int = 12
+    ) -> list[KnowledgeGraphNodeSnapshot]:
+        """Sample active nodes for UI empty-state chips.
+
+        Prefer ``role`` / ``cycle`` / ``symbol`` (exploration-friendly),
+        ranked by active degree then name for stability. Returns at most
+        ``limit`` nodes, taking up to ``per_type`` from each preferred type
+        before filling with remaining types.
+        """
+        if per_type < 1 or limit < 1:
+            return []
+        preferred = ("role", "cycle", "symbol")
+        async with self.session_factory() as session:
+            degree_src = (
+                select(
+                    KnowledgeGraphEdgeRecord.src_id.label("node_id"),
+                    func.count().label("deg"),
+                )
+                .where(KnowledgeGraphEdgeRecord.expired_at.is_(None))
+                .group_by(KnowledgeGraphEdgeRecord.src_id)
+            )
+            degree_dst = (
+                select(
+                    KnowledgeGraphEdgeRecord.dst_id.label("node_id"),
+                    func.count().label("deg"),
+                )
+                .where(KnowledgeGraphEdgeRecord.expired_at.is_(None))
+                .group_by(KnowledgeGraphEdgeRecord.dst_id)
+            )
+            degree_union = degree_src.union_all(degree_dst).subquery()
+            degree = (
+                select(
+                    degree_union.c.node_id,
+                    func.sum(degree_union.c.deg).label("degree"),
+                )
+                .group_by(degree_union.c.node_id)
+                .subquery()
+            )
+            result = await session.execute(
+                select(KnowledgeGraphNodeRecord, degree.c.degree)
+                .outerjoin(degree, KnowledgeGraphNodeRecord.id == degree.c.node_id)
+                .where(KnowledgeGraphNodeRecord.status == "active")
+                .order_by(
+                    func.coalesce(degree.c.degree, 0).desc(),
+                    KnowledgeGraphNodeRecord.node_type,
+                    KnowledgeGraphNodeRecord.name,
+                )
+                .limit(max(limit * 4, 48))
+            )
+            rows = list(result.all())
+
+        by_type: dict[str, list[KnowledgeGraphNodeRecord]] = {}
+        for record, _deg in rows:
+            by_type.setdefault(record.node_type, []).append(record)
+
+        picked: list[KnowledgeGraphNodeRecord] = []
+        seen: set[str] = set()
+        for node_type in preferred:
+            for record in by_type.get(node_type, [])[:per_type]:
+                if record.id in seen:
+                    continue
+                seen.add(record.id)
+                picked.append(record)
+                if len(picked) >= limit:
+                    return [_kg_node_snapshot(r) for r in picked]
+        for node_type, records in sorted(by_type.items()):
+            if node_type in preferred:
+                continue
+            for record in records[:per_type]:
+                if record.id in seen:
+                    continue
+                seen.add(record.id)
+                picked.append(record)
+                if len(picked) >= limit:
+                    return [_kg_node_snapshot(r) for r in picked]
+        return [_kg_node_snapshot(r) for r in picked]
+
     # -- decision-signal projection feed -----------------------------------
 
     async def list_decision_signal_projection_rows(self) -> list[dict[str, Any]]:

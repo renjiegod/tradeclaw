@@ -52,6 +52,7 @@ import type {
   KnowledgeGraphNeighborhood,
   KnowledgeGraphResolveConflictOperation,
   KnowledgeGraphSchema,
+  KnowledgeGraphSummary,
   KnowledgeGraphSyncResult,
   TradeAttribution,
   WatchlistEntry,
@@ -238,6 +239,8 @@ function parseErrorResponse(rawText: string, status: number): ParsedErrorRespons
       hint?: unknown;
     };
     let detailMessage = fallback;
+    let nestedErrorCode: string | null = null;
+    let nestedHint: string | null = null;
     if (typeof parsed.detail === "string" && parsed.detail.trim()) {
       detailMessage = parsed.detail;
     } else if (parsed.detail && typeof parsed.detail === "object") {
@@ -246,19 +249,31 @@ function parseErrorResponse(rawText: string, status: number): ParsedErrorRespons
       if (typeof messageFromDetail === "string" && messageFromDetail.trim()) {
         detailMessage = messageFromDetail;
       }
+      if (typeof detailObj.error_code === "string" && detailObj.error_code.trim()) {
+        nestedErrorCode = detailObj.error_code;
+      }
+      if (typeof detailObj.hint === "string" && detailObj.hint.trim()) {
+        nestedHint = detailObj.hint;
+      }
     } else if (typeof parsed.error_message === "string" && parsed.error_message.trim()) {
       detailMessage = parsed.error_message;
     } else if (typeof parsed.message === "string" && parsed.message.trim()) {
       detailMessage = parsed.message;
     }
+    const topErrorCode =
+      typeof parsed.error_code === "string" && parsed.error_code.trim()
+        ? parsed.error_code
+        : null;
+    const topHint =
+      typeof parsed.hint === "string" && parsed.hint.trim() ? parsed.hint : null;
     return {
       message: detailMessage || fallback,
       detail: parsed.detail,
       traceId: typeof parsed.trace_id === "string" && parsed.trace_id.trim() ? parsed.trace_id : null,
       timestamp: typeof parsed.timestamp === "string" && parsed.timestamp.trim() ? parsed.timestamp : null,
-      errorCode: typeof parsed.error_code === "string" && parsed.error_code.trim() ? parsed.error_code : null,
+      errorCode: topErrorCode ?? nestedErrorCode,
       errorType: typeof parsed.error_type === "string" && parsed.error_type.trim() ? parsed.error_type : null,
-      hint: typeof parsed.hint === "string" && parsed.hint.trim() ? parsed.hint : null,
+      hint: topHint ?? nestedHint,
     };
   } catch {
     return {
@@ -2021,9 +2036,18 @@ export async function getSymbolRoles(): Promise<SymbolRoles> {
 }
 
 /**
+ * Graph size + sample entry-point nodes for the empty-state chips
+ * (``GET /knowledge/graph/summary``). No entity query required.
+ */
+export async function getKnowledgeGraphSummary(): Promise<KnowledgeGraphSummary> {
+  return request("/knowledge/graph/summary");
+}
+
+/**
  * Resolve an entity (代码 / 名称 / 角色词 / ``YYYY-MM`` / 信号 id) and fetch
  * its N-hop knowledge-graph neighborhood (``GET /knowledge/graph``). 404 =
- * no node matches (the projection may simply be stale — offer a sync);
+ * no node matches (may be a source filename — see ``errorCode`` / ``hint``
+ * on {@link ApiError}; otherwise the projection may be stale — offer sync);
  * ``include_expired`` adds superseded bi-temporal history edges.
  */
 export async function getKnowledgeGraph(
@@ -2040,9 +2064,10 @@ export async function getKnowledgeGraph(
 
 /**
  * Idempotently re-project the deterministic sources (角色卡 / 情绪时间线 /
- * 交割单归因 / 决策信号) into the knowledge graph
+ * 交割单归因 / 决策信号 / 强势股时间线) into the knowledge graph
  * (``POST /knowledge/graph/sync``). Cheap when nothing changed
- * (``skipped: true``); ``force`` bypasses the content-hash watermarks.
+ * (``skipped: true`` = already up to date, not a fresh import);
+ * ``force`` bypasses the content-hash watermarks. Prefer ``message`` when present.
  */
 export async function syncKnowledgeGraph(force?: boolean): Promise<KnowledgeGraphSyncResult> {
   const qs = buildQueryString({ force: force ?? false });

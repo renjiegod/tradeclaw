@@ -58,6 +58,82 @@ class KnowledgeGraphSchemaApiTests(unittest.TestCase):
         self.assertEqual(body["version"], 1)
 
 
+class KnowledgeGraphSummaryApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.engine, session_factory = create_engine_and_session_factory(
+            f"sqlite+aiosqlite:///{self.tmp / 'runtime.db'}"
+        )
+
+        async def _create_schema() -> None:
+            async with self.engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+
+        asyncio.run(_create_schema())
+        self.repository = SqlAlchemyKnowledgeGraphRepository(session_factory)
+        app = FastAPI()
+        app.include_router(
+            build_knowledge_router(
+                lambda: self.tmp,
+                knowledge_graph_repository=self.repository,
+            )
+        )
+        self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        import shutil
+
+        asyncio.run(dispose_engine(self.engine))
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_summary_empty_graph(self) -> None:
+        response = self.client.get("/knowledge/graph/summary")
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["counts"]["nodes"], 0)
+        self.assertEqual(body["entry_points"], [])
+
+    def test_summary_after_manual_relation_and_source_404(self) -> None:
+        created = self.client.post(
+            "/knowledge/graph/changes",
+            json={
+                "operations": [
+                    {
+                        "op": "create_relation",
+                        "source": {
+                            "type": "symbol",
+                            "name": "300059",
+                            "display_name": "东方财富",
+                        },
+                        "relation": "belongs_to_theme",
+                        "target": {"type": "theme", "name": "券商"},
+                        "fact": "东方财富属于券商题材。",
+                        "confidence": 1,
+                    }
+                ],
+                "summary": "手工题材",
+                "expected_revision": 0,
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        summary = self.client.get("/knowledge/graph/summary")
+        self.assertEqual(summary.status_code, 200, summary.text)
+        body = summary.json()
+        self.assertGreaterEqual(body["counts"]["nodes"], 2)
+        self.assertGreaterEqual(body["counts"]["active_edges"], 1)
+        self.assertGreater(len(body["entry_points"]), 0)
+
+        missing = self.client.get(
+            "/knowledge/graph",
+            params={"entity": "强势股时间线"},
+        )
+        self.assertEqual(missing.status_code, 404)
+        detail = missing.json()["detail"]
+        self.assertEqual(detail["error_code"], "kg_source_not_entity")
+        self.assertIn("不是图谱实体", detail["hint"])
+
+
 class KnowledgeGraphEditingApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())

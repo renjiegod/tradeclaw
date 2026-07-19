@@ -394,15 +394,25 @@ class KnowledgeGraphTool(OperationHandler):
                     f"operation_{self.name}.failed",
                     {**base_payload, "error_code": "entity_not_found", "entity": entity},
                 )
+                from doyoutrade.knowledge.graph import describe_source_query
+
+                source_hint = describe_source_query(entity)
+                hint = source_hint or (
+                    "若该实体应来自 roles.jsonl / trades / 强势股时间线 / "
+                    "decision_signals 等确定性源，请本地用户在图谱页执行"
+                    "「同步投影」或运行 doyoutrade-cli knowledge graph-sync "
+                    "后再查；Agent 不能 action=sync。"
+                    "也可换股票代码 / 全名 / 角色词 / YYYY-MM 重试。"
+                    "批量强势股时间线不要 action=propose：写入 CSV 后请用户 sync。"
+                )
+                error_code = (
+                    "source_not_entity" if source_hint is not None else "entity_not_found"
+                )
                 return ToolResult(
                     text=format_error_text(
-                        "entity_not_found",
+                        error_code,
                         f"no graph node matches {entity!r}",
-                        "若该实体应来自 roles.jsonl / trades / 强势股时间线 / "
-                        "decision_signals 等确定性源，请本地用户在图谱页执行"
-                        "「同步投影」或运行 doyoutrade-cli knowledge graph-sync "
-                        "后再查；Agent 不能 action=sync。"
-                        "也可换股票代码 / 全名重试。",
+                        hint,
                     ),
                     is_error=True,
                 )
