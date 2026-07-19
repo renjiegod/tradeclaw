@@ -158,7 +158,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install-win.ps1
 > 中文注释/字符串会被拆坏并直接 `ParserError`。`install-win.ps1` 是纯 ASCII 包装，会把
 > `install.ps1` 转成带 BOM 的临时副本再执行。
 
-脚本会自动：检测 / 安装 [uv](https://docs.astral.sh/uv/)（自带 Python 3.12，零前置）→ 把 `doyoutrade` 装成常驻命令。**Windows 版会一并装上内置 qmt-proxy**（含 xtquant），macOS / Linux 只装 DoYouTrade 本体。装完在你自己的终端运行：
+脚本会自动：检测 / 安装 [uv](https://docs.astral.sh/uv/)（钉 Python 3.12，零前置）→ 把 `doyoutrade` 装成常驻命令。**Windows 版会一并装上内置 qmt-proxy**（含 xtquant），macOS / Linux 只装 DoYouTrade 本体。Windows 上脚本还会把 uv 的 Python / 工具目录固定到本地安全路径，绕开被 OneDrive / 文件夹重定向接管的 `AppData\Roaming`（否则会报 `os error 448`，详见下方「Windows / QMT 常见疑问」）。装完在你自己的终端运行：
 
 ```bash
 doyoutrade
@@ -315,6 +315,8 @@ uv run doyoutrade-cli account create \
 - **DoYouTrade 本体要装在 Windows 上吗？** 不需要。可跑在任意机器上，通过局域网访问 Windows 上的 qmt-proxy（默认 `:8001`）即可。
 - **端口是不是变了？** 内置 qmt-proxy 默认 `:8001`（DoYouTrade 占 `:8000`），可用 `qmt_proxy.port` 或 `--qmt-port` 改。
 - **不配 QMT 会报错吗？** 不会。`auto` 链发现没有带 `base_url` 的默认账户时会静默跳过 QMT。
+- **安装报 `os error 448` / “不受信任的装入点”（untrusted mount point）怎么办？** 一般不用管——新版安装脚本已自动规避：它会把 uv 的 Python / 缓存 / 工具目录固定到本地安全路径（优先 `%LOCALAPPDATA%\doyoutrade\uv`，必要时回退到系统盘根 `C:\doyoutrade\uv`），并钉住 Python 3.12，不再把托管 Python 下到会被 OneDrive「文件按需」或文件夹重定向接管的 `AppData\Roaming`。若你的是**旧版脚本**才会撞上这个错：它不是网络问题，重装到新版脚本即可；实在无法升级脚本时，临时办法是对该目录关闭 OneDrive 同步 /「文件按需」（右键「始终保留在此设备上」），或把账户目录移出组策略重定向后重跑。
+- **提示找不到 `doyoutrade` 命令？** 多是新装的 PATH 没在旧窗口生效：**新开**一个 PowerShell 再运行；图形安装包 / 启动 bat 已内置多重回退（读取工具目录标记 + `uv tool dir --bin`），一般会自动定位到 `doyoutrade.exe`。仍不行就 `uv tool list` 看是否装上，未装则重跑安装。
 
 ---
 ## ⚡ 你能用它做什么

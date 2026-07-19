@@ -51,6 +51,139 @@ function Write-Info { param($m) Write-Host "==> $m" -ForegroundColor Cyan }
 function Write-Ok   { param($m) Write-Host "[OK] $m" -ForegroundColor Green }
 function Write-Warn { param($m) Write-Host "[!] $m" -ForegroundColor Yellow }
 
+# Pin the interpreter. uv defaults to the newest release satisfying
+# requires-python (>=3.12); left alone it grabs 3.14, which (a) has no xtquant
+# wheel and (b) is what got downloaded into %APPDATA%\uv and tripped the
+# untrusted-mount (os error 448) failure. 3.12 is the stable floor we build on.
+$script:DoyoutradePythonVersion = "3.12"
+
+# Filled in by Set-UvRuntimeEnv for the diagnostics block.
+$script:UvHomeInfo = $null
+
+function Test-PathBehindReparsePoint {
+    # True if $Path or any existing ancestor is a reparse point (junction /
+    # symlink / OneDrive cloud placeholder / redirected folder) — exactly the
+    # class of thing that makes Windows return ERROR_UNTRUSTED_MOUNT_POINT
+    # (os error 448) when uv traverses it to query its managed python.
+    param([string]$Path)
+    try {
+        $current = [System.IO.Path]::GetFullPath($Path)
+    } catch {
+        return $false
+    }
+    while ($current) {
+        if (Test-Path -LiteralPath $current) {
+            try {
+                $attr = [System.IO.File]::GetAttributes($current)
+                if ($attr -band [System.IO.FileAttributes]::ReparsePoint) { return $true }
+            } catch {
+                # Unable to read attributes -> treat as suspect so we prefer a
+                # cleaner candidate.
+                return $true
+            }
+        }
+        $parent = [System.IO.Path]::GetDirectoryName($current)
+        if ([string]::IsNullOrEmpty($parent) -or $parent -eq $current) { break }
+        $current = $parent
+    }
+    return $false
+}
+
+function Get-SystemDriveUvHome {
+    $sysDrive = if ($env:SystemDrive) { $env:SystemDrive } else { "C:" }
+    return (Join-Path $sysDrive "doyoutrade\uv")
+}
+
+function Resolve-SafeUvHome {
+    # Pick a uv home (managed python + cache + tools) that avoids Roaming /
+    # OneDrive and any reparse point, so uv never hits os error 448 querying its
+    # interpreter. Prefer LocalAppData (not roamed, rarely synced); fall back to
+    # a plain dir on the system-drive root if LocalAppData is itself behind a
+    # mount point or unwritable.
+    $candidates = @()
+    if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA "doyoutrade\uv") }
+    $candidates += (Get-SystemDriveUvHome)
+
+    foreach ($cand in $candidates) {
+        try {
+            New-Item -ItemType Directory -Force -Path $cand -ErrorAction Stop | Out-Null
+        } catch {
+            continue
+        }
+        if (Test-PathBehindReparsePoint -Path $cand) { continue }
+        try {
+            $probe = Join-Path $cand ".write-probe"
+            [System.IO.File]::WriteAllText($probe, "ok")
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        } catch {
+            continue
+        }
+        return $cand
+    }
+    # Last resort: the system-drive path, even unvalidated — better than Roaming.
+    return (Get-SystemDriveUvHome)
+}
+
+function Set-UvRuntimeEnv {
+    # Point uv's python / cache / tool directories at a safe local home for
+    # *this* process (so the child uv calls inherit it) and persist to the User
+    # scope so later `uv tool upgrade` / `uv tool list` (and the launcher's
+    # install check) resolve the same relocated tools.
+    param([Parameter(Mandatory = $true)][string]$UvHome)
+    $pyDir    = Join-Path $UvHome "python"
+    $cacheDir = Join-Path $UvHome "cache"
+    $toolDir  = Join-Path $UvHome "tools"
+    foreach ($d in @($pyDir, $cacheDir, $toolDir)) {
+        New-Item -ItemType Directory -Force -Path $d | Out-Null
+    }
+    $env:UV_PYTHON_INSTALL_DIR = $pyDir
+    $env:UV_CACHE_DIR          = $cacheDir
+    $env:UV_TOOL_DIR           = $toolDir
+    try {
+        [System.Environment]::SetEnvironmentVariable("UV_PYTHON_INSTALL_DIR", $pyDir, "User")
+        [System.Environment]::SetEnvironmentVariable("UV_CACHE_DIR", $cacheDir, "User")
+        [System.Environment]::SetEnvironmentVariable("UV_TOOL_DIR", $toolDir, "User")
+    } catch {
+        Write-Warn "无法把 uv 环境变量持久化到用户环境（不影响本次安装）：$($_.Exception.Message)"
+    }
+    Write-Ok "uv 运行目录已固定到本地安全路径：$UvHome"
+    $script:UvHomeInfo = [pscustomobject]@{ Home = $UvHome; Python = $pyDir; Cache = $cacheDir; Tools = $toolDir }
+    return $script:UvHomeInfo
+}
+
+function Test-IsUntrustedMountError {
+    # Recognise ERROR_UNTRUSTED_MOUNT_POINT in whatever locale uv surfaced it.
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    return ($Text -match "os error 448") `
+        -or ($Text -match "untrusted mount") `
+        -or ($Text -match "不受信任的装入点")
+}
+
+function Invoke-UvStreaming {
+    # Run uv, stream every line to the console live *and* capture it so we can
+    # inspect the output (e.g. detect os error 448) and drive a retry. We flip
+    # ErrorActionPreference to Continue for the duration: under the script-wide
+    # "Stop", PowerShell 5.1 wraps uv's stderr progress ("Resolved N packages…")
+    # into a terminating NativeCommandError and would abort a perfectly healthy
+    # download. Success/failure is judged solely by $LASTEXITCODE.
+    param([Parameter(Mandatory = $true)][string[]]$UvArgs)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $lines = New-Object System.Collections.Generic.List[string]
+    try {
+        & uv @UvArgs 2>&1 | ForEach-Object {
+            $line = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { "$_" }
+            Write-Host $line
+            $lines.Add($line)
+        }
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    return [pscustomobject]@{ ExitCode = $code; Output = ($lines -join "`n") }
+}
+
 function Invoke-QuietCapture {
     # Best-effort command capture for diagnostics; never throws.
     param([scriptblock]$Script)
@@ -88,6 +221,10 @@ function Write-InstallDiagnostics {
     Write-Host "  USERPROFILE: $env:USERPROFILE"
     Write-Host "  UV_TOOL_BIN_DIR: $(if ($env:UV_TOOL_BIN_DIR) { $env:UV_TOOL_BIN_DIR } else { '(unset)' })"
     Write-Host "  XDG_BIN_HOME: $(if ($env:XDG_BIN_HOME) { $env:XDG_BIN_HOME } else { '(unset)' })"
+    Write-Host "  UV_PYTHON_INSTALL_DIR: $(if ($env:UV_PYTHON_INSTALL_DIR) { $env:UV_PYTHON_INSTALL_DIR } else { '(unset)' })"
+    Write-Host "  UV_TOOL_DIR: $(if ($env:UV_TOOL_DIR) { $env:UV_TOOL_DIR } else { '(unset)' })"
+    Write-Host "  UV_CACHE_DIR: $(if ($env:UV_CACHE_DIR) { $env:UV_CACHE_DIR } else { '(unset)' })"
+    Write-Host "  Python(固定): $script:DoyoutradePythonVersion"
     if (-not [string]::IsNullOrWhiteSpace($Detail)) {
         Write-Host "  详情: $Detail"
     }
@@ -255,6 +392,13 @@ function Update-ShellPath {
 }
 
 function Install-DoYouTrade {
+    # Route uv's managed python / cache / tools off Roaming (OneDrive / folder
+    # redirection territory) *before* touching uv, so both the install-check and
+    # any uninstall target the same safe home. This is the root fix for the
+    # os error 448 "untrusted mount point" failure.
+    $uvHome = Resolve-SafeUvHome
+    Set-UvRuntimeEnv -UvHome $uvHome | Out-Null
+
     $alreadyInstalled = Test-DoYouTradeInstalled
 
     if ($alreadyInstalled) {
@@ -288,19 +432,47 @@ function Install-DoYouTrade {
 
     Write-Info "正在安装 doyoutrade[qmt-proxy]（源：$Source）…"
     Write-Info "Windows 版内置 qmt-proxy（含 xtquant），首次安装会拉取依赖并构建，可能需要几分钟。"
-    # Windows 默认安装 qmt-proxy extra：内置行情 / 交易代理，`doyoutrade` 即可 --mode both 启动。
+
+    # 先把固定版本的 Python 预置到安全目录里（best-effort）。uv 默认会抓满足
+    # requires-python 的最新版（如 3.14），既没有 xtquant wheel，又正是它被下载进
+    # Roaming 后触发 os error 448 的根源。钉到 3.12 从源头规避。
+    Write-Info "准备 Python $script:DoyoutradePythonVersion（固定版本，兼容 xtquant，落到本地安全目录）…"
+    $pyProvision = Invoke-UvStreaming -UvArgs @("python", "install", $script:DoyoutradePythonVersion)
+    if ($pyProvision.ExitCode -ne 0) {
+        Write-Warn "预置 Python $script:DoyoutradePythonVersion 返回非零（$($pyProvision.ExitCode)），继续尝试安装……"
+    }
+
     # 用 PEP 508 direct reference（"name[extra] @ <source>"）而不是 `--from <source> "name[extra]"`：
     # uv 的 `--from` 把位置参数当作可执行名解析，PackageName 不接受 `[extra]`，会以
     # "conflicts with install request" 误拒（uv 0.10+ 已验证）。PEP 508 写法对所有 uv 版本都稳。
-    # 不加 `2>&1`：uv 把进度（"Resolved N packages..."）写到 stderr，PowerShell 5.1 在
-    # `$ErrorActionPreference = "Stop"` 下会把 `2>&1` 捕获的 stderr 行包成 NativeCommandError
-    # 并终止脚本，明明在正常解析/下载也会被误判成失败。stderr 直接落到控制台，靠
-    # `$LASTEXITCODE` 判定真正的成败。下方 `uv tool uninstall` 同理。
-    uv tool install "doyoutrade[qmt-proxy] @ $Source"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Die -Message "安装失败，请检查网络 / 安装源后重试。" `
-            -Stage "uv-tool-install" -ExitCode $LASTEXITCODE `
-            -Detail "command: uv tool install `"doyoutrade[qmt-proxy] @ $Source`""
+    # `--python` 钉住解释器；输出经 Invoke-UvStreaming 边显示边捕获（内部把
+    # ErrorActionPreference 临时切到 Continue，避免 stderr 进度被包成 NativeCommandError
+    # 误杀），成败只看 $LASTEXITCODE。
+    $installArgs = @("tool", "install", "--python", $script:DoyoutradePythonVersion, "doyoutrade[qmt-proxy] @ $Source")
+    $result = Invoke-UvStreaming -UvArgs $installArgs
+
+    # 防御式重试：若已选的安全目录仍被判为「不受信任的装入点」(os error 448)——
+    # 例如 LocalAppData 也被 OneDrive「文件按需」接管、或 reparse 检测漏网——
+    # 退到系统盘根目录（绝不会被漫游 / 重定向）再来一次。
+    $sysDriveHome = Get-SystemDriveUvHome
+    if (($result.ExitCode -ne 0) -and (Test-IsUntrustedMountError $result.Output) -and ($uvHome -ne $sysDriveHome)) {
+        Write-Warn "检测到「不受信任的装入点」(os error 448)。当前 uv 目录疑似被 OneDrive / 文件夹重定向接管，改用系统盘目录 $sysDriveHome 重试……"
+        Set-UvRuntimeEnv -UvHome $sysDriveHome | Out-Null
+        $uvHome = $sysDriveHome
+        Invoke-UvStreaming -UvArgs @("python", "install", $script:DoyoutradePythonVersion) | Out-Null
+        $result = Invoke-UvStreaming -UvArgs $installArgs
+    }
+
+    if ($result.ExitCode -ne 0) {
+        $detail = "command: uv tool install --python $script:DoyoutradePythonVersion `"doyoutrade[qmt-proxy] @ $Source`""
+        if (Test-IsUntrustedMountError $result.Output) {
+            $detail += " | 命中 os error 448（不受信任的装入点）。多为 OneDrive「文件按需」接管了用户目录，或 AppData 被组策略重定向到网络位置。请关闭该目录的 OneDrive 同步 /「文件按需」，或把账户目录移出重定向后重试。"
+            Write-Die -Message "安装失败：uv 无法访问其 Python 目录（不受信任的装入点 / OneDrive）。这不是网络问题。" `
+                -Stage "uv-tool-install" -ExitCode $result.ExitCode -Detail $detail
+        } else {
+            Write-Die -Message "安装失败，请检查网络 / 安装源后重试。" `
+                -Stage "uv-tool-install" -ExitCode $result.ExitCode -Detail $detail
+        }
     }
 
     Update-ShellPath
