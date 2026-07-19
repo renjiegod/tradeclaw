@@ -69,6 +69,10 @@ $script:UvHomeInfo = $null
 # (instead of letting uv resolve "3.12" through its junctioned managed dir).
 $script:JunctionFreePython = $null
 
+# The source actually handed to uv. Differs from $Source only when the machine
+# has no git and the GitHub git+ source was converted to an archive URL.
+$script:EffectiveSource = $null
+
 function Test-PathBehindReparsePoint {
     # True if $Path or any existing ancestor is a reparse point (junction /
     # symlink / OneDrive cloud placeholder / redirected folder) — exactly the
@@ -345,6 +349,27 @@ function Resolve-JunctionFreePython {
     return (Install-PythonFromPythonOrg -UvHome $UvHome)
 }
 
+function Use-Utf8ConsoleDecoding {
+    # uv (Rust) always writes UTF-8 to a *piped* stdout/stderr，而中文 Windows 的
+    # PowerShell 5.1 默认按系统代码页（CP936）解码管道字节——于是 uv 报错里的中文
+    # 系统消息（如「无法遍历该路径…」）在捕获后变成「鏃犳硶閬嶅巻…」乱码，用户复制
+    # 给支持人员的诊断没法读。捕获 uv 输出前切到 UTF-8 解码，用完由调用方还原。
+    # Returns the previous encoding (or $null when the host has no console).
+    try {
+        $prev = [Console]::OutputEncoding
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+        return $prev
+    } catch {
+        return $null
+    }
+}
+
+function Restore-ConsoleDecoding {
+    param($Previous)
+    if ($null -eq $Previous) { return }
+    try { [Console]::OutputEncoding = $Previous } catch { }
+}
+
 function Invoke-UvStreaming {
     # Run uv, stream every line to the console live *and* capture it so we can
     # inspect the output (e.g. detect os error 448) and drive a retry. We flip
@@ -355,6 +380,7 @@ function Invoke-UvStreaming {
     param([Parameter(Mandatory = $true)][string[]]$UvArgs)
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
+    $prevEnc = Use-Utf8ConsoleDecoding
     $lines = New-Object System.Collections.Generic.List[string]
     try {
         & uv @UvArgs 2>&1 | ForEach-Object {
@@ -365,6 +391,7 @@ function Invoke-UvStreaming {
         $code = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $prev
+        Restore-ConsoleDecoding -Previous $prevEnc
     }
     return [pscustomobject]@{ ExitCode = $code; Output = ($lines -join "`n") }
 }
@@ -374,6 +401,7 @@ function Invoke-QuietCapture {
     param([scriptblock]$Script)
     $oldEap = $ErrorActionPreference
     $ErrorActionPreference = "SilentlyContinue"
+    $prevEnc = Use-Utf8ConsoleDecoding
     try {
         $out = & $Script 2>&1 | Out-String
         return $out.Trim()
@@ -381,7 +409,31 @@ function Invoke-QuietCapture {
         return "(capture failed: $($_.Exception.Message))"
     } finally {
         $ErrorActionPreference = $oldEap
+        Restore-ConsoleDecoding -Previous $prevEnc
     }
+}
+
+function Test-IsGitMissingError {
+    # uv needs a git executable for `git+https://...` sources; GUI-installer
+    # machines rarely have one. Recognise uv's message in either locale.
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    return ($Text -match "Git executable not found") `
+        -or ($Text -match "Ensure that Git is installed")
+}
+
+function Convert-GitSourceToArchiveUrl {
+    # GitHub `git+https://github.com/<owner>/<repo>[.git][@<ref>]` -> codeload
+    # 归档直链 `https://github.com/<owner>/<repo>/archive/<ref>.zip`。uv 构建
+    # 归档 URL 完全不需要 git；<ref> 可以是分支、tag 或 commit SHA。非 GitHub
+    # 的 git+ 源返回 $null（无法转换，只能请用户装 Git）。
+    param([string]$GitSource)
+    if ([string]::IsNullOrWhiteSpace($GitSource)) { return $null }
+    $m = [regex]::Match($GitSource, '^git\+(https://github\.com/[^/@]+/[^/@]+?)(?:\.git)?(?:@([^@]+))?$')
+    if (-not $m.Success) { return $null }
+    $repoUrl = $m.Groups[1].Value
+    $ref = if ($m.Groups[2].Success -and $m.Groups[2].Value) { $m.Groups[2].Value } else { "main" }
+    return "$repoUrl/archive/$ref.zip"
 }
 
 function Write-InstallDiagnostics {
@@ -402,6 +454,11 @@ function Write-InstallDiagnostics {
     }
     Write-Host "  时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     Write-Host "  Source: $Source"
+    if ($script:EffectiveSource -and ($script:EffectiveSource -ne $Source)) {
+        Write-Host "  实际安装源(无Git归档直链): $script:EffectiveSource"
+    }
+    $gitVer = if (Get-Command git -ErrorAction SilentlyContinue) { Invoke-QuietCapture { git --version } } else { $null }
+    Write-Host "  git: $(if ($gitVer) { $gitVer } else { '(未安装)' })"
     Write-Host "  Force: $Force"
     Write-Host "  USERPROFILE: $env:USERPROFILE"
     Write-Host "  UV_TOOL_BIN_DIR: $(if ($env:UV_TOOL_BIN_DIR) { $env:UV_TOOL_BIN_DIR } else { '(unset)' })"
@@ -640,7 +697,24 @@ function Install-DoYouTrade {
         }
     }
 
-    Write-Info "正在安装 doyoutrade[qmt-proxy]（源：$Source）…"
+    # git+ 源需要本机有 git 可执行文件，而 GUI 安装包的目标用户机器上大多没有
+    # （实测报「Git executable not found」）。没有 git 时把 GitHub git+ 源转成
+    # 归档直链（codeload zip），uv 直接下载构建，零 git 依赖；版本号是 pyproject
+    # 里的静态值，不依赖 git describe，从归档构建结果一致。
+    $script:EffectiveSource = $Source
+    if (($Source -like "git+*") -and -not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $archiveUrl = Convert-GitSourceToArchiveUrl -GitSource $Source
+        if ($archiveUrl) {
+            Write-Warn "未检测到 Git——改用 GitHub 归档直链安装（无需 Git）：$archiveUrl"
+            $script:EffectiveSource = $archiveUrl
+        } else {
+            Write-Die -Message "安装源为 git+ 但本机没有 Git，且该源无法转换为归档直链。请先安装 Git for Windows（https://git-scm.com/download/win）后重跑本脚本。" `
+                -Stage "git-missing" -Detail "source: $Source | git not on PATH and source is not a github git+ URL"
+        }
+    }
+    $effectiveSource = $script:EffectiveSource
+
+    Write-Info "正在安装 doyoutrade[qmt-proxy]（源：$effectiveSource）…"
     Write-Info "Windows 版内置 qmt-proxy（含 xtquant），首次安装会拉取依赖并构建，可能需要几分钟。"
 
     # 先把固定版本的 Python 预置到安全目录里（best-effort）。uv 默认会抓满足
@@ -660,7 +734,7 @@ function Install-DoYouTrade {
     # `--python` 钉住解释器；输出经 Invoke-UvStreaming 边显示边捕获（内部把
     # ErrorActionPreference 临时切到 Continue，避免 stderr 进度被包成 NativeCommandError
     # 误杀），成败只看 $LASTEXITCODE。
-    $installArgs = @("tool", "install", "--force", "--python", $script:DoyoutradePythonVersion, "doyoutrade[qmt-proxy] @ $Source")
+    $installArgs = @("tool", "install", "--force", "--python", $script:DoyoutradePythonVersion, "doyoutrade[qmt-proxy] @ $effectiveSource")
     $result = Invoke-UvStreaming -UvArgs $installArgs
 
     # 防御式重试（os error 448「不受信任的装入点」）：这类拦截多是进程级的
@@ -685,7 +759,7 @@ function Install-DoYouTrade {
         $pyExe = Resolve-JunctionFreePython -PyDirs @($env:UV_PYTHON_INSTALL_DIR, $oldPyDir) -UvHome $uvHome
         if ($pyExe) {
             $script:JunctionFreePython = $pyExe
-            $installArgs = @("tool", "install", "--force", "--python", $pyExe, "doyoutrade[qmt-proxy] @ $Source")
+            $installArgs = @("tool", "install", "--force", "--python", $pyExe, "doyoutrade[qmt-proxy] @ $effectiveSource")
             $result = Invoke-UvStreaming -UvArgs $installArgs
         } else {
             Write-Warn "未能取得可用的 Python $script:DoyoutradePythonVersion（uv 托管目录 / 系统 / python.org 兜底均失败）。"
@@ -694,10 +768,14 @@ function Install-DoYouTrade {
 
     if ($result.ExitCode -ne 0) {
         $pythonSpec = if ($script:JunctionFreePython) { $script:JunctionFreePython } else { $script:DoyoutradePythonVersion }
-        $detail = "command: uv tool install --force --python $pythonSpec `"doyoutrade[qmt-proxy] @ $Source`""
+        $detail = "command: uv tool install --force --python $pythonSpec `"doyoutrade[qmt-proxy] @ $effectiveSource`""
         if (Test-IsUntrustedMountError $result.Output) {
             $detail += " | 命中 os error 448（不受信任的装入点），且免 junction 解释器回退未能完成安装。常见诱因：右键「以管理员身份运行」了安装器（Redirection Trust 会拦截提权进程穿越 junction，请用普通双击重跑）；OneDrive「文件按需」（请先退出 OneDrive 再重跑）；AppData 被组策略重定向到网络位置。"
             Write-Die -Message "安装失败：uv 无法访问其 Python 目录（不受信任的装入点）。这不是网络问题。" `
+                -Stage "uv-tool-install" -ExitCode $result.ExitCode -Detail $detail
+        } elseif (Test-IsGitMissingError $result.Output) {
+            $detail += " | uv 报「Git executable not found」：本机没有 git 而安装源仍是 git+。这不是网络问题。请安装 Git for Windows（https://git-scm.com/download/win）后重跑，或改用 GitHub 归档直链作为安装源。"
+            Write-Die -Message "安装失败：本机缺少 Git 且未能改走归档直链。" `
                 -Stage "uv-tool-install" -ExitCode $result.ExitCode -Detail $detail
         } else {
             Write-Die -Message "安装失败，请检查网络 / 安装源后重试。" `
