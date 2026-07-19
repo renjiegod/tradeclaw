@@ -25,6 +25,13 @@ vi.mock("../api", () => ({
   getSectorHeat: vi.fn(),
 }));
 
+// The 情绪周期 timeline has its own fetch path (getSentimentTimeline) that is
+// exercised in its own test — stub it here so the market-review page test stays
+// focused on the whole-market data axes it owns.
+vi.mock("../components/SentimentTimeline", () => ({
+  SentimentTimeline: () => <div data-testid="sentiment-timeline" />,
+}));
+
 // Import the mocked ApiError class so tests can construct rejections.
 import { ApiError } from "../api";
 

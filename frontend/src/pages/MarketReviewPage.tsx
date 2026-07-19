@@ -26,6 +26,7 @@ import {
 import { ChangePctTag, formatAmount } from "../components/StockDetailModal";
 import { LadderChart } from "../components/LadderChart";
 import { MarketSentimentCard } from "../components/MarketSentimentCard";
+import { SentimentTimeline } from "../components/SentimentTimeline";
 import { usePageRefreshToken } from "../pageRefreshContext";
 import type {
   FundFlowData,
@@ -406,10 +407,10 @@ export function MarketReviewPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-col">
           <Typography.Title level={3} className="!mb-0">
-            打板复盘
+            市场复盘
           </Typography.Title>
           <Typography.Text type="secondary">
-            涨停面板 · 连板梯队 · 情绪温度计 · 龙虎榜 · 题材热度 · 资金流排名（仅供研究，非投资建议）
+            情绪周期 · 涨停面板 · 连板梯队 · 情绪温度计 · 龙虎榜 · 题材热度 · 资金流排名（仅供研究，非投资建议）
           </Typography.Text>
         </div>
         <Space>
@@ -466,6 +467,10 @@ export function MarketReviewPage() {
           )}
         </Card>
       </div>
+
+      {/* 情绪周期 — 跨月的情绪节奏，给上面的当日情绪温度计提供历史背景。
+          与当日快照互补：温度计是「今天几度」，时间轴是「处在周期哪一段」。 */}
+      <SentimentTimeline months={3} />
 
       {/* 龙虎榜 */}
       <Card

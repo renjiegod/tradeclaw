@@ -111,7 +111,7 @@ describe("PlaybookPanel", () => {
     expect(ebbTag.className).toContain("!text-emerald-700");
   });
 
-  it("renders tags, and shows — for missing stage / summary (never fabricated)", async () => {
+  it("renders tags, omits the stage tag when blank, and shows — for missing summary", async () => {
     vi.mocked(getPlaybook).mockResolvedValue(playbook);
 
     render(<PlaybookPanel />);
@@ -126,15 +126,15 @@ describe("PlaybookPanel", () => {
     const chips = within(tagWrap).getAllByTestId("playbook-tag");
     expect(chips.map((c) => c.textContent)).toEqual(["打板", "情绪"]);
 
-    // Third card: null stage + null summary render "—", never fabricated.
+    // Third card: 情绪阶段 is optional — a null stage renders NO stage tag
+    // (a swing / trend 战法 leaves it blank), rather than a bare "—" chip.
     const unknownCard = within(grid)
       .getAllByTestId("playbook-card")
       .find((c) => c.getAttribute("data-path") === "2026-05/未知阶段.md") as HTMLElement;
-    const unknownStage = within(unknownCard).getByTestId("playbook-stage-tag");
-    expect(unknownStage.textContent).toBe("—");
+    expect(within(unknownCard).queryByTestId("playbook-stage-tag")).toBeNull();
     // No tag row for an empty tags array.
     expect(within(unknownCard).queryByTestId("playbook-tags")).toBeNull();
-    // Summary "—" present.
+    // Summary "—" still present (missing summary is never fabricated).
     expect(unknownCard.textContent).toContain("—");
   });
 
@@ -144,7 +144,7 @@ describe("PlaybookPanel", () => {
     render(<PlaybookPanel />);
 
     expect(
-      await screen.findByText("暂无打板模式（对话里说「把这个打法记进模式库」即可添加）"),
+      await screen.findByText("暂无战法（对话里说「把这个打法记进战法库」即可添加）"),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("playbook-grid")).toBeNull();
   });

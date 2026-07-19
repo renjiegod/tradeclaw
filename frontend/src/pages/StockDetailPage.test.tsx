@@ -32,6 +32,14 @@ vi.mock("../components/LocalMarketKlinePanel", () => ({
   ),
 }));
 
+// 标的角色 has its own fetch path (getSymbolRoles) covered by its own test —
+// stub it so the stock-detail test doesn't need to mock that API surface.
+vi.mock("../components/SymbolRoleCards", () => ({
+  SymbolRoleCards: ({ symbol }: { symbol?: string }) => (
+    <div data-testid="symbol-role-cards-stub">{symbol}</div>
+  ),
+}));
+
 const catalogRow: InstrumentCatalogRow = {
   symbol: "600519.SH",
   display_name: "贵州茅台",

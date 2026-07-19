@@ -5,8 +5,6 @@ import { KnowledgeBrowserPanel } from "../components/KnowledgeBrowserPanel";
 import { KnowledgeGraphPanel } from "../components/KnowledgeGraphPanel";
 import { PageIntro } from "../components/PageIntro";
 import { PlaybookPanel } from "../components/PlaybookPanel";
-import { SentimentTimeline } from "../components/SentimentTimeline";
-import { SymbolRoleCards } from "../components/SymbolRoleCards";
 import { TradeAttributionPanel } from "../components/TradeAttributionPanel";
 import { TradeImportCard } from "../components/TradeImportCard";
 
@@ -18,11 +16,15 @@ const INTRO = {
 
 /**
  * Top-level Knowledge page — a 复盘 (review) workbench over the private
- * knowledge base, organised as tabs so the page stays short: 周期与角色
- * ({@link SentimentTimeline} + {@link SymbolRoleCards}), 交割单
- * ({@link TradeImportCard} + {@link TradeAttributionPanel}), 图谱
- * ({@link KnowledgeGraphPanel}), 打板模式库 ({@link PlaybookPanel}) and
- * 全库文件 ({@link KnowledgeBrowserPanel}).
+ * knowledge base, organised as tabs so the page stays short. Only carriers that
+ * are *style-agnostic* live here: 交割单 ({@link TradeImportCard} +
+ * {@link TradeAttributionPanel}), 图谱 ({@link KnowledgeGraphPanel}), 战法库
+ * ({@link PlaybookPanel} — the generic 战法 / 打法 library) and 全库文件
+ * ({@link KnowledgeBrowserPanel}). The market-sentiment cycle and per-symbol
+ * roles that used to live here moved to the 市场复盘 page ({@link
+ * import("./MarketReviewPage").MarketReviewPage}) and the 个股详情 page
+ * ({@link import("./StockDetailPage").StockDetailPage}) respectively, since
+ * those are 情绪派 / per-symbol concerns rather than generic knowledge carriers.
  * Reached from the sidebar "知识库" entry under ``/knowledge``.
  */
 export function KnowledgePage() {
@@ -35,19 +37,9 @@ export function KnowledgePage() {
     <div className="w-full">
       <PageIntro title={INTRO.title} description={INTRO.description} />
       <Tabs
-        defaultActiveKey="review"
+        defaultActiveKey="trades"
         data-testid="knowledge-tabs"
         items={[
-          {
-            key: "review",
-            label: "周期与角色",
-            children: (
-              <div className="flex flex-col gap-4">
-                <SentimentTimeline months={3} />
-                <SymbolRoleCards />
-              </div>
-            ),
-          },
           {
             key: "trades",
             label: "交割单",
@@ -67,7 +59,7 @@ export function KnowledgePage() {
           },
           {
             key: "playbook",
-            label: "打板模式库",
+            label: "战法库",
             children: <PlaybookPanel />,
           },
           {

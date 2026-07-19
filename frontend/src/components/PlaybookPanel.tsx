@@ -6,7 +6,7 @@ import { getKnowledgeFile, getPlaybook } from "../api";
 import type { KnowledgeFile, PlaybookEntry } from "../types";
 import MarkdownPreview from "./MarkdownPreview";
 
-const EMPTY_HINT = "暂无打板模式（对话里说「把这个打法记进模式库」即可添加）";
+const EMPTY_HINT = "暂无战法（对话里说「把这个打法记进战法库」即可添加）";
 
 /** Fallback for any missing / blank authored field. Never fabricate a value. */
 const DASH = "—";
@@ -124,11 +124,13 @@ function cleanTags(tags: string[] | null | undefined): string[] {
 }
 
 /**
- * The 打板模式库 (playbook) card grid for the Knowledge review workbench.
- * Renders each 战法 / 打法 the user has summarised into the private knowledge
- * base as one card: the 打法名 (pattern, falling back to title), a 情绪阶段
- * tag coloured by {@link stageStyleFor} in lock-step with the sentiment
- * palette, the 摘要, free-form tags, and the last-updated time. Clicking a card
+ * The 战法库 (playbook) card grid for the Knowledge review workbench — a
+ * style-agnostic library of 战法 / 打法, not limited to 打板. Renders each
+ * entry the user has summarised into the private knowledge base as one card:
+ * the 打法名 (pattern, falling back to title), an *optional* 情绪阶段 tag
+ * coloured by {@link stageStyleFor} in lock-step with the sentiment palette
+ * (blank for styles that don't track a sentiment stage), the 摘要, free-form
+ * tags, and the last-updated time. Clicking a card
  * fetches the full markdown via {@link getKnowledgeFile} and renders it in an
  * antd Modal via {@link MarkdownPreview}. Pure div + Tailwind + AntD.
  *
@@ -157,7 +159,7 @@ export function PlaybookPanel() {
   useEffect(() => {
     void load().catch((error: unknown) => {
       const msg = error instanceof Error ? error.message : String(error);
-      message.error(`加载打板模式库失败：${msg}`);
+      message.error(`加载战法库失败：${msg}`);
     });
   }, [load]);
 
@@ -192,7 +194,7 @@ export function PlaybookPanel() {
       className="!border !border-shell-line !bg-card-bg shadow-shell-card"
       title={
         <div className="flex flex-col">
-          <Typography.Text strong>打板模式库</Typography.Text>
+          <Typography.Text strong>战法库</Typography.Text>
           <Typography.Text type="secondary" className="!text-xs !font-normal">
             {subtitle}
           </Typography.Text>
@@ -206,7 +208,7 @@ export function PlaybookPanel() {
           onClick={() =>
             void load().catch((error: unknown) => {
               const msg = error instanceof Error ? error.message : String(error);
-              message.error(`加载打板模式库失败：${msg}`);
+              message.error(`加载战法库失败：${msg}`);
             })
           }
         >
@@ -296,13 +298,18 @@ function PlaybookCard({
         <span className="text-base font-semibold text-shell-ink">
           {patternLabel(entry)}
         </span>
-        <Tag
-          color={stageStyle.color}
-          className={`!m-0 !rounded-md !border !px-2 !py-0.5 !text-xs !font-medium ${stageStyle.className}`}
-          data-testid="playbook-stage-tag"
-        >
-          {orDash(entry.stage)}
-        </Tag>
+        {stage ? (
+          // 情绪阶段 is optional metadata — 打板 / 情绪派 entries carry it, but
+          // a swing / trend 战法 may leave it blank. Only render the tag when
+          // authored, rather than showing a bare ``—`` chip.
+          <Tag
+            color={stageStyle.color}
+            className={`!m-0 !rounded-md !border !px-2 !py-0.5 !text-xs !font-medium ${stageStyle.className}`}
+            data-testid="playbook-stage-tag"
+          >
+            {stage}
+          </Tag>
+        ) : null}
       </div>
 
       <div className="text-xs text-shell-ink">{orDash(entry.summary)}</div>

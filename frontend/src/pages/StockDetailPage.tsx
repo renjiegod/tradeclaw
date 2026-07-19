@@ -11,6 +11,7 @@ import {
   syncInstrumentCatalog,
 } from "../api";
 import { LocalMarketKlinePanel } from "../components/LocalMarketKlinePanel";
+import { SymbolRoleCards } from "../components/SymbolRoleCards";
 import { usePageRefreshToken } from "../pageRefreshContext";
 import type { InstrumentCatalogRow, WatchlistEntry } from "../types";
 
@@ -168,6 +169,9 @@ export function StockDetailPage() {
           </Button>
         </Space>
       </section>
+
+      {/* 标的角色 — 情绪派 / 题材炒作 的定位标注，仅在该票被标过角色时出现。 */}
+      <SymbolRoleCards symbol={resolvedSymbol} />
 
       <section className="flex flex-1 flex-col gap-2 min-h-0">
         <Typography.Title level={4} className="!mb-0 !leading-tight">

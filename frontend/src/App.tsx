@@ -120,7 +120,7 @@ const NAV_TREE: NavEntry[] = [
       { key: "stocks", label: "股票" },
       { key: "watchlist", label: "自选股" },
       { key: "stock_monitor", label: "盯盘" },
-      { key: "market_review", label: "打板复盘" },
+      { key: "market_review", label: "市场复盘" },
       { key: "knowledge", label: "知识库" },
     ],
   },
