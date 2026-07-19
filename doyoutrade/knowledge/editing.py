@@ -124,6 +124,8 @@ class _EntityTypeSchemaDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     label: str = Field(min_length=1, max_length=255)
+    #: 可视化填充色（``#rrggbb``），落进 ``definition_json``、经 get_schema 下发。
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     parent_key: str | None = Field(default=None, max_length=128)
 
 

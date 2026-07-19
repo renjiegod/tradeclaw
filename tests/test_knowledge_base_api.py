@@ -57,6 +57,15 @@ class KnowledgeGraphSchemaApiTests(unittest.TestCase):
         self.assertEqual(body["namespace"], "system")
         self.assertEqual(body["version"], 1)
 
+    def test_system_entity_types_carry_visualization_colors(self) -> None:
+        body = self.client.get("/knowledge/graph/schema").json()
+        entity_types = {item["key"]: item for item in body["entity_types"]}
+        self.assertEqual(entity_types["symbol"]["color"], "#b26a1f")
+        self.assertEqual(entity_types["theme"]["color"], "#b8508f")
+        # 每个系统实体类型都带一个 #rrggbb 色。
+        for item in entity_types.values():
+            self.assertRegex(str(item.get("color")), r"^#[0-9a-fA-F]{6}$")
+
 
 class KnowledgeGraphSummaryApiTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -132,6 +141,85 @@ class KnowledgeGraphSummaryApiTests(unittest.TestCase):
         detail = missing.json()["detail"]
         self.assertEqual(detail["error_code"], "kg_source_not_entity")
         self.assertIn("不是图谱实体", detail["hint"])
+
+    def _create_relation(
+        self, source, relation, target, fact, expected_revision
+    ) -> None:
+        response = self.client.post(
+            "/knowledge/graph/changes",
+            json={
+                "operations": [
+                    {
+                        "op": "create_relation",
+                        "source": source,
+                        "relation": relation,
+                        "target": target,
+                        "fact": fact,
+                        "confidence": 1,
+                    }
+                ],
+                "summary": fact,
+                "expected_revision": expected_revision,
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+
+    def test_shortest_path_endpoint(self) -> None:
+        # 300059 —belongs_to_theme→ 券商 —observed_in→ 2026-03（两跳链）
+        self._create_relation(
+            {"type": "symbol", "name": "300059", "display_name": "东方财富"},
+            "belongs_to_theme",
+            {"type": "theme", "name": "券商"},
+            "东方财富属于券商题材。",
+            0,
+        )
+        self._create_relation(
+            {"type": "theme", "name": "券商"},
+            "observed_in",
+            {"type": "cycle", "name": "2026-03"},
+            "券商题材活跃于 2026-03。",
+            1,
+        )
+        # 另建一个与主链断开的战法节点
+        self._create_relation(
+            {"type": "symbol", "name": "600000"},
+            "uses_playbook",
+            {"type": "playbook", "name": "首板低吸"},
+            "浦发银行使用首板低吸。",
+            2,
+        )
+
+        found = self.client.get(
+            "/knowledge/graph/path",
+            params={"source": "300059", "target": "2026-03"},
+        )
+        self.assertEqual(found.status_code, 200, found.text)
+        body = found.json()
+        self.assertTrue(body["found"])
+        self.assertEqual(body["hops"], 2)
+        self.assertEqual(len(body["path_node_ids"]), 3)
+        self.assertEqual(body["source"]["name"], "300059")
+        self.assertEqual(body["target"]["name"], "2026-03")
+        self.assertEqual(len(body["edges"]), 2)
+
+        # 断开的战法 → 无路径（found=false，200）
+        no_path = self.client.get(
+            "/knowledge/graph/path",
+            params={"source": "首板低吸", "target": "2026-03"},
+        )
+        self.assertEqual(no_path.status_code, 200, no_path.text)
+        self.assertFalse(no_path.json()["found"])
+        self.assertEqual(no_path.json()["path_node_ids"], [])
+
+        # 端点不存在 → 404
+        missing = self.client.get(
+            "/knowledge/graph/path",
+            params={"source": "300059", "target": "不存在的实体xyz"},
+        )
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(
+            missing.json()["detail"]["error_code"], "kg_entity_not_found"
+        )
 
 
 class KnowledgeGraphEditingApiTests(unittest.TestCase):
@@ -264,7 +352,11 @@ class KnowledgeGraphEditingApiTests(unittest.TestCase):
         created = self.client.put(
             "/knowledge/graph/schema/entity_type/custom.indicator",
             json={
-                "definition": {"label": "技术指标", "parent_key": None},
+                "definition": {
+                    "label": "技术指标",
+                    "color": "#12ab34",
+                    "parent_key": None,
+                },
                 "expected_revision": 0,
                 "expected_version": 0,
             },
@@ -279,6 +371,8 @@ class KnowledgeGraphEditingApiTests(unittest.TestCase):
             if item["key"].startswith("custom.")
         }
         self.assertEqual(custom["custom.indicator"]["label"], "技术指标")
+        # 自定义类型的可视化颜色经 definition_json 往返下发。
+        self.assertEqual(custom["custom.indicator"]["color"], "#12ab34")
         self.assertFalse(custom["custom.indicator"]["protected"])
 
         updated = self.client.put(

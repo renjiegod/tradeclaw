@@ -1135,6 +1135,63 @@ def build_knowledge_router(
             "edges": [_edge_payload(e) for e in edges],
         }
 
+    @router.get("/knowledge/graph/path")
+    async def graph_path(
+        source: str = Query(..., min_length=1, description="起点实体：代码/名称/角色/YYYY-MM/信号 id"),
+        target: str = Query(..., min_length=1, description="终点实体"),
+        max_hops: int = Query(6, ge=1, le=8),
+        include_expired: bool = Query(False),
+    ) -> dict:
+        """Shortest path between two resolved entities (read-only)."""
+        repo = _require_graph_repo()
+
+        async def _resolve(raw: str):
+            try:
+                matches = await repo.find_nodes(raw.strip())
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if not matches:
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error_code": "kg_entity_not_found",
+                        "message": f"no graph node matches {raw!r}",
+                        "hint": (
+                            "端点必须是图谱里已有实体；若是新写入的确定性源，"
+                            "先「同步投影」再寻路，或换代码 / 全名 / YYYY-MM 重试。"
+                        ),
+                        "query": raw.strip(),
+                    },
+                )
+            return matches[0]
+
+        src_center = await _resolve(source)
+        dst_center = await _resolve(target)
+        result = await repo.shortest_path(
+            src_center.id,
+            dst_center.id,
+            max_hops=max_hops,
+            include_expired=include_expired,
+        )
+        session_factory = getattr(repo, "session_factory", None)
+        revision = 0
+        if session_factory is not None:
+            from doyoutrade.knowledge.editing import KnowledgeGraphCommandService
+
+            revision = await KnowledgeGraphCommandService(
+                session_factory
+            ).get_head_revision()
+        return {
+            "revision": revision,
+            "source": _node_payload(src_center),
+            "target": _node_payload(dst_center),
+            "found": result["found"],
+            "hops": result["hops"],
+            "path_node_ids": result["path_node_ids"],
+            "nodes": [_node_payload(n) for n in result["nodes"]],
+            "edges": [_edge_payload(e) for e in result["edges"]],
+        }
+
     @router.post("/knowledge/graph/sync")
     async def graph_sync(request: Request, force: bool = Query(False)) -> dict:
         """Idempotently re-project deterministic sources into the graph."""
