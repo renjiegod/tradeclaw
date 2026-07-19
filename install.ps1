@@ -57,8 +57,17 @@ function Write-Warn { param($m) Write-Host "[!] $m" -ForegroundColor Yellow }
 # untrusted-mount (os error 448) failure. 3.12 is the stable floor we build on.
 $script:DoyoutradePythonVersion = "3.12"
 
+# The last 3.12.x that shipped a python.org Windows binary installer (later
+# 3.12.x are source-only security releases). Used only by the junction-free
+# fallback when uv-managed Python is unusable (os error 448).
+$script:DoyoutradePythonOrgVersion = "3.12.10"
+
 # Filled in by Set-UvRuntimeEnv for the diagnostics block.
 $script:UvHomeInfo = $null
+
+# Set when the os error 448 fallback switched to an explicit interpreter path
+# (instead of letting uv resolve "3.12" through its junctioned managed dir).
+$script:JunctionFreePython = $null
 
 function Test-PathBehindReparsePoint {
     # True if $Path or any existing ancestor is a reparse point (junction /
@@ -160,6 +169,182 @@ function Test-IsUntrustedMountError {
         -or ($Text -match "不受信任的装入点")
 }
 
+function Test-PythonExeUsable {
+    # True when $Exe launches and is exactly the pinned minor version (3.12).
+    # Rejects the Microsoft Store app-execution alias (exits non-zero with a
+    # "Python was not found" hint) and any other-version interpreter.
+    param([string]$Exe)
+    if ([string]::IsNullOrWhiteSpace($Exe)) { return $false }
+    if (-not (Test-Path -LiteralPath $Exe)) { return $false }
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $out = & $Exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        $line = ($out | Select-Object -First 1)
+        return ("$line".Trim() -eq $script:DoyoutradePythonVersion)
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
+function Remove-DanglingMinorVersionLinks {
+    # A failed `uv python install` leaves a half-made minor-version junction
+    # (cpython-3.12-windows-...) behind, and every later uv command dies on it
+    # while enumerating managed pythons. uv cannot self-heal this state
+    # (astral-sh/uv#19622). Deleting a junction does not traverse it, so the
+    # cleanup works even on machines where traversal is what error 448 blocks.
+    param([string[]]$PyDirs)
+    foreach ($dir in ($PyDirs | Where-Object { $_ } | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        $links = Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue |
+            Where-Object {
+                ($_.Name -like "cpython-*") -and
+                ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+            }
+        foreach ($link in $links) {
+            Write-Warn "清理安装失败残留的 Python 版本链接（junction）：$($link.FullName)"
+            try {
+                [System.IO.Directory]::Delete($link.FullName, $false)
+            } catch {
+                Write-Warn "  清理失败（不影响继续）：$($_.Exception.Message)"
+            }
+        }
+    }
+}
+
+function Get-ManagedJunctionFreePython {
+    # error 448 只毁掉 minor-version junction；`uv python install` 下载出来的
+    # cpython-<完整版本>-... 是普通目录，本体完好可用。找出其中最新的解释器。
+    param([string[]]$PyDirs)
+    foreach ($dir in ($PyDirs | Where-Object { $_ } | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        $cands = Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue |
+            Where-Object {
+                ($_.Name -like "cpython-$($script:DoyoutradePythonVersion).*") -and
+                -not ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+            } |
+            Sort-Object -Property @{Expression = {
+                $m = [regex]::Match($_.Name, "^cpython-(\d+\.\d+\.\d+)")
+                if ($m.Success) { [version]$m.Groups[1].Value } else { [version]"0.0.0" }
+            }} -Descending
+        foreach ($cand in $cands) {
+            $exe = Join-Path $cand.FullName "python.exe"
+            if (Test-PythonExeUsable -Exe $exe) { return $exe }
+        }
+    }
+    return $null
+}
+
+function Get-SystemPython {
+    # 系统里已装的 CPython 3.12：优先 py 启动器（读 PEP 514 注册表，覆盖
+    # python.org / 商店外的常规安装），其次 PATH 上的 python*。
+    $ver = $script:DoyoutradePythonVersion
+    $candidates = @()
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $exe = & py "-$ver" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1
+            if (($LASTEXITCODE -eq 0) -and $exe) { $candidates += "$exe".Trim() }
+        } catch {
+            # py 启动器没有该版本时静默跳过，走后面的 PATH 探测。
+        } finally {
+            $ErrorActionPreference = $prev
+        }
+    }
+    foreach ($name in @("python$ver", "python3", "python")) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($cmd -and $cmd.Source) { $candidates += $cmd.Source }
+    }
+    foreach ($exe in ($candidates | Select-Object -Unique)) {
+        if (Test-PythonExeUsable -Exe $exe) { return $exe }
+    }
+    return $null
+}
+
+function Install-PythonFromPythonOrg {
+    # 终极兜底：静默安装 python.org 官方 3.12（仅当前用户、不进 PATH、无需管理员），
+    # 目录里没有任何 junction / symlink，对 error 448 完全免疫。
+    param([Parameter(Mandatory = $true)][string]$UvHome)
+    $ver = $script:DoyoutradePythonOrgVersion
+    $targetDir = Join-Path (Split-Path -Parent $UvHome) ("python" + ($script:DoyoutradePythonVersion -replace "\.", ""))
+    $targetExe = Join-Path $targetDir "python.exe"
+    if (Test-PythonExeUsable -Exe $targetExe) {
+        Write-Ok "检测到之前兜底安装的 Python：$targetExe"
+        return $targetExe
+    }
+
+    $file = "python-$ver-amd64.exe"
+    # 官方源优先；国内网络不畅时退华为云 / npmmirror（均为 python.org ftp 目录镜像）。
+    $urls = @(
+        "https://www.python.org/ftp/python/$ver/$file",
+        "https://mirrors.huaweicloud.com/python/$ver/$file",
+        "https://registry.npmmirror.com/-/binary/python/$ver/$file"
+    )
+    $installer = Join-Path $UvHome $file
+    $downloaded = $false
+    foreach ($url in $urls) {
+        Write-Info "下载 Python $ver 官方安装包：$url"
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+            $downloaded = $true
+            break
+        } catch {
+            Write-Warn "下载失败（$($_.Exception.Message)），尝试下一个源……"
+        }
+    }
+    if (-not $downloaded) { return $null }
+
+    Write-Info "静默安装 Python $ver（仅当前用户，无需管理员）到 $targetDir …"
+    # TargetDir 手工加引号：PS 5.1 的 Start-Process 只用空格拼接 ArgumentList，
+    # 用户名带空格时路径会被拆散。
+    $installerArgs = @(
+        "/quiet", "InstallAllUsers=0", "PrependPath=0", "Include_launcher=0",
+        "Include_test=0", "AssociateFiles=0", "Shortcuts=0",
+        "TargetDir=`"$targetDir`""
+    )
+    try {
+        $proc = Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait -PassThru
+        if ($proc.ExitCode -ne 0) {
+            Write-Warn "Python 官方安装包返回非零退出码：$($proc.ExitCode)"
+            return $null
+        }
+    } catch {
+        Write-Warn "运行 Python 官方安装包失败：$($_.Exception.Message)"
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-PythonExeUsable -Exe $targetExe) { return $targetExe }
+    Write-Warn "Python 官方安装包退出码为 0，但 $targetExe 不可用。"
+    return $null
+}
+
+function Resolve-JunctionFreePython {
+    # os error 448 的拦截多是进程级（Redirection Trust / OneDrive minifilter），
+    # 与目录位置无关，此时 uv 托管 Python 依赖的 minor-version junction 永远建不
+    # 起来。这里返回一个完全不经过 junction 的解释器路径，显式传给 --python：
+    #   1) 复用 uv 已下载的 cpython-<完整版本> 实体目录（junction 只是它旁边的别名）
+    #   2) 系统已装的 Python 3.12
+    #   3) 静默安装 python.org 官方 3.12（仅当前用户）
+    param([string[]]$PyDirs, [Parameter(Mandatory = $true)][string]$UvHome)
+    Remove-DanglingMinorVersionLinks -PyDirs $PyDirs
+    $exe = Get-ManagedJunctionFreePython -PyDirs $PyDirs
+    if ($exe) {
+        Write-Ok "复用 uv 已下载的 Python（绕过版本链接 junction）：$exe"
+        return $exe
+    }
+    $exe = Get-SystemPython
+    if ($exe) {
+        Write-Ok "使用系统已安装的 Python $script:DoyoutradePythonVersion：$exe"
+        return $exe
+    }
+    return (Install-PythonFromPythonOrg -UvHome $UvHome)
+}
+
 function Invoke-UvStreaming {
     # Run uv, stream every line to the console live *and* capture it so we can
     # inspect the output (e.g. detect os error 448) and drive a retry. We flip
@@ -225,6 +410,7 @@ function Write-InstallDiagnostics {
     Write-Host "  UV_TOOL_DIR: $(if ($env:UV_TOOL_DIR) { $env:UV_TOOL_DIR } else { '(unset)' })"
     Write-Host "  UV_CACHE_DIR: $(if ($env:UV_CACHE_DIR) { $env:UV_CACHE_DIR } else { '(unset)' })"
     Write-Host "  Python(固定): $script:DoyoutradePythonVersion"
+    Write-Host "  免junction解释器: $(if ($script:JunctionFreePython) { $script:JunctionFreePython } else { '(未启用)' })"
     if (-not [string]::IsNullOrWhiteSpace($Detail)) {
         Write-Host "  详情: $Detail"
     }
@@ -477,23 +663,41 @@ function Install-DoYouTrade {
     $installArgs = @("tool", "install", "--force", "--python", $script:DoyoutradePythonVersion, "doyoutrade[qmt-proxy] @ $Source")
     $result = Invoke-UvStreaming -UvArgs $installArgs
 
-    # 防御式重试：若已选的安全目录仍被判为「不受信任的装入点」(os error 448)——
-    # 例如 LocalAppData 也被 OneDrive「文件按需」接管、或 reparse 检测漏网——
-    # 退到系统盘根目录（绝不会被漫游 / 重定向）再来一次。
+    # 防御式重试（os error 448「不受信任的装入点」）：这类拦截多是进程级的
+    # （Redirection Trust 缓解 / OneDrive minifilter），换目录往往救不回来——实测
+    # 干净的 C:\doyoutrade\uv 一样中招。所以一次重试里做两件事：
+    #   1) 若还在 LocalAppData，顺手迁到系统盘根（排除目录被重定向的少数情况）；
+    #   2) 核心修复：不再让 uv 经由它建不起来的 minor-version junction 解析
+    #      "3.12"，改用 Resolve-JunctionFreePython 拿一个实体解释器路径显式传给
+    #      --python（uv 对显式路径直接查询，不枚举托管目录，不再触碰 junction）。
     $sysDriveHome = Get-SystemDriveUvHome
-    if (($result.ExitCode -ne 0) -and (Test-IsUntrustedMountError $result.Output) -and ($uvHome -ne $sysDriveHome)) {
-        Write-Warn "检测到「不受信任的装入点」(os error 448)。当前 uv 目录疑似被 OneDrive / 文件夹重定向接管，改用系统盘目录 $sysDriveHome 重试……"
-        Set-UvRuntimeEnv -UvHome $sysDriveHome | Out-Null
-        $uvHome = $sysDriveHome
-        Invoke-UvStreaming -UvArgs @("python", "install", $script:DoyoutradePythonVersion) | Out-Null
-        $result = Invoke-UvStreaming -UvArgs $installArgs
+    if (($result.ExitCode -ne 0) -and (Test-IsUntrustedMountError $result.Output)) {
+        $oldPyDir = $env:UV_PYTHON_INSTALL_DIR
+        if ($uvHome -ne $sysDriveHome) {
+            Write-Warn "检测到「不受信任的装入点」(os error 448)。先把 uv 目录迁到系统盘 $sysDriveHome ……"
+            Set-UvRuntimeEnv -UvHome $sysDriveHome | Out-Null
+            $uvHome = $sysDriveHome
+            Invoke-UvStreaming -UvArgs @("python", "install", $script:DoyoutradePythonVersion) | Out-Null
+        } else {
+            Write-Warn "检测到「不受信任的装入点」(os error 448)。"
+        }
+        Write-Warn "该拦截通常是进程级的（Redirection Trust / OneDrive），uv 的 Python 版本链接（junction）在本机不可用，改用免 junction 解释器重试……"
+        $pyExe = Resolve-JunctionFreePython -PyDirs @($env:UV_PYTHON_INSTALL_DIR, $oldPyDir) -UvHome $uvHome
+        if ($pyExe) {
+            $script:JunctionFreePython = $pyExe
+            $installArgs = @("tool", "install", "--force", "--python", $pyExe, "doyoutrade[qmt-proxy] @ $Source")
+            $result = Invoke-UvStreaming -UvArgs $installArgs
+        } else {
+            Write-Warn "未能取得可用的 Python $script:DoyoutradePythonVersion（uv 托管目录 / 系统 / python.org 兜底均失败）。"
+        }
     }
 
     if ($result.ExitCode -ne 0) {
-        $detail = "command: uv tool install --force --python $script:DoyoutradePythonVersion `"doyoutrade[qmt-proxy] @ $Source`""
+        $pythonSpec = if ($script:JunctionFreePython) { $script:JunctionFreePython } else { $script:DoyoutradePythonVersion }
+        $detail = "command: uv tool install --force --python $pythonSpec `"doyoutrade[qmt-proxy] @ $Source`""
         if (Test-IsUntrustedMountError $result.Output) {
-            $detail += " | 命中 os error 448（不受信任的装入点）。多为 OneDrive「文件按需」接管了用户目录，或 AppData 被组策略重定向到网络位置。请关闭该目录的 OneDrive 同步 /「文件按需」，或把账户目录移出重定向后重试。"
-            Write-Die -Message "安装失败：uv 无法访问其 Python 目录（不受信任的装入点 / OneDrive）。这不是网络问题。" `
+            $detail += " | 命中 os error 448（不受信任的装入点），且免 junction 解释器回退未能完成安装。常见诱因：右键「以管理员身份运行」了安装器（Redirection Trust 会拦截提权进程穿越 junction，请用普通双击重跑）；OneDrive「文件按需」（请先退出 OneDrive 再重跑）；AppData 被组策略重定向到网络位置。"
+            Write-Die -Message "安装失败：uv 无法访问其 Python 目录（不受信任的装入点）。这不是网络问题。" `
                 -Stage "uv-tool-install" -ExitCode $result.ExitCode -Detail $detail
         } else {
             Write-Die -Message "安装失败，请检查网络 / 安装源后重试。" `
