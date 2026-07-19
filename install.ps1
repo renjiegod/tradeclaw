@@ -327,6 +327,20 @@ function Test-DoYouTradeInstalled {
     }
 }
 
+function Get-OrphanDoYouTradeShims {
+    # UV_TOOL_DIR 迁走后，uv tool list 可能为空，但 %USERPROFILE%\.local\bin 仍留有旧 shim；
+    # 不带 --force 的 uv tool install 会报 Executables already exist。
+    $bin = Get-UvToolBinDir
+    $found = @()
+    foreach ($name in @("doyoutrade.exe", "doyoutrade-cli.exe")) {
+        $path = Join-Path $bin $name
+        if (Test-Path -LiteralPath $path) {
+            $found += $path
+        }
+    }
+    return $found
+}
+
 function Confirm-Reinstall {
     while ($true) {
         $response = Read-Host -Prompt "检测到 doyoutrade 已安装。是否先卸载再重新安装？(Y/n)"
@@ -428,6 +442,16 @@ function Install-DoYouTrade {
             Write-Die -Message "卸载失败。" -Stage "uv-tool-uninstall" -ExitCode $LASTEXITCODE
         }
         Write-Ok "旧版本已卸载，开始重新安装。"
+    } else {
+        # uv tool list 为空但 bin 里仍有 exe：常见于 UV_TOOL_DIR 迁到 LocalAppData 之后。
+        $orphanShims = @(Get-OrphanDoYouTradeShims)
+        if ($orphanShims.Count -gt 0) {
+            Write-Warn "检测到孤儿 shim（uv tool list 无记录，但可执行文件仍在）："
+            foreach ($p in $orphanShims) {
+                Write-Host "    $p"
+            }
+            Write-Info "将用 uv tool install --force 覆盖这些文件（与 install.sh 行为一致）。"
+        }
     }
 
     Write-Info "正在安装 doyoutrade[qmt-proxy]（源：$Source）…"
@@ -445,10 +469,12 @@ function Install-DoYouTrade {
     # 用 PEP 508 direct reference（"name[extra] @ <source>"）而不是 `--from <source> "name[extra]"`：
     # uv 的 `--from` 把位置参数当作可执行名解析，PackageName 不接受 `[extra]`，会以
     # "conflicts with install request" 误拒（uv 0.10+ 已验证）。PEP 508 写法对所有 uv 版本都稳。
+    # `--force`：幂等覆盖（含孤儿 shim），与 install.sh / 应用内 updater 一致；脚本级
+    # -Force 只控制「是否先卸载」，不能代替此处传给 uv 的 --force。
     # `--python` 钉住解释器；输出经 Invoke-UvStreaming 边显示边捕获（内部把
     # ErrorActionPreference 临时切到 Continue，避免 stderr 进度被包成 NativeCommandError
     # 误杀），成败只看 $LASTEXITCODE。
-    $installArgs = @("tool", "install", "--python", $script:DoyoutradePythonVersion, "doyoutrade[qmt-proxy] @ $Source")
+    $installArgs = @("tool", "install", "--force", "--python", $script:DoyoutradePythonVersion, "doyoutrade[qmt-proxy] @ $Source")
     $result = Invoke-UvStreaming -UvArgs $installArgs
 
     # 防御式重试：若已选的安全目录仍被判为「不受信任的装入点」(os error 448)——
@@ -464,7 +490,7 @@ function Install-DoYouTrade {
     }
 
     if ($result.ExitCode -ne 0) {
-        $detail = "command: uv tool install --python $script:DoyoutradePythonVersion `"doyoutrade[qmt-proxy] @ $Source`""
+        $detail = "command: uv tool install --force --python $script:DoyoutradePythonVersion `"doyoutrade[qmt-proxy] @ $Source`""
         if (Test-IsUntrustedMountError $result.Output) {
             $detail += " | 命中 os error 448（不受信任的装入点）。多为 OneDrive「文件按需」接管了用户目录，或 AppData 被组策略重定向到网络位置。请关闭该目录的 OneDrive 同步 /「文件按需」，或把账户目录移出重定向后重试。"
             Write-Die -Message "安装失败：uv 无法访问其 Python 目录（不受信任的装入点 / OneDrive）。这不是网络问题。" `
