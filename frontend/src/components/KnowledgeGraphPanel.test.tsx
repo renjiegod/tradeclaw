@@ -6,6 +6,7 @@ import {
   applyKnowledgeGraphChange,
   approveKnowledgeGraphChange,
   deprecateKnowledgeGraphSchemaItem,
+  findKnowledgeGraphPath,
   getKnowledgeGraph,
   getKnowledgeGraphChangeSets,
   getKnowledgeGraphConflicts,
@@ -28,6 +29,7 @@ vi.mock("../api", async (importOriginal) => {
     applyKnowledgeGraphChange: vi.fn(),
     approveKnowledgeGraphChange: vi.fn(),
     deprecateKnowledgeGraphSchemaItem: vi.fn(),
+    findKnowledgeGraphPath: vi.fn(),
     getKnowledgeGraph: vi.fn(),
     getKnowledgeGraphChangeSets: vi.fn(),
     getKnowledgeGraphConflicts: vi.fn(),
@@ -581,5 +583,80 @@ describe("KnowledgeGraphPanel", () => {
       );
     });
     expect(deprecateKnowledgeGraphSchemaItem).not.toHaveBeenCalled();
+  });
+
+  it("#4 finds a path between two entities and shows the ordered chain", async () => {
+    vi.mocked(getKnowledgeGraph).mockResolvedValue(NEIGHBORHOOD);
+    vi.mocked(findKnowledgeGraphPath).mockResolvedValue({
+      revision: 0,
+      source: NEIGHBORHOOD.center,
+      target: {
+        id: "kgn-theme",
+        node_type: "theme",
+        name: "券商",
+        display_name: null,
+        attrs: null,
+      },
+      found: true,
+      hops: 1,
+      path_node_ids: ["kgn-center", "kgn-theme"],
+      nodes: [NEIGHBORHOOD.center, NEIGHBORHOOD.nodes[2]],
+      edges: [NEIGHBORHOOD.edges[1]],
+    });
+    render(<KnowledgeGraphPanel />);
+    await queryEntity("东方财富");
+    await screen.findByTestId("kg-svg");
+
+    fireEvent.click(screen.getByTestId("kg-pathfinder-open"));
+    fireEvent.change(screen.getByTestId("kg-pathfinder-target"), {
+      target: { value: "券商" },
+    });
+    fireEvent.click(screen.getByTestId("kg-pathfinder-run"));
+
+    await waitFor(() => {
+      expect(findKnowledgeGraphPath).toHaveBeenCalledWith("东方财富", "券商", {
+        maxHops: 6,
+        includeExpired: false,
+      });
+    });
+    expect(await screen.findByTestId("kg-pathfinder-result")).toHaveTextContent(
+      "1 跳可达",
+    );
+    // 高亮路径后关闭 modal，图例出现「清除路径高亮」
+    fireEvent.click(screen.getByTestId("kg-pathfinder-highlight"));
+    expect(await screen.findByTestId("kg-clear-path")).toBeInTheDocument();
+  });
+
+  it("#1 toggles a node type off from the legend (center always kept)", async () => {
+    vi.mocked(getKnowledgeGraph).mockResolvedValue(NEIGHBORHOOD);
+    render(<KnowledgeGraphPanel />);
+    await queryEntity("东方财富");
+    await screen.findByTestId("kg-svg");
+
+    expect(screen.getByTestId("kg-node-kgn-theme")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("kg-type-filter-theme"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("kg-node-kgn-theme")).not.toBeInTheDocument();
+    });
+    // 中心（symbol）与角色仍在
+    expect(screen.getByTestId("kg-node-kgn-center")).toBeInTheDocument();
+    expect(screen.getByTestId("kg-node-kgn-role")).toBeInTheDocument();
+  });
+
+  it("#8/#9 switches to force layout (hides hop rings) and community coloring", async () => {
+    vi.mocked(getKnowledgeGraph).mockResolvedValue(NEIGHBORHOOD);
+    render(<KnowledgeGraphPanel />);
+    await queryEntity("东方财富");
+    await screen.findByTestId("kg-svg");
+
+    // 同心环模式有跳数环
+    expect(screen.getByTestId("kg-hop-ring-1")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("力导向"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("kg-hop-ring-1")).not.toBeInTheDocument();
+    });
+    // 社区着色 → 出现簇图例
+    fireEvent.click(screen.getByText("社区"));
+    expect(await screen.findByTestId("kg-community-legend-0")).toBeInTheDocument();
   });
 });

@@ -1700,11 +1700,30 @@ export type KnowledgeGraphNeighborhood = {
   edges: KgEdge[];
 };
 
+/**
+ * Response of ``GET /knowledge/graph/path`` — the shortest chain between two
+ * resolved entities. ``found=false`` means no path within ``max_hops``
+ * (``nodes``/``edges``/``path_node_ids`` empty). ``path_node_ids`` is the
+ * ordered node chain source→target; ``edges`` are the connecting edges.
+ */
+export type KnowledgeGraphPath = {
+  revision: number;
+  source: KgNode;
+  target: KgNode;
+  found: boolean;
+  hops: number;
+  path_node_ids: string[];
+  nodes: KgNode[];
+  edges: KgEdge[];
+};
+
 export type KnowledgeGraphEntityTypeDefinition = {
   key: string;
   label: string;
   parent_key: string | null;
   protected: boolean;
+  /** Identity color (``#rrggbb``) for graph rendering; custom types set their own. */
+  color?: string | null;
   namespace?: "system" | "custom";
   status?: "active" | "deprecated";
   version?: number;

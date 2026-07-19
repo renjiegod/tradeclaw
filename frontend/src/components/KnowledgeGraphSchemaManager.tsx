@@ -62,6 +62,7 @@ export function KnowledgeGraphSchemaManager({ onChanged }: Props) {
   );
   const [ownerKey, setOwnerKey] = useState<string | null>(null);
   const [valueType, setValueType] = useState("string");
+  const [color, setColor] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -107,6 +108,7 @@ export function KnowledgeGraphSchemaManager({ onChanged }: Props) {
         definition: {
           label: item.label,
           parent_key: item.parent_key,
+          color: item.color ?? null,
         },
       }));
     const relations = schema.relation_types
@@ -160,6 +162,7 @@ export function KnowledgeGraphSchemaManager({ onChanged }: Props) {
     setOwnerKind("entity_type");
     setOwnerKey(null);
     setValueType("string");
+    setColor(null);
   }, []);
 
   const editItem = useCallback((item: CustomItem) => {
@@ -178,11 +181,17 @@ export function KnowledgeGraphSchemaManager({ onChanged }: Props) {
     );
     setOwnerKey((item.definition.owner_key as string | null) ?? null);
     setValueType((item.definition.value_type as string) ?? "string");
+    setColor((item.definition.color as string | null) ?? null);
   }, []);
 
   const definition = useMemo<Record<string, unknown>>(() => {
     if (kind === "entity_type") {
-      return { label: label.trim(), parent_key: parentKey };
+      // color 未设置时不写入 payload——保持系统默认着色（后端定义可选字段）。
+      return {
+        label: label.trim(),
+        parent_key: parentKey,
+        ...(color ? { color } : {}),
+      };
     }
     if (kind === "relation_type") {
       return {
@@ -204,6 +213,7 @@ export function KnowledgeGraphSchemaManager({ onChanged }: Props) {
       constraints: null,
     };
   }, [
+    color,
     kind,
     label,
     ownerKey,
@@ -324,13 +334,40 @@ export function KnowledgeGraphSchemaManager({ onChanged }: Props) {
               data-testid="kg-schema-label"
             />
             {kind === "entity_type" ? (
-              <Select
-                allowClear
-                value={parentKey}
-                options={entityOptions}
-                onChange={(value) => setParentKey(value ?? null)}
-                placeholder="父类型（可选）"
-              />
+              <>
+                <Select
+                  allowClear
+                  value={parentKey}
+                  options={entityOptions}
+                  onChange={(value) => setParentKey(value ?? null)}
+                  placeholder="父类型（可选）"
+                />
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-shell-muted">身份色</span>
+                  <input
+                    type="color"
+                    className="h-7 w-10 cursor-pointer rounded border border-shell-line bg-transparent"
+                    value={color ?? "#3b6fd4"}
+                    onChange={(event) => setColor(event.target.value)}
+                    aria-label="实体类型身份色"
+                    data-testid="kg-schema-color"
+                  />
+                  {color ? (
+                    <Button
+                      size="small"
+                      type="link"
+                      className="!px-1"
+                      onClick={() => setColor(null)}
+                    >
+                      清除
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-shell-muted">
+                      未设置（图谱用默认色）
+                    </span>
+                  )}
+                </div>
+              </>
             ) : null}
             {kind === "relation_type" ? (
               <>

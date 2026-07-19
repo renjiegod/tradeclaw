@@ -1,11 +1,13 @@
 import {
   ApartmentOutlined,
+  DownloadOutlined,
   ReloadOutlined,
   SyncOutlined,
 } from "@ant-design/icons";
 import {
   Button,
   Card,
+  Dropdown,
   Empty,
   Input,
   Segmented,
@@ -21,6 +23,7 @@ import {
   ApiError,
   getKnowledgeGraph,
   getKnowledgeGraphLayout,
+  getKnowledgeGraphSchema,
   getKnowledgeGraphSummary,
   saveKnowledgeGraphLayout,
   syncKnowledgeGraph,
@@ -29,10 +32,18 @@ import type {
   KgEdge,
   KgNode,
   KnowledgeGraphNeighborhood,
+  KnowledgeGraphSchema,
   KnowledgeGraphSummary,
 } from "../types";
 import { KnowledgeGraphEditingActions } from "./KnowledgeGraphEditingActions";
 import { ManualRelationActions } from "./ManualRelationActions";
+import { PathFinderModal } from "./PathFinderModal";
+import {
+  communityColor,
+  communityCount,
+  detectCommunities,
+} from "./knowledgeGraphCommunities";
+import { layoutForce } from "./knowledgeGraphForceLayout";
 import {
   computeHopDepths,
   hashString,
@@ -75,10 +86,6 @@ const RELATION_LABELS: Record<string, string> = {
   linked_with: "个股联动",
   observed_in: "活跃于周期",
 };
-
-function nodeStyle(nodeType: string) {
-  return NODE_TYPE_STYLES[nodeType] ?? FALLBACK_NODE_STYLE;
-}
 
 function nodeLabel(node: KgNode): string {
   if (node.display_name && node.display_name !== node.name) {
@@ -124,6 +131,18 @@ function edgePath(
   return `M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`;
 }
 
+/** 触发一次浏览器下载（#7 导出用），用完即释放 object URL。 */
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 /**
  * 知识图谱面板 — 知识库页的「图谱」tab。
  *
@@ -157,6 +176,18 @@ export function KnowledgeGraphPanel() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [highlightIds, setHighlightIds] = useState<Set<string>>(new Set());
   const [savingLayout, setSavingLayout] = useState(false);
+  // #5 schema 驱动着色：动态类型→色/名（含 custom.*），拉取失败软降级到硬编码。
+  const [schema, setSchema] = useState<KnowledgeGraphSchema | null>(null);
+  // #1 按类型过滤显隐（默认空 = 全显）。
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
+  // #9 布局模式：同心环（默认，可读跳数）/ 力导向（探索抱团）。
+  const [layoutMode, setLayoutMode] = useState<"radial" | "force">("radial");
+  // #8 着色模式：类型（默认）/ 社区（题材抱团一眼可见）。
+  const [colorMode, setColorMode] = useState<"type" | "community">("type");
+  // #4 PathFinder 命中后的路径高亮。
+  const [pathNodeIds, setPathNodeIds] = useState<Set<string>>(new Set());
+  const [pathEdgeIds, setPathEdgeIds] = useState<Set<string>>(new Set());
+  const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<{
     nodeId: string;
     pointerId: number;
@@ -165,6 +196,50 @@ export function KnowledgeGraphPanel() {
     startX: number;
     startY: number;
   } | null>(null);
+
+  // #5 schema：挂载时拉一次，供动态类型→色/名。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await getKnowledgeGraphSchema();
+        if (!cancelled) setSchema(res);
+      } catch {
+        // 软降级：schema 拉取失败仍用硬编码调色板，不阻塞图。
+        if (!cancelled) setSchema(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // #5 schema.entity_types → 原始 color/label（含 custom.*），供 styleFor 组合。
+  const schemaStyles = useMemo(() => {
+    const map = new Map<string, { color: string | null; label: string }>();
+    for (const et of schema?.entity_types ?? []) {
+      if (et.status === "deprecated") continue;
+      map.set(et.key, { color: et.color ?? null, label: et.label });
+    }
+    return map;
+  }, [schema]);
+
+  // 系统类型保留面板精修的中文名（个股 / 题材 / 周期月…），仅让 schema
+  // 的颜色可覆盖；custom.* 类型则直接采用 schema 的色 + 名。缺省回退 FALLBACK。
+  const styleFor = useCallback(
+    (nodeType: string): { color: string; label: string } => {
+      const hard = NODE_TYPE_STYLES[nodeType];
+      const sch = schemaStyles.get(nodeType);
+      if (hard) return { color: sch?.color || hard.color, label: hard.label };
+      if (sch)
+        return {
+          color: sch.color || FALLBACK_NODE_STYLE.color,
+          label: sch.label,
+        };
+      return FALLBACK_NODE_STYLE;
+    },
+    [schemaStyles],
+  );
 
   const refreshSummary = useCallback(async () => {
     setSummaryLoading(true);
@@ -201,6 +276,8 @@ export function KnowledgeGraphPanel() {
         setHighlightIds(new Set());
         setHoveredNodeId(null);
         setHoveredEdgeId(null);
+        setPathNodeIds(new Set());
+        setPathEdgeIds(new Set());
         try {
           const layoutRes = await getKnowledgeGraphLayout(res.center.id);
           if (layoutRes.layout) {
@@ -261,37 +338,100 @@ export function KnowledgeGraphPanel() {
     }
   }, [entity, notFoundEntity, hops, includeExpired, load, refreshSummary]);
 
-  const svgHeight = svgHeightFor(data?.nodes.length ?? 0);
-  // 节点多时收小节点与字号，给标签留呼吸空间。
-  const denseGraph = (data?.nodes.length ?? 0) > 26;
+  // #1 按类型过滤：隐藏类型的节点（中心永远保留）及其相连的边不参与
+  // 布局 / 渲染 / 事实列表。图例仍列全部类型以便重新打开。
+  const viewNodes = useMemo(() => {
+    if (!data) return [];
+    if (hiddenTypes.size === 0) return data.nodes;
+    return data.nodes.filter(
+      (n) => n.id === data.center.id || !hiddenTypes.has(n.node_type),
+    );
+  }, [data, hiddenTypes]);
+  const visibleIds = useMemo(
+    () => new Set(viewNodes.map((n) => n.id)),
+    [viewNodes],
+  );
+  const viewEdges = useMemo(() => {
+    if (!data) return [];
+    if (hiddenTypes.size === 0) return data.edges;
+    return data.edges.filter(
+      (e) => visibleIds.has(e.src_id) && visibleIds.has(e.dst_id),
+    );
+  }, [data, hiddenTypes, visibleIds]);
 
+  const svgHeight = svgHeightFor(viewNodes.length);
+  // 节点多时收小节点与字号，给标签留呼吸空间。
+  const denseGraph = viewNodes.length > 26;
+
+  // #9 布局：默认同心环（跳数可读），力导向为可选探索模式（确定性、
+  // 以放射布局为种子）。两者签名一致，尊重用户拖拽的 positionOverrides。
   const positions = useMemo(() => {
     if (!data) return new Map<string, { x: number; y: number }>();
-    return layoutNeighborhood(data.nodes, data.edges, {
+    const opts = {
       width: SVG_WIDTH,
       height: svgHeight,
       centerId: data.center.id,
       seedPositions: positionOverrides,
-    });
-  }, [data, positionOverrides, svgHeight]);
+    };
+    return layoutMode === "force"
+      ? layoutForce(viewNodes, viewEdges, opts)
+      : layoutNeighborhood(viewNodes, viewEdges, opts);
+  }, [data, viewNodes, viewEdges, positionOverrides, svgHeight, layoutMode]);
+
+  // #8 社区着色：确定性 label-propagation，仅在社区模式下计算。
+  const communities = useMemo(() => {
+    if (colorMode !== "community" || !data) return new Map<string, number>();
+    return detectCommunities(viewNodes, viewEdges);
+  }, [colorMode, data, viewNodes, viewEdges]);
+  const communityTotal = useMemo(
+    () => communityCount(communities),
+    [communities],
+  );
+
+  // #3 对数边宽：同一对无序 {src,dst} 之间的平行边数 → 基础边宽。
+  const parallelCount = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const edge of viewEdges) {
+      const key =
+        edge.src_id < edge.dst_id
+          ? `${edge.src_id}|${edge.dst_id}`
+          : `${edge.dst_id}|${edge.src_id}`;
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return map;
+  }, [viewEdges]);
+  const edgeBaseWidth = useCallback(
+    (edge: KgEdge) => {
+      const key =
+        edge.src_id < edge.dst_id
+          ? `${edge.src_id}|${edge.dst_id}`
+          : `${edge.dst_id}|${edge.src_id}`;
+      const count = parallelCount.get(key) ?? 1;
+      return Math.min(1 + Math.log2(count + 1), 5);
+    },
+    [parallelCount],
+  );
 
   // 跳数参考环：让「第几跳」在画布上直接可读。用户整体自定义布局
   //（保存后全量种子坐标）时环不再对应实际位置，隐藏。
   const hopRings = useMemo(() => {
     if (!data) return [];
-    const depths = computeHopDepths(data.nodes, data.edges, data.center.id);
+    const depths = computeHopDepths(viewNodes, viewEdges, data.center.id);
     let maxDepth = 0;
     for (const depth of depths.values()) maxDepth = Math.max(maxDepth, depth);
     if (maxDepth === 0) return [];
     return hopRingGeometry(maxDepth, { width: SVG_WIDTH, height: svgHeight });
-  }, [data, svgHeight]);
+  }, [data, viewNodes, viewEdges, svgHeight]);
+  // 力导向模式或整体自定义布局时跳数环不对应实际位置，隐藏。
   const showHopRings =
-    data != null && positionOverrides.size < data.nodes.length;
+    data != null &&
+    layoutMode === "radial" &&
+    positionOverrides.size < viewNodes.length;
 
   // 悬停节点 → 一跳邻居集合（用于聚焦淡出）。
   const neighborsByNode = useMemo(() => {
     const map = new Map<string, Set<string>>();
-    for (const edge of data?.edges ?? []) {
+    for (const edge of viewEdges) {
       const src = map.get(edge.src_id) ?? new Set<string>();
       src.add(edge.dst_id);
       map.set(edge.src_id, src);
@@ -300,7 +440,7 @@ export function KnowledgeGraphPanel() {
       map.set(edge.dst_id, dst);
     }
     return map;
-  }, [data]);
+  }, [viewEdges]);
 
   useEffect(() => {
     if (!data) return;
@@ -311,7 +451,7 @@ export function KnowledgeGraphPanel() {
     const next = new Set<string>();
     for (const id of selectedIds) {
       next.add(id);
-      for (const edge of data.edges) {
+      for (const edge of viewEdges) {
         if (edge.src_id === id || edge.dst_id === id) {
           next.add(edge.src_id);
           next.add(edge.dst_id);
@@ -319,18 +459,19 @@ export function KnowledgeGraphPanel() {
       }
     }
     setHighlightIds(next);
-  }, [data, selectedIds]);
+  }, [data, viewEdges, selectedIds]);
 
   const nodesById = useMemo(() => {
     const map = new Map<string, KgNode>();
-    for (const node of data?.nodes ?? []) map.set(node.id, node);
+    for (const node of viewNodes) map.set(node.id, node);
     return map;
-  }, [data]);
+  }, [viewNodes]);
 
+  // 图例列出全部数据中出现过的类型（不受过滤影响），以便重新打开被
+  // 隐藏的类型。顺序跟随固定的类型→颜色分配顺序。
   const presentTypes = useMemo(() => {
     const seen = new Set<string>();
     for (const node of data?.nodes ?? []) seen.add(node.node_type);
-    // 图例顺序跟随固定的类型→颜色分配顺序，而不是数据出现顺序。
     return Object.keys(NODE_TYPE_STYLES)
       .filter((t) => seen.has(t))
       .concat([...seen].filter((t) => !(t in NODE_TYPE_STYLES)));
@@ -338,13 +479,13 @@ export function KnowledgeGraphPanel() {
 
   const factGroups = useMemo(() => {
     const groups = new Map<string, KgEdge[]>();
-    for (const edge of data?.edges ?? []) {
+    for (const edge of viewEdges) {
       const list = groups.get(edge.relation) ?? [];
       list.push(edge);
       groups.set(edge.relation, list);
     }
     return [...groups.entries()];
-  }, [data]);
+  }, [viewEdges]);
 
   const onSearch = (value: string) => {
     setEntity(value);
@@ -368,14 +509,14 @@ export function KnowledgeGraphPanel() {
           <Tag
             key={node.id}
             className="!m-0 cursor-pointer"
-            color={nodeStyle(node.node_type).color}
+            color={styleFor(node.node_type).color}
             onClick={() => {
               setEntity(node.display_name || node.name);
               void load(node.display_name || node.name, hops, includeExpired);
             }}
             data-testid={`kg-entry-chip-${node.node_type}`}
           >
-            {nodeStyle(node.node_type).label} · {entryLabel(node)}
+            {styleFor(node.node_type).label} · {entryLabel(node)}
           </Tag>
         ))}
       </div>
@@ -437,6 +578,85 @@ export function KnowledgeGraphPanel() {
     }
   }, [data, highlightIds, lockedIds, positions, reloadCurrent]);
 
+  // #1 图例点击切换某类型显隐。
+  const toggleType = useCallback((type: string) => {
+    setHiddenTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
+  }, []);
+
+  // #4 PathFinder 命中 → 路径成为唯一焦点（清掉悬停/选中）。
+  const applyPathHighlight = useCallback(
+    (nodeIds: string[], edgeIds: string[]) => {
+      setPathNodeIds(new Set(nodeIds));
+      setPathEdgeIds(new Set(edgeIds));
+      setHoveredNodeId(null);
+      setSelectedIds(new Set());
+    },
+    [],
+  );
+  const clearPathHighlight = useCallback(() => {
+    setPathNodeIds(new Set());
+    setPathEdgeIds(new Set());
+  }, []);
+
+  // #7 导出：文件名带中心名 + 日期（date 仅用于命名，不进确定性布局）。
+  const filenameBase = useCallback(() => {
+    const raw = data?.center.display_name || data?.center.name || "graph";
+    const name = raw.replace(/[^\w一-龥-]/g, "_");
+    const day = new Date().toISOString().slice(0, 10);
+    return `kg-${name}-${day}`;
+  }, [data]);
+
+  const exportJson = useCallback(() => {
+    if (!data) return;
+    const blob = new Blob([JSON.stringify(data, null, 2)], {
+      type: "application/json",
+    });
+    downloadBlob(blob, `${filenameBase()}.json`);
+    message.success("已导出 JSON");
+  }, [data, filenameBase]);
+
+  const exportPng = useCallback(async () => {
+    const svg = svgRef.current;
+    if (!svg || !data) return;
+    try {
+      const clone = svg.cloneNode(true) as SVGSVGElement;
+      clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      clone.setAttribute("width", String(SVG_WIDTH));
+      clone.setAttribute("height", String(svgHeight));
+      const serialized = new XMLSerializer().serializeToString(clone);
+      const encoded = btoa(unescape(encodeURIComponent(serialized)));
+      const image = new Image();
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("SVG 序列化后无法加载为图片"));
+        image.src = `data:image/svg+xml;base64,${encoded}`;
+      });
+      const scale = 2;
+      const canvas = document.createElement("canvas");
+      canvas.width = SVG_WIDTH * scale;
+      canvas.height = svgHeight * scale;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("无法获取 canvas 2d 上下文");
+      ctx.fillStyle = "#fffdf9";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob((b) => resolve(b), "image/png"),
+      );
+      if (!blob) throw new Error("canvas 导出为空");
+      downloadBlob(blob, `${filenameBase()}.png`);
+      message.success("已导出 PNG");
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      message.error(`导出 PNG 失败：${detail}`);
+    }
+  }, [data, svgHeight, filenameBase]);
+
   return (
     <Card
       className="!border !border-shell-line !bg-card-bg shadow-shell-card"
@@ -449,8 +669,39 @@ export function KnowledgeGraphPanel() {
         </div>
       }
       extra={
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <KnowledgeGraphEditingActions data={data} onChanged={reloadCurrent} />
+          {data ? (
+            <PathFinderModal
+              defaultSource={data.center.display_name || data.center.name}
+              includeExpired={includeExpired}
+              relationLabel={relationLabel}
+              nodeStyle={styleFor}
+              onHighlight={applyPathHighlight}
+            />
+          ) : null}
+          <Dropdown
+            disabled={!data}
+            menu={{
+              items: [
+                {
+                  key: "png",
+                  label: "导出 PNG",
+                  onClick: () => void exportPng(),
+                },
+                { key: "json", label: "导出 JSON", onClick: () => exportJson() },
+              ],
+            }}
+          >
+            <Button
+              size="small"
+              icon={<DownloadOutlined />}
+              disabled={!data}
+              data-testid="kg-export"
+            >
+              导出
+            </Button>
+          </Dropdown>
           <Button
             size="small"
             disabled={!data}
@@ -525,6 +776,36 @@ export function KnowledgeGraphPanel() {
                 reQuery(hops, checked);
               }}
               data-testid="kg-include-expired"
+            />
+          </span>
+          <span className="flex items-center gap-2 text-xs">
+            <Typography.Text type="secondary" className="!text-xs">
+              布局
+            </Typography.Text>
+            <Segmented
+              size="small"
+              options={[
+                { label: "同心环", value: "radial" },
+                { label: "力导向", value: "force" },
+              ]}
+              value={layoutMode}
+              onChange={(value) => setLayoutMode(value as "radial" | "force")}
+              data-testid="kg-layout-mode"
+            />
+          </span>
+          <span className="flex items-center gap-2 text-xs">
+            <Typography.Text type="secondary" className="!text-xs">
+              着色
+            </Typography.Text>
+            <Segmented
+              size="small"
+              options={[
+                { label: "类型", value: "type" },
+                { label: "社区", value: "community" },
+              ]}
+              value={colorMode}
+              onChange={(value) => setColorMode(value as "type" | "community")}
+              data-testid="kg-color-mode"
             />
           </span>
         </div>
@@ -614,6 +895,7 @@ export function KnowledgeGraphPanel() {
             {/* 左：SVG 力导向子图 */}
             <div className="min-w-0 flex-1">
               <svg
+                ref={svgRef}
                 viewBox={`0 0 ${SVG_WIDTH} ${svgHeight}`}
                 className="h-auto w-full rounded-card border border-shell-line"
                 role="img"
@@ -673,7 +955,7 @@ export function KnowledgeGraphPanel() {
                       </g>
                     ))
                   : null}
-                {data.edges.map((edge) => {
+                {viewEdges.map((edge) => {
                   const a = positions.get(edge.src_id);
                   const b = positions.get(edge.dst_id);
                   if (!a || !b) return null;
@@ -681,20 +963,29 @@ export function KnowledgeGraphPanel() {
                   const hovered = hoveredEdgeId === edge.id;
                   const highlighted =
                     highlightIds.has(edge.src_id) && highlightIds.has(edge.dst_id);
+                  // #4 路径高亮：命中的边成为唯一焦点。
+                  const onPath = pathEdgeIds.has(edge.id);
+                  const pathActive = pathEdgeIds.size > 0;
                   // 悬停节点时只保留其一跳邻域的边，其余淡出——密集图的
-                  // 主要「解乱」手段。无悬停时沿用选中高亮的淡出逻辑。
+                  // 主要「解乱」手段。无悬停时沿用路径 / 选中高亮的淡出逻辑。
                   const focusRelated =
                     hoveredNodeId == null ||
                     edge.src_id === hoveredNodeId ||
                     edge.dst_id === hoveredNodeId;
+                  // #3 聚焦时无关边淡到极低透明度，聚焦感更强。
                   const dimmed =
                     hoveredNodeId != null
                       ? !focusRelated
-                      : highlightIds.size > 0 && !highlighted;
+                      : pathActive
+                        ? !onPath
+                        : highlightIds.size > 0 && !highlighted;
                   const emphasized =
                     hovered ||
                     highlighted ||
+                    onPath ||
                     (hoveredNodeId != null && focusRelated);
+                  // #3 对数边宽：平行边越多越粗；强调再加粗。
+                  const baseWidth = edgeBaseWidth(edge);
                   return (
                     <g key={edge.id}>
                       <path
@@ -702,16 +993,16 @@ export function KnowledgeGraphPanel() {
                         fill="none"
                         strokeLinecap="round"
                         stroke={
-                          highlighted
+                          onPath || highlighted
                             ? "#c45c26"
                             : expired
                               ? "#b3a68f"
                               : "#8a7a63"
                         }
-                        strokeWidth={emphasized ? 3 : 2}
+                        strokeWidth={emphasized ? baseWidth + 1.5 : baseWidth}
                         strokeOpacity={
                           dimmed
-                            ? 0.12
+                            ? 0.04
                             : expired
                               ? 0.45
                               : emphasized
@@ -728,36 +1019,50 @@ export function KnowledgeGraphPanel() {
                     </g>
                   );
                 })}
-                {data.nodes.map((node) => {
+                {viewNodes.map((node) => {
                   const p = positions.get(node.id);
                   if (!p) return null;
                   const isCenter = node.id === data.center.id;
-                  const style = nodeStyle(node.node_type);
+                  const style = styleFor(node.node_type);
                   const label = nodeLabel(node);
                   const selected = selectedIds.has(node.id);
                   const locked = lockedIds.has(node.id);
                   const highlighted = highlightIds.has(node.id);
+                  const onPath = pathNodeIds.has(node.id);
+                  const pathActive = pathNodeIds.size > 0;
+                  // #2 节点半径随度数增长——枢纽（龙头股 / 主线题材）一眼可见；
+                  // 中心恒为最大。
+                  const degree = neighborsByNode.get(node.id)?.size ?? 0;
+                  const baseR = denseGraph ? 7 : 9;
+                  const otherMax = denseGraph ? 13 : 15;
                   const nodeRadius = isCenter
                     ? denseGraph
-                      ? 13
-                      : 15
-                    : denseGraph
-                      ? 8
-                      : 10;
+                      ? 15
+                      : 18
+                    : Math.min(baseR + Math.min(degree, 12) * 0.7, otherMax);
+                  // #8 社区模式用簇色，否则用类型色。
+                  const fill =
+                    colorMode === "community"
+                      ? communityColor(communities.get(node.id) ?? 0)
+                      : style.color;
                   const focusRelated =
                     hoveredNodeId == null ||
                     node.id === hoveredNodeId ||
                     (neighborsByNode.get(hoveredNodeId)?.has(node.id) ?? false);
+                  // #3 / #4 聚焦时无关节点淡到极低透明度。
                   const dimmed =
                     hoveredNodeId != null
                       ? !focusRelated
-                      : highlightIds.size > 0 && !highlighted && !selected;
+                      : pathActive
+                        ? !onPath
+                        : highlightIds.size > 0 && !highlighted && !selected;
+                  const ringed = onPath || selected || highlighted;
                   return (
                     <g
                       key={node.id}
                       transform={`translate(${p.x}, ${p.y})`}
                       className="cursor-pointer"
-                      opacity={dimmed ? 0.3 : 1}
+                      opacity={dimmed ? 0.08 : 1}
                       onMouseEnter={() => setHoveredNodeId(node.id)}
                       onMouseLeave={() => setHoveredNodeId(null)}
                       onClick={(event) => {
@@ -793,15 +1098,11 @@ export function KnowledgeGraphPanel() {
                       <title>{`${style.label}：${label}（${node.name}）`}</title>
                       <circle
                         r={nodeRadius}
-                        fill={style.color}
+                        fill={fill}
                         stroke={
-                          selected || highlighted
-                            ? "#c45c26"
-                            : locked
-                              ? "#2f8f6b"
-                              : "#fffdf9"
+                          ringed ? "#c45c26" : locked ? "#2f8f6b" : "#fffdf9"
                         }
-                        strokeWidth={selected || highlighted || locked ? 3 : 2}
+                        strokeWidth={ringed || locked ? 3 : 2}
                       />
                       <text
                         y={nodeRadius + (denseGraph ? 13 : 15)}
@@ -826,20 +1127,46 @@ export function KnowledgeGraphPanel() {
                 className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1"
                 data-testid="kg-legend"
               >
-                {presentTypes.map((type) => {
-                  const style = nodeStyle(type);
-                  return (
-                    <span key={type} className="flex items-center gap-1.5 text-xs">
+                {colorMode === "community"
+                  ? Array.from({ length: communityTotal }).map((_, index) => (
                       <span
-                        className="inline-block h-3 w-3 rounded-full"
-                        style={{ backgroundColor: style.color }}
-                      />
-                      <Typography.Text type="secondary" className="!text-xs">
-                        {style.label}
-                      </Typography.Text>
-                    </span>
-                  );
-                })}
+                        key={`comm-${index}`}
+                        className="flex items-center gap-1.5 text-xs"
+                        data-testid={`kg-community-legend-${index}`}
+                      >
+                        <span
+                          className="inline-block h-3 w-3 rounded-full"
+                          style={{ backgroundColor: communityColor(index) }}
+                        />
+                        <Typography.Text type="secondary" className="!text-xs">
+                          簇 {index + 1}
+                        </Typography.Text>
+                      </span>
+                    ))
+                  : presentTypes.map((type) => {
+                      const style = styleFor(type);
+                      const hidden = hiddenTypes.has(type);
+                      return (
+                        <button
+                          type="button"
+                          key={type}
+                          onClick={() => toggleType(type)}
+                          className={`flex items-center gap-1.5 text-xs ${
+                            hidden ? "opacity-40 line-through" : ""
+                          }`}
+                          title={hidden ? "点击显示该类型" : "点击隐藏该类型"}
+                          data-testid={`kg-type-filter-${type}`}
+                        >
+                          <span
+                            className="inline-block h-3 w-3 rounded-full"
+                            style={{ backgroundColor: style.color }}
+                          />
+                          <Typography.Text type="secondary" className="!text-xs">
+                            {style.label}
+                          </Typography.Text>
+                        </button>
+                      );
+                    })}
                 <span className="flex items-center gap-1.5 text-xs">
                   <svg width="26" height="8" aria-hidden="true">
                     <line x1="0" y1="4" x2="26" y2="4" stroke="#8a7a63" strokeWidth="2" />
@@ -901,6 +1228,16 @@ export function KnowledgeGraphPanel() {
                     </Typography.Text>
                   </span>
                 ) : null}
+                {pathNodeIds.size > 0 ? (
+                  <button
+                    type="button"
+                    onClick={clearPathHighlight}
+                    className="text-xs text-shell-accent underline"
+                    data-testid="kg-clear-path"
+                  >
+                    清除路径高亮
+                  </button>
+                ) : null}
               </div>
 
               {data.candidates.length > 0 ? (
@@ -921,7 +1258,7 @@ export function KnowledgeGraphPanel() {
                         void load(c.name, hops, includeExpired);
                       }}
                     >
-                      {nodeLabel(c)}（{nodeStyle(c.node_type).label}）
+                      {nodeLabel(c)}（{styleFor(c.node_type).label}）
                     </Button>
                   ))}
                 </Typography.Text>
