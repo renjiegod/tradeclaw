@@ -33,6 +33,7 @@ jobs:
             tests.test_windows_launcher_bat \
             tests.test_windows_installer_hardening \
             tests.test_install_console_diagnostics \
+            tests.test_windows_installer_python_pin \
             -v
 
       - name: 解析版本号
