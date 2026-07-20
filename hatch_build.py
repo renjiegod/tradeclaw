@@ -9,6 +9,9 @@ best-effort runs ``npm ci && npm run build`` if ``npm`` is available. If the
 frontend can be neither found nor built (e.g. no Node on the build machine), the
 wheel is still produced without the UI and the server degrades to API-only.
 
+Git provenance (``doyoutrade/_git_version.json``) is frozen *before* the
+frontend build so npm/vite side-effects cannot mark a clean tag as dirty.
+
 Set ``DOYOUTRADE_SKIP_FRONTEND_BUILD=1`` to force API-only and skip the npm step.
 """
 
@@ -27,9 +30,13 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 class CustomBuildHook(BuildHookInterface):
     def initialize(self, version: str, build_data: dict) -> None:
         root = Path(self.root)
+        # Freeze git provenance *before* frontend/npm side-effects. Those steps
+        # create ignored (frontend/dist) and occasionally untracked non-ignored
+        # paths (e.g. frontend/.vite); recording dirty afterwards falsely marks
+        # clean tag installs — including the Windows GUI installer — as dirty.
+        self._write_git_version(root, build_data)
         self._include_frontend(root, build_data)
         self._include_qmt_proxy(root, build_data)
-        self._write_git_version(root, build_data)
 
     def _include_frontend(self, root: Path, build_data: dict) -> None:
         dist = root / "frontend" / "dist"
@@ -90,12 +97,20 @@ class CustomBuildHook(BuildHookInterface):
         checkout) can still report their build provenance via
         ``doyoutrade.version_info`` (used by the ``/version`` API endpoint /
         frontend version badge, so issue reporters can state their exact build).
+
+        ``dirty`` only reflects modifications to *tracked* files. Untracked
+        build artifacts must not flip it — otherwise every source build that
+        runs ``npm``/``vite`` looks like a dirty tree.
         """
+        dirty = self._git_dirty(root)
+        tag = self._git(root, ["describe", "--tags", "--always"])
+        if dirty and tag and not tag.endswith("-dirty"):
+            tag = f"{tag}-dirty"
         info = {
-            "tag": self._git(root, ["describe", "--tags", "--always", "--dirty"]),
+            "tag": tag,
             "commit": self._git(root, ["rev-parse", "HEAD"]),
             "commit_short": self._git(root, ["rev-parse", "--short", "HEAD"]),
-            "dirty": bool(self._git(root, ["status", "--porcelain"]) or ""),
+            "dirty": dirty,
         }
         if info["commit"] is None:
             self.app.display_warning(
@@ -107,6 +122,12 @@ class CustomBuildHook(BuildHookInterface):
         out_file = out_dir / "_git_version.json"
         out_file.write_text(json.dumps(info))
         build_data.setdefault("force_include", {})[str(out_file)] = "doyoutrade/_git_version.json"
+
+    def _git_dirty(self, root: Path) -> bool:
+        """True only when tracked files differ from HEAD (untracked ignored)."""
+        # ``--untracked-files=no`` keeps npm/vite caches from marking releases dirty.
+        status = self._git(root, ["status", "--porcelain", "--untracked-files=no"])
+        return bool(status)
 
     def _git(self, root: Path, args: list[str]) -> str | None:
         try:

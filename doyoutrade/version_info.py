@@ -58,12 +58,18 @@ def _resolve_from_git_checkout() -> GitVersionInfo:
     repo_root = Path(__file__).resolve().parent.parent
     if not (repo_root / ".git").exists():
         return dict(_UNKNOWN)
-    dirty_status = _run_git(["status", "--porcelain"], repo_root)
+    # Match hatch_build: only tracked modifications count as dirty. Untracked
+    # build artifacts (frontend/.vite, etc.) must not flip the badge.
+    dirty_status = _run_git(["status", "--porcelain", "--untracked-files=no"], repo_root)
+    dirty = bool(dirty_status) if dirty_status is not None else None
+    tag = _run_git(["describe", "--tags", "--always"], repo_root)
+    if dirty and tag and not tag.endswith("-dirty"):
+        tag = f"{tag}-dirty"
     return {
-        "tag": _run_git(["describe", "--tags", "--always", "--dirty"], repo_root),
+        "tag": tag,
         "commit": _run_git(["rev-parse", "HEAD"], repo_root),
         "commit_short": _run_git(["rev-parse", "--short", "HEAD"], repo_root),
-        "dirty": bool(dirty_status) if dirty_status is not None else None,
+        "dirty": dirty,
     }
 
 
