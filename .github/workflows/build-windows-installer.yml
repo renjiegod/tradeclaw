@@ -47,6 +47,8 @@ jobs:
         run: |
           uv build
           wheel="$(ls -1 dist/doyoutrade-*-py3-none-any.whl | head -n1)"
+          # GITHUB_ENV only applies to *subsequent* steps; export for this step's verify.
+          export WHEEL="$wheel"
           echo "WHEEL=$wheel" >> "$GITHUB_ENV"
           echo "Built $wheel"
           python - <<'PY'
