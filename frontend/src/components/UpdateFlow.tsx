@@ -11,6 +11,7 @@ import type { UpdateStatus } from "../types";
 // - <UpdateBanner /> 挂在全局布局：后台开关开启时服务端会周期性检查 GitHub
 //   Release，这里轮询 /update/status，一旦 update_available 就横幅提示；
 //   「立即更新」由用户显式点击才进入更新流程（安装 + 自动重启）。
+//   源码 checkout（install_kind=source）不展示「立即更新」，改为提示 git pull。
 // - <UpdateSection /> 挂在设置页「自动更新」卡片：显示当前版本 / 最新版本 /
 //   检查时间 / 错误，并提供「检查更新」「立即更新」按钮。
 // ---------------------------------------------------------------------------
@@ -141,17 +142,23 @@ export function UpdateBanner() {
               查看发布说明
             </Typography.Link>
           ) : null}
-          <Button
-            size="small"
-            type="primary"
-            loading={applying}
-            onClick={() => {
-              setApplying(true);
-              void runUpdateFlow(status).finally(() => setApplying(false));
-            }}
-          >
-            立即更新
-          </Button>
+          {status.install_kind === "source" ? (
+            <Typography.Text type="secondary" className="text-xs">
+              源码运行，请 git pull 后重启
+            </Typography.Text>
+          ) : (
+            <Button
+              size="small"
+              type="primary"
+              loading={applying}
+              onClick={() => {
+                setApplying(true);
+                void runUpdateFlow(status).finally(() => setApplying(false));
+              }}
+            >
+              立即更新
+            </Button>
+          )}
         </Space>
       }
     />

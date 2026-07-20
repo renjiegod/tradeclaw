@@ -58,6 +58,21 @@ describe("UpdateBanner", () => {
     );
   });
 
+  it("hides the apply button for source checkouts and hints at git pull", async () => {
+    vi.mocked(getUpdateStatus).mockResolvedValue({
+      ...structuredClone(status),
+      install_kind: "source",
+    });
+    render(<UpdateBanner />);
+    expect(await screen.findByText(/发现新版本/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "立即更新" })).not.toBeInTheDocument();
+    expect(screen.getByText(/源码运行，请 git pull 后重启/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "查看发布说明" })).toHaveAttribute(
+      "href",
+      status.latest!.html_url!,
+    );
+  });
+
   it("stays hidden when no update is available", async () => {
     vi.mocked(getUpdateStatus).mockResolvedValue({
       ...structuredClone(status),
