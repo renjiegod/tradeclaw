@@ -35,8 +35,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%LOCAL_INSTALL%"
 goto after_install
 
 :install_remote
-echo [i] 正在从 GitHub 下载安装脚本并运行 ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.ps1 | iex"
+echo [i] Selecting install mirror (GitHub / Gitee) ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$m=([string]$env:DOYOUTRADE_MIRROR).Trim().ToLowerInvariant(); if($m -in @('gitee','cn','china')){$u='https://gitee.com/renjie-god/doyoutrade/raw/main/install.ps1'} elseif($m -in @('github','gh')){$u='https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.ps1'} else { try { $null=Invoke-WebRequest https://github.com/ -UseBasicParsing -TimeoutSec 3; $u='https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.ps1' } catch { $u='https://gitee.com/renjie-god/doyoutrade/raw/main/install.ps1' } }; Write-Host ('[i] downloading install.ps1 from ' + $u); irm $u | iex"
 goto after_install
 
 :after_install
@@ -52,7 +52,8 @@ goto install_done
 
 :install_failed
 echo [x] 安装似乎失败了，退出码 %INSTALL_RESULT%，请查看上面的错误信息。
-echo     常见原因：网络无法访问 GitHub / astral.sh，或杀毒软件拦截了脚本执行。
+echo     常见原因：网络无法访问 GitHub / Gitee / astral.sh，或杀毒软件拦截了脚本执行。
+echo     可设置环境变量 DOYOUTRADE_MIRROR=gitee 后重试（强制走 Gitee）。
 
 :install_done
 echo ============================================================

@@ -135,6 +135,16 @@
 curl -fsSL https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.sh | sh
 ```
 
+中国网络访问 GitHub 不稳定时，优先用 Gitee 镜像（或设 `DOYOUTRADE_MIRROR=gitee`）：
+
+```bash
+curl -fsSL https://gitee.com/renjie-god/doyoutrade/raw/main/install.sh | sh
+# 等价强制镜像：
+DOYOUTRADE_MIRROR=gitee sh install.sh
+```
+
+安装脚本在未指定 `DOYOUTRADE_INSTALL_SOURCE` 时会短超时探测 GitHub；不通则自动改用 Gitee（`https://gitee.com/renjie-god/doyoutrade`）。也可用 `DOYOUTRADE_MIRROR=github|gitee` 强制一侧。
+
 **Windows（PowerShell）：**
 
 一条命令装完即用：
@@ -143,12 +153,29 @@ curl -fsSL https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.s
 irm https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.ps1 | iex
 ```
 
+中国网络 / Gitee：
+
+```powershell
+irm https://gitee.com/renjie-god/doyoutrade/raw/main/install.ps1 | iex
+# 或：
+$env:DOYOUTRADE_MIRROR = "gitee"
+irm https://gitee.com/renjie-god/doyoutrade/raw/main/install.ps1 | iex
+```
+
 想先审阅再执行（更稳，能绕开任何脚本传输 / 解析层面的意外）：
 
 ```powershell
 irm https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.ps1 -OutFile install.ps1
 irm https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install-win.ps1 -OutFile install-win.ps1
 # 审阅 install.ps1 后：
+powershell -NoProfile -ExecutionPolicy Bypass -File install-win.ps1
+```
+
+Gitee 审阅路径：
+
+```powershell
+irm https://gitee.com/renjie-god/doyoutrade/raw/main/install.ps1 -OutFile install.ps1
+irm https://gitee.com/renjie-god/doyoutrade/raw/main/install-win.ps1 -OutFile install-win.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File install-win.ps1
 ```
 
@@ -191,7 +218,7 @@ doyoutrade
 
 不想下载安装包也行，用下面两个脚本代替敲命令，体验和图形安装包一致（网页首启向导 + 系统托盘图标）：
 
-1. 下载 [`安装DoYouTrade.bat`](https://raw.githubusercontent.com/renjiegod/doyoutrade/main/%E5%AE%89%E8%A3%85DoYouTrade.bat) 和 [`启动DoYouTrade.bat`](https://raw.githubusercontent.com/renjiegod/doyoutrade/main/%E5%90%AF%E5%8A%A8DoYouTrade.bat)，放进同一个文件夹（浏览器点开会直接显示脚本文本，右键「另存为」即可保存；Chrome 等浏览器下载 `.bat` 时会弹安全提示，选择「保留」/「仍然下载」即可 —— 安装 bat 会调用上面的 `install.ps1` / `install-win.ps1`，可放心点开源码审阅）。
+1. 下载 [`安装DoYouTrade.bat`](https://raw.githubusercontent.com/renjiegod/doyoutrade/main/%E5%AE%89%E8%A3%85DoYouTrade.bat) 和 [`启动DoYouTrade.bat`](https://raw.githubusercontent.com/renjiegod/doyoutrade/main/%E5%90%AF%E5%8A%A8DoYouTrade.bat)，放进同一个文件夹（浏览器点开会直接显示脚本文本，右键「另存为」即可保存；Chrome 等浏览器下载 `.bat` 时会弹安全提示，选择「保留」/「仍然下载」即可 —— 安装 bat 会调用上面的 `install.ps1` / `install-win.ps1`，可放心点开源码审阅）。中国网络也可用 Gitee：[安装DoYouTrade.bat](https://gitee.com/renjie-god/doyoutrade/raw/main/%E5%AE%89%E8%A3%85DoYouTrade.bat)、[启动DoYouTrade.bat](https://gitee.com/renjie-god/doyoutrade/raw/main/%E5%90%AF%E5%8A%A8DoYouTrade.bat)。
 2. 双击「**安装DoYouTrade.bat**」，等窗口跑完显示"安装完成"。
 3. 双击「**启动DoYouTrade.bat**」，稍等片刻会自动弹出浏览器打开控制台；首次使用在网页向导里选一个大模型供应商、填 API Key 即可，黑窗口只是后台服务，不用管它。
 4. 以后每次使用只需双击「启动DoYouTrade.bat」；想停止服务，关掉这个窗口，或从系统托盘图标选「退出 DoYouTrade」都行。
@@ -217,6 +244,7 @@ doyoutrade
 
 ```bash
 git clone https://github.com/renjiegod/doyoutrade.git
+# 中国网络也可：git clone https://gitee.com/renjie-god/doyoutrade.git
 cd doyoutrade
 make install        # = uv sync --extra doc-processing + npm --prefix frontend ci
 ```
@@ -316,7 +344,7 @@ uv run doyoutrade-cli account create \
 - **端口是不是变了？** 内置 qmt-proxy 默认 `:8001`（DoYouTrade 占 `:8000`），可用 `qmt_proxy.port` 或 `--qmt-port` 改。
 - **不配 QMT 会报错吗？** 不会。`auto` 链发现没有带 `base_url` 的默认账户时会静默跳过 QMT。
 - **安装报 `os error 448` / “不受信任的装入点”（untrusted mount point）怎么办？** 一般不用管——新版安装脚本已自动规避，且分两层：① 把 uv 的 Python / 缓存 / 工具目录固定到本地安全路径（优先 `%LOCALAPPDATA%\doyoutrade\uv`，必要时回退到系统盘根 `C:\doyoutrade\uv`），并钉住 Python 3.12；② 关键的一层——这个拦截常是**进程级**的（Windows 的 Redirection Trust 缓解 / OneDrive minifilter），换目录也救不回来，此时脚本会自动清掉 uv 建坏的版本链接（junction），改用「免 junction」解释器完成安装：优先复用已下载的 `cpython-3.12.x` 实体目录，其次系统已装的 Python 3.12，最后静默安装 python.org 官方 3.12（仅当前用户、无需管理员）。若连兜底都失败，请检查两件事再重跑：**不要**右键「以管理员身份运行」安装器（提权进程会被 Redirection Trust 拦截穿越 junction）；退出 / 暂停 OneDrive（或对相关目录关闭「文件按需」）。它不是网络问题；旧版脚本用户升级到新版脚本即可。
-- **安装报 `Git executable not found` 怎么办？** 不用装 Git——新版安装脚本检测到本机没有 git 时，会自动把 GitHub 的 `git+` 安装源转换成归档直链（codeload zip）安装，应用内自动更新同样兼容无 Git 环境。只有自定义了非 GitHub 的 `git+` 安装源时才需要先装 [Git for Windows](https://git-scm.com/download/win)。
+- **安装报 `Git executable not found` 怎么办？** 不用装 Git——新版安装脚本检测到本机没有 git 时，会自动把 GitHub / Gitee 的 `git+` 安装源转换成归档直链（zip）安装，应用内自动更新同样兼容无 Git 环境。只有自定义了其他 host 的 `git+` 安装源时才需要先装 [Git for Windows](https://git-scm.com/download/win)。
 - **诊断输出里有乱码（如「鏃犳硶閬嶅巻…」）？** 那是旧版脚本捕获 uv 输出时的编码问题（uv 输出 UTF-8、中文 PowerShell 按 GBK 解码），新版脚本已在捕获时切换 UTF-8 解码，系统错误信息会正常显示为中文。
 - **提示找不到 `doyoutrade` 命令？** 多是新装的 PATH 没在旧窗口生效：**新开**一个 PowerShell 再运行；图形安装包 / 启动 bat 已内置多重回退（读取工具目录标记 + `uv tool dir --bin`），一般会自动定位到 `doyoutrade.exe`。仍不行就 `uv tool list` 看是否装上，未装则重跑安装。
 

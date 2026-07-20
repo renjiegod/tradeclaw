@@ -19,7 +19,8 @@
     可重复运行：若已安装，默认会询问是否卸载后重装；加 -Force 跳过询问。
 
 .PARAMETER Source
-    安装源。默认从 GitHub 主分支安装；可指定本地目录 / fork 做测试。
+    安装源。未指定时按 DOYOUTRADE_MIRROR / GitHub 连通性自动选择
+    GitHub 或 Gitee；也可指定本地目录 / fork。DOYOUTRADE_INSTALL_SOURCE 优先。
 
 .PARAMETER Force
     若已安装，直接卸载并重新安装，不弹出确认。
@@ -27,6 +28,12 @@
 .EXAMPLE
     用法一（最省事，在 PowerShell 里）：
       irm https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.ps1 | iex
+
+.EXAMPLE
+    中国网络 / Gitee 镜像：
+      irm https://gitee.com/renjie-god/doyoutrade/raw/main/install.ps1 | iex
+      # 或强制走 Gitee 安装源：
+      $env:DOYOUTRADE_MIRROR = "gitee"; irm https://gitee.com/renjie-god/doyoutrade/raw/main/install.ps1 | iex
 
 .EXAMPLE
     用法二（先审阅再执行，推荐谨慎用户；Windows 请走 install-win.ps1）：
@@ -41,7 +48,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Source = $(if ($env:DOYOUTRADE_INSTALL_SOURCE) { $env:DOYOUTRADE_INSTALL_SOURCE } else { "git+https://github.com/renjiegod/doyoutrade.git" }),
+    [string]$Source = $env:DOYOUTRADE_INSTALL_SOURCE,
     [switch]$Force
 )
 
@@ -70,8 +77,36 @@ $script:UvHomeInfo = $null
 $script:JunctionFreePython = $null
 
 # The source actually handed to uv. Differs from $Source only when the machine
-# has no git and the GitHub git+ source was converted to an archive URL.
+# has no git and a git+ source was converted to an archive URL.
 $script:EffectiveSource = $null
+
+$script:GithubGitSource = "git+https://github.com/renjiegod/doyoutrade.git"
+$script:GiteeGitSource = "git+https://gitee.com/renjie-god/doyoutrade.git"
+
+function Test-GitHubReachable {
+    # C: short probe — China networks often time out on github.com.
+    try {
+        $null = Invoke-WebRequest -Uri "https://github.com/" -UseBasicParsing -TimeoutSec 3
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Resolve-DefaultInstallSource {
+    # Priority: DOYOUTRADE_INSTALL_SOURCE (handled by caller) >
+    # DOYOUTRADE_MIRROR=gitee|cn|china|github|gh > GitHub reachability probe.
+    $mirror = "$($env:DOYOUTRADE_MIRROR)".Trim().ToLowerInvariant()
+    switch ($mirror) {
+        { $_ -in @("gitee", "cn", "china") } { return $script:GiteeGitSource }
+        { $_ -in @("github", "gh") } { return $script:GithubGitSource }
+    }
+    if (Test-GitHubReachable) {
+        return $script:GithubGitSource
+    }
+    Write-Warn "GitHub 不可达（或超时），改用 Gitee 镜像安装源。"
+    return $script:GiteeGitSource
+}
 
 function Test-PathBehindReparsePoint {
     # True if $Path or any existing ancestor is a reparse point (junction /
@@ -423,17 +458,31 @@ function Test-IsGitMissingError {
 }
 
 function Convert-GitSourceToArchiveUrl {
-    # GitHub `git+https://github.com/<owner>/<repo>[.git][@<ref>]` -> codeload
-    # 归档直链 `https://github.com/<owner>/<repo>/archive/<ref>.zip`。uv 构建
-    # 归档 URL 完全不需要 git；<ref> 可以是分支、tag 或 commit SHA。非 GitHub
-    # 的 git+ 源返回 $null（无法转换，只能请用户装 Git）。
+    # git+ 源 -> 归档直链（uv 构建归档 URL 完全不需要 git）。
+    #   GitHub: git+https://github.com/<owner>/<repo>[.git][@<ref>]
+    #        -> https://github.com/<owner>/<repo>/archive/<ref>.zip
+    #   Gitee:  git+https://gitee.com/<owner>/<repo>[.git][@<ref>]
+    #        -> https://gitee.com/<owner>/<repo>/repository/archive/<ref>.zip
+    # <ref> 可以是分支、tag 或 commit SHA。其他 host 返回 $null。
     param([string]$GitSource)
     if ([string]::IsNullOrWhiteSpace($GitSource)) { return $null }
-    $m = [regex]::Match($GitSource, '^git\+(https://github\.com/[^/@]+/[^/@]+?)(?:\.git)?(?:@([^@]+))?$')
-    if (-not $m.Success) { return $null }
-    $repoUrl = $m.Groups[1].Value
-    $ref = if ($m.Groups[2].Success -and $m.Groups[2].Value) { $m.Groups[2].Value } else { "main" }
-    return "$repoUrl/archive/$ref.zip"
+    $gh = [regex]::Match($GitSource, '^git\+(https://github\.com/[^/@]+/[^/@]+?)(?:\.git)?(?:@([^@]+))?$')
+    if ($gh.Success) {
+        $repoUrl = $gh.Groups[1].Value
+        $ref = if ($gh.Groups[2].Success -and $gh.Groups[2].Value) { $gh.Groups[2].Value } else { "main" }
+        return "$repoUrl/archive/$ref.zip"
+    }
+    $gitee = [regex]::Match(
+        $GitSource,
+        '^git\+https://gitee\.com/([^/@]+)/([^/@]+?)(?:\.git)?(?:@([^@]+))?$'
+    )
+    if ($gitee.Success) {
+        $owner = $gitee.Groups[1].Value
+        $repo = $gitee.Groups[2].Value
+        $ref = if ($gitee.Groups[3].Success -and $gitee.Groups[3].Value) { $gitee.Groups[3].Value } else { "main" }
+        return "https://gitee.com/$owner/$repo/repository/archive/$ref.zip"
+    }
+    return $null
 }
 
 function Write-InstallDiagnostics {
@@ -698,18 +747,18 @@ function Install-DoYouTrade {
     }
 
     # git+ 源需要本机有 git 可执行文件，而 GUI 安装包的目标用户机器上大多没有
-    # （实测报「Git executable not found」）。没有 git 时把 GitHub git+ 源转成
-    # 归档直链（codeload zip），uv 直接下载构建，零 git 依赖；版本号是 pyproject
-    # 里的静态值，不依赖 git describe，从归档构建结果一致。
+    # （实测报「Git executable not found」）。没有 git 时把 GitHub / Gitee git+
+    # 源转成归档直链，uv 直接下载构建，零 git 依赖；版本号是 pyproject 里的静态
+    # 值，不依赖 git describe，从归档构建结果一致。
     $script:EffectiveSource = $Source
     if (($Source -like "git+*") -and -not (Get-Command git -ErrorAction SilentlyContinue)) {
         $archiveUrl = Convert-GitSourceToArchiveUrl -GitSource $Source
         if ($archiveUrl) {
-            Write-Warn "未检测到 Git——改用 GitHub 归档直链安装（无需 Git）：$archiveUrl"
+            Write-Warn "未检测到 Git——改用归档直链安装（无需 Git）：$archiveUrl"
             $script:EffectiveSource = $archiveUrl
         } else {
             Write-Die -Message "安装源为 git+ 但本机没有 Git，且该源无法转换为归档直链。请先安装 Git for Windows（https://git-scm.com/download/win）后重跑本脚本。" `
-                -Stage "git-missing" -Detail "source: $Source | git not on PATH and source is not a github git+ URL"
+                -Stage "git-missing" -Detail "source: $Source | git not on PATH and source is not a github/gitee git+ URL"
         }
     }
     $effectiveSource = $script:EffectiveSource
@@ -801,6 +850,10 @@ function Install-DoYouTrade {
     Write-ToolBinDirMarker -BinDir $uvBin
 
     Write-Ok "doyoutrade 安装完成（已内置 qmt-proxy）。"
+}
+
+if ([string]::IsNullOrWhiteSpace($Source)) {
+    $Source = Resolve-DefaultInstallSource
 }
 
 Write-Host ""

@@ -14,14 +14,15 @@
     file and re-invokes powershell -File so the real installer parses.
 
 .PARAMETER Source
-    Forwarded to install.ps1.
+    Forwarded to install.ps1 when set. Leave empty so install.ps1 can
+    auto-resolve GitHub vs Gitee via DOYOUTRADE_MIRROR / network probe.
 
 .PARAMETER Force
     Forwarded to install.ps1.
 #>
 [CmdletBinding()]
 param(
-    [string]$Source = $(if ($env:DOYOUTRADE_INSTALL_SOURCE) { $env:DOYOUTRADE_INSTALL_SOURCE } else { "git+https://github.com/renjiegod/doyoutrade.git" }),
+    [string]$Source = $env:DOYOUTRADE_INSTALL_SOURCE,
     [switch]$Force
 )
 
@@ -52,9 +53,11 @@ try {
     $argList = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
-        "-File", $tmp,
-        "-Source", $Source
+        "-File", $tmp
     )
+    if (-not [string]::IsNullOrWhiteSpace($Source)) {
+        $argList += @("-Source", $Source)
+    }
     if ($Force) {
         $argList += "-Force"
     }
