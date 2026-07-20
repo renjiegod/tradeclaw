@@ -6,7 +6,9 @@ End-user installs must prefer a prebuilt wheel that already embeds
 
 from __future__ import annotations
 
+import re
 import unittest
+from pathlib import Path
 
 from doyoutrade.infra.release_artifacts import (
     gitee_wheel_url,
@@ -15,6 +17,26 @@ from doyoutrade.infra.release_artifacts import (
     normalize_release_tag,
     wheel_filename,
 )
+
+_INFRA_INIT = Path(__file__).resolve().parents[1] / "doyoutrade" / "infra" / "__init__.py"
+
+
+class InfraPackageLazyImportTests(unittest.TestCase):
+    def test_infra_init_does_not_eagerly_import_qmt(self) -> None:
+        # Windows installer CI runs bare unittest without OpenTelemetry / QMT.
+        # Eager ``from doyoutrade.infra.qmt import ...`` in infra.__init__ used to
+        # fail ``tests.test_release_wheel`` and skip publishing Setup.exe.
+        text = _INFRA_INIT.read_text(encoding="utf-8")
+        self.assertIn("__getattr__", text)
+        self.assertIsNone(
+            re.search(r"(?m)^from doyoutrade\.infra\.qmt import", text),
+            "infra.__init__ must not eagerly import qmt (pulls OpenTelemetry)",
+        )
+        self.assertIsNone(
+            re.search(r"(?m)^from doyoutrade\.infra\.qmt_proxy_client import", text),
+            "infra.__init__ must not eagerly import qmt_proxy_client",
+        )
+
 
 
 class WheelNamingTests(unittest.TestCase):

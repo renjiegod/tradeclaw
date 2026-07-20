@@ -102,6 +102,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("_frontend", wf)
         self.assertIn(".whl", wf)
 
+    def test_exports_wheel_env_for_same_step_verify(self) -> None:
+        # Regression: writing only to GITHUB_ENV left os.environ["WHEEL"] unset
+        # in the same step (v0.1.11 release KeyError), so Setup.exe never published.
+        wf = _WF.read_text(encoding="utf-8")
+        self.assertRegex(wf, r"export\s+WHEEL=")
+        self.assertIn('os.environ["WHEEL"]', wf)
+
     def test_uploads_wheel_to_github_and_gitee(self) -> None:
         wf = _WF.read_text(encoding="utf-8")
         self.assertIn("GITEE_TOKEN", wf)
