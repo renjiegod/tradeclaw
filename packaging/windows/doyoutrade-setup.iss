@@ -98,7 +98,7 @@ var
   Params: String;
 begin
   PsExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
-  Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\install-win.ps1') + '" -Force';
+  Params := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\install-win.ps1') + '" -Force -Version "{#MyAppVersion}"';
   if not Exec(PsExe, Params, ExpandConstant('{app}'), SW_SHOW, ewWaitUntilTerminated, ResultCode) then
   begin
     Result := False;

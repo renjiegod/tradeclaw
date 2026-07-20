@@ -1,9 +1,9 @@
 """Release-based self-update service (设置页「自动更新」).
 
-DoYouTrade is distributed as a uv tool installed from the GitHub repo
-(``install.sh`` / ``install.ps1``: ``uv tool install --force
-"doyoutrade[extras] @ <github source>"``). This module implements the update
-flow behind the ``auto_update`` config section:
+DoYouTrade is distributed as a uv tool installed from a **prebuilt Release
+wheel** (``install.sh`` / ``install.ps1`` / GUI Setup.exe). The wheel embeds
+``doyoutrade/_frontend`` so end-user machines never need Node.js. This module
+implements the update flow behind the ``auto_update`` config section:
 
 * A background loop — enabled by default, hot-toggled via
   ``auto_update.enabled`` (the loop re-reads ``get_config()`` every tick) —
@@ -17,9 +17,9 @@ flow behind the ``auto_update`` config section:
   replace (Windows would hit file locks on ``python.exe``), the install is
   *staged*: the server shuts down gracefully and the process ``exec``s into a
   shell that runs ``uv tool install --force "<requirement built by
-  _install_requirement()>"`` (git+ source at the tag, or the GitHub tag
-  archive URL when git is absent; ``[qmt-proxy]`` extra kept on Windows) and
-  then starts ``doyoutrade`` again with the original argv. If the install
+  _install_requirement()>"`` (Release wheel URL for the tag; ``[qmt-proxy]``
+  extra kept on Windows; ``DOYOUTRADE_MIRROR=gitee`` selects the Gitee asset)
+  and then starts ``doyoutrade`` again with the original argv. If the install
   fails the shell falls back to relaunching the still-intact current version.
 
 Error visibility (CLAUDE.md §错误可见性): every check / apply failure is
@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from doyoutrade.config import get_config
+from doyoutrade.infra.release_artifacts import install_requirement_from_wheel
 from doyoutrade.observability import get_logger, get_tracer
 
 logger = get_logger(__name__)
@@ -516,37 +517,35 @@ def _relaunch_argv(which: Callable[[str], str | None] = shutil.which) -> list[st
     return argv or ["doyoutrade"]
 
 
+def _update_mirror() -> str:
+    """Same tokens as install.ps1 / install.sh (``DOYOUTRADE_MIRROR``)."""
+    raw = (os.environ.get("DOYOUTRADE_MIRROR") or "").strip().lower()
+    if raw in ("gitee", "cn", "china"):
+        return "gitee"
+    return "github"
+
+
 def _install_requirement(
     staged: StagedUpdate,
     *,
     platform: str | None = None,
+    mirror: str | None = None,
     which: Callable[[str], str | None] | None = None,
 ) -> str:
     """PEP 508 direct reference passed to ``uv tool install`` for the update.
 
-    Two field-driven constraints (mirrors install.ps1 / install.sh):
-
-    * Windows installs carry the ``qmt-proxy`` extra (embedded xtquant REST
-      proxy). ``uv tool install --force`` replaces the tool venv with exactly
-      what is requested, so omitting the extra here would silently strip
-      qmt-proxy on the first in-app update — the ``--mode both`` startup
-      would then fail loudly on import. The PEP 508 form is required because
-      uv's ``--from`` rejects ``name[extra]`` positional args.
-    * ``git+`` sources need a git executable, which GUI-installed Windows
-      machines usually lack ("Git executable not found"). Without git, use
-      the GitHub tag archive URL instead — same tree, built from the static
-      pyproject version, no git involved.
+    Always installs the prebuilt Release wheel for ``staged.tag`` so the web UI
+    stays bundled (no Node / no source build on the client). Windows keeps the
+    ``qmt-proxy`` extra so ``--force`` does not strip the embedded proxy.
+    ``which`` is accepted for call-site compatibility with older tests but is
+    unused — wheels do not need git.
     """
+    del which  # wheels replace the former git+/archive branch
     plat = platform if platform is not None else sys.platform
-    # Resolved at call time (not a def-time default) so tests can patch
-    # ``shutil.which`` the usual way.
-    resolve = which if which is not None else shutil.which
-    name = "doyoutrade[qmt-proxy]" if plat == "win32" else "doyoutrade"
-    if resolve("git"):
-        source = f"git+https://github.com/{staged.repo}.git@{staged.tag}"
-    else:
-        source = f"https://github.com/{staged.repo}/archive/refs/tags/{staged.tag}.zip"
-    return f"{name} @ {source}"
+    side = mirror if mirror is not None else _update_mirror()
+    return install_requirement_from_wheel(
+        tag=staged.tag, platform=plat, mirror=side
+    )
 
 
 def build_restart_command(staged: StagedUpdate) -> list[str]:

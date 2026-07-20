@@ -36,7 +36,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-D22128?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="License"></a>
-  <img src="https://img.shields.io/badge/version-0.1.10-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.1.11-blue?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square" alt="PRs Welcome">
 </p>
@@ -210,7 +210,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install-win.ps1
 > 中文注释/字符串会被拆坏并直接 `ParserError`。`install-win.ps1` 是纯 ASCII 包装，会把
 > `install.ps1` 转成带 BOM 的临时副本再执行。
 
-脚本会自动：检测 / 安装 [uv](https://docs.astral.sh/uv/)（钉 Python 3.12，零前置）→ 把 `doyoutrade` 装成常驻命令。**Windows 版会一并装上内置 qmt-proxy**（含 xtquant），macOS / Linux 只装 DoYouTrade 本体。Windows 上脚本还会把 uv 的 Python / 工具目录固定到本地安全路径，绕开被 OneDrive / 文件夹重定向接管的 `AppData\Roaming`（否则会报 `os error 448`，详见下方「Windows / QMT 常见疑问」）。装完在你自己的终端运行：
+脚本会自动：检测 / 安装 [uv](https://docs.astral.sh/uv/)（钉 Python 3.12，零前置）→ 从 **GitHub / Gitee Release 预构建 wheel** 安装 `doyoutrade`（wheel 已内嵌网页控制台，**用户机不需要 Node.js**）。**Windows 版会一并装上内置 qmt-proxy**（含 xtquant），macOS / Linux 只装 DoYouTrade 本体。Windows 上脚本还会把 uv 的 Python / 工具目录固定到本地安全路径，绕开被 OneDrive / 文件夹重定向接管的 `AppData\Roaming`（否则会报 `os error 448`，详见下方「Windows / QMT 常见疑问」）。装完在你自己的终端运行：
 
 ```bash
 doyoutrade
@@ -218,19 +218,19 @@ doyoutrade
 
 `doyoutrade` 默认按操作系统选择启动内容：**Windows → `--mode both`**（同一进程内起 DoYouTrade:8000 + 内置 qmt-proxy:8001，并自动把默认账户指向本机 qmt-proxy，登录 miniQMT 后实时行情开箱即用）；**macOS / Linux → `--mode doyoutrade`**（只跑本体，QMT 行情指向远程 Windows 上的 qmt-proxy）。可用 `--mode {both,doyoutrade,qmt-proxy}` 或环境变量 `DOYOUTRADE_LAUNCH_MODE` 覆盖。
 
-首次启动会：**自动执行数据库迁移**（默认 SQLite，零外部依赖）→ 进入**安装向导**，在终端问你一个大模型供应商（DeepSeek / Kimi / 通义 / Anthropic / LM Studio / 自定义）+ API Key + 模型 ID，写好后**自动绑定默认智能体** → 启动服务。浏览器打开 `http://localhost:8000` 即是完整控制台（前端与 API **同源**，无需另起 Vite）。
+首次启动会：**自动执行数据库迁移**（默认 SQLite，零外部依赖）→ 自动打开浏览器控制台，在网页向导里选大模型供应商 + API Key → 启动服务。浏览器打开 `http://localhost:8000` 即是完整控制台（前端与 API **同源**，无需另起 Vite）。
 
 - 已配置过模型则向导自动跳过，不再打扰。
 - 非交互启动（后台 / Docker / CI）不会被向导阻塞：打印一行引导后照常启动，稍后在 `/settings/models` 配置即可。
-- 安装机装有 Node.js 时会自动打包 Web UI；没有 Node 也能装，只是退化为「API + CLI」无网页界面。
+- 正式安装路径使用带网页控制台的**预构建 Release wheel**；仅当你显式设置 `DOYOUTRADE_INSTALL_SOURCE=git+…` 从源码安装时，才需要本机 Node.js 来打包前端。
 - 安装脚本本身是交互式：若已安装过 doyoutrade，会先询问是否卸载重装；CI / 自动化请先下载脚本并加 `-Force`（见下方「谨慎用户」示例）。
-- 升级 `uv tool upgrade doyoutrade`；卸载 `uv tool uninstall doyoutrade`。
+- 升级走应用内「设置 → 自动更新」，或重跑安装脚本 / Setup.exe；卸载 `uv tool uninstall doyoutrade`。
 - 想要真实 A 股行情、QMT 实盘等进阶能力，见下方梯度二 / 三。
 
 > 谨慎用户可先下载脚本审阅再执行（`curl -fsSL … -o install.sh` → 查看 → `sh install.sh`）；Windows 用
 > `powershell -NoProfile -ExecutionPolicy Bypass -File install-win.ps1`（需同目录有 `install.ps1`；可加 `-Force` 跳过确认）。
-> 已经装了 uv、想跳过脚本的话，等价的一条命令是
-> `uvx --from git+https://github.com/renjiegod/doyoutrade doyoutrade`（即跑即用，不持久安装）。
+> 已经装了 uv、想跳过脚本的话，可从 [Releases](https://github.com/renjiegod/doyoutrade/releases/latest) 下载 `.whl` 后执行
+> `uv tool install --force "doyoutrade @ ./doyoutrade-*-py3-none-any.whl"`（Windows 请用 `doyoutrade[qmt-proxy] @ …`）。
 > 从源码开发（改代码、跑测试）走下面的「梯度一：克隆源码本地开发」。
 
 ### 完全不会命令行？图形化安装（Windows）
@@ -254,8 +254,8 @@ doyoutrade
 
 | 组件 | 要求 | 说明 |
 |---|---|---|
-| Python | >= 3.12 | 配合 [uv](https://docs.astral.sh/uv/) 管理依赖 |
-| Node.js + npm | 较新的 LTS | 仅前端控制台需要 |
+| Python | >= 3.12 | 配合 [uv](https://docs.astral.sh/uv/) 管理依赖；一键安装脚本会自动装 |
+| Node.js + npm | 较新的 LTS | **仅源码开发 / 改前端**需要；正式用户装预构建 wheel 不需要 |
 | 主数据库 | 默认 SQLite，可选 PostgreSQL | 默认 `sqlite+aiosqlite:///./data/doyoutrade.db`，无需安装 |
 | 行情仓库数据库 | 默认 SQLite，可选 PostgreSQL + TimescaleDB | 默认 `sqlite+aiosqlite:///./data/market_bars.db`，无需安装；全市场同步 / 重度 5m 历史建议切 TimescaleDB |
 | LLM API key | 自备 | `anthropic` / `openai_compatible`（DeepSeek、Kimi、通义等）/ `lmstudio` |
@@ -369,7 +369,7 @@ uv run doyoutrade-cli account create \
 - **端口是不是变了？** 内置 qmt-proxy 默认 `:8001`（DoYouTrade 占 `:8000`），可用 `qmt_proxy.port` 或 `--qmt-port` 改。
 - **不配 QMT 会报错吗？** 不会。`auto` 链发现没有带 `base_url` 的默认账户时会静默跳过 QMT。
 - **安装报 `os error 448` / “不受信任的装入点”（untrusted mount point）怎么办？** 一般不用管——新版安装脚本已自动规避，且分两层：① 把 uv 的 Python / 缓存 / 工具目录固定到本地安全路径（优先 `%LOCALAPPDATA%\doyoutrade\uv`，必要时回退到系统盘根 `C:\doyoutrade\uv`），并钉住 Python 3.12；② 关键的一层——这个拦截常是**进程级**的（Windows 的 Redirection Trust 缓解 / OneDrive minifilter），换目录也救不回来，此时脚本会自动清掉 uv 建坏的版本链接（junction），改用「免 junction」解释器完成安装：优先复用已下载的 `cpython-3.12.x` 实体目录，其次系统已装的 Python 3.12，最后静默安装 python.org 官方 3.12（仅当前用户、无需管理员）。若连兜底都失败，请检查两件事再重跑：**不要**右键「以管理员身份运行」安装器（提权进程会被 Redirection Trust 拦截穿越 junction）；退出 / 暂停 OneDrive（或对相关目录关闭「文件按需」）。它不是网络问题；旧版脚本用户升级到新版脚本即可。
-- **安装报 `Git executable not found` 怎么办？** 不用装 Git——新版安装脚本检测到本机没有 git 时，会自动把 GitHub / Gitee 的 `git+` 安装源转换成归档直链（zip）安装，应用内自动更新同样兼容无 Git 环境。只有自定义了其他 host 的 `git+` 安装源时才需要先装 [Git for Windows](https://git-scm.com/download/win)。
+- **安装报 `Git executable not found` 怎么办？** 正式安装默认走 Release **预构建 wheel**，不需要 Git。只有你显式用 `DOYOUTRADE_INSTALL_SOURCE=git+…` 从源码安装、且本机没有 git 时才会碰到——此时脚本会把 GitHub / Gitee 的 `git+` 转成归档直链（zip）。其它 host 的 `git+` 源才需要先装 [Git for Windows](https://git-scm.com/download/win)。
 - **诊断输出里有乱码（如「鏃犳硶閬嶅巻…」）？** 那是旧版脚本捕获 uv 输出时的编码问题（uv 输出 UTF-8、中文 PowerShell 按 GBK 解码），新版脚本已在捕获时切换 UTF-8 解码，系统错误信息会正常显示为中文。
 - **提示找不到 `doyoutrade` 命令？** 多是新装的 PATH 没在旧窗口生效：**新开**一个 PowerShell 再运行；图形安装包 / 启动 bat 已内置多重回退（读取工具目录标记 + `uv tool dir --bin`），一般会自动定位到 `doyoutrade.exe`。仍不行就 `uv tool list` 看是否装上，未装则重跑安装。
 

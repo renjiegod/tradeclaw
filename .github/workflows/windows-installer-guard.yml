@@ -67,6 +67,7 @@ jobs:
             tests.test_windows_installer_hardening \
             tests.test_install_console_diagnostics \
             tests.test_windows_installer_force_overwrite \
+            tests.test_install_release_wheel \
             -v
 
       - name: Install Inno Setup

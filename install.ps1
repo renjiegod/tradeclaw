@@ -6,10 +6,11 @@
 .DESCRIPTION
     只负责「安装」，不启动服务、不碰任何交易账户：
       1. 检测 / 安装 uv（Astral 的 Python 包管理器，自带 Python 3.12）
-      2. 提示是否有 Node.js（有则安装时自动打包网页控制台，没有则退化为 API + CLI）
+      2. 默认从 GitHub / Gitee Release 安装**预构建 wheel**（已内嵌网页控制台，
+         用户机无需 Node.js）
       3. uv tool install 把 doyoutrade[qmt-proxy] 装成常驻命令（内置 qmt-proxy，
-         `doyoutrade` 启动、`uv tool upgrade` 升级）
-      4. 打印下一步：运行 `doyoutrade`，首启进入安装向导配置模型
+         `doyoutrade` 启动、应用内自动更新）
+      4. 打印下一步：运行 `doyoutrade`，首启在网页向导配置模型
 
     Windows 版一并安装内置的 qmt-proxy（把 xtquant 封装为本机 REST 服务）。运行
     `doyoutrade` 默认走 --mode both：同一进程内同时起 DoYouTrade(:8000) 与 qmt-proxy(:8001)，
@@ -20,7 +21,13 @@
 
 .PARAMETER Source
     安装源。未指定时按 DOYOUTRADE_MIRROR / GitHub 连通性自动选择
-    GitHub 或 Gitee；也可指定本地目录 / fork。DOYOUTRADE_INSTALL_SOURCE 优先。
+    GitHub 或 Gitee 的 **Release wheel**；也可指定本地目录 / fork / git+ URL。
+    DOYOUTRADE_INSTALL_SOURCE 优先。
+
+.PARAMETER Version
+    要安装的发行版版本（如 0.1.10 或 v0.1.10）。未指定时取对应镜像的 latest
+    Release。图形安装包会传入与 Setup.exe 一致的版本。也可用环境变量
+    DOYOUTRADE_INSTALL_VERSION。
 
 .PARAMETER Force
     若已安装，直接卸载并重新安装，不弹出确认。
@@ -49,6 +56,7 @@
 [CmdletBinding()]
 param(
     [string]$Source = $env:DOYOUTRADE_INSTALL_SOURCE,
+    [string]$Version = $env:DOYOUTRADE_INSTALL_VERSION,
     [switch]$Force
 )
 
@@ -82,6 +90,9 @@ $script:EffectiveSource = $null
 
 $script:GithubGitSource = "git+https://github.com/renjiegod/doyoutrade.git"
 $script:GiteeGitSource = "git+https://gitee.com/renjie-god/doyoutrade.git"
+$script:GithubOwnerRepo = "renjiegod/doyoutrade"
+$script:GiteeOwner = "renjie-god"
+$script:GiteeRepo = "doyoutrade"
 
 function Test-GitHubReachable {
     # C: short probe — China networks often time out on github.com.
@@ -93,19 +104,122 @@ function Test-GitHubReachable {
     }
 }
 
-function Resolve-DefaultInstallSource {
-    # Priority: DOYOUTRADE_INSTALL_SOURCE (handled by caller) >
-    # DOYOUTRADE_MIRROR=gitee|cn|china|github|gh > GitHub reachability probe.
+function Resolve-PreferredMirror {
+    # Priority: DOYOUTRADE_MIRROR=gitee|cn|china|github|gh > GitHub reachability.
     $mirror = "$($env:DOYOUTRADE_MIRROR)".Trim().ToLowerInvariant()
     switch ($mirror) {
-        { $_ -in @("gitee", "cn", "china") } { return $script:GiteeGitSource }
-        { $_ -in @("github", "gh") } { return $script:GithubGitSource }
+        { $_ -in @("gitee", "cn", "china") } { return "gitee" }
+        { $_ -in @("github", "gh") } { return "github" }
     }
     if (Test-GitHubReachable) {
-        return $script:GithubGitSource
+        return "github"
     }
-    Write-Warn "GitHub 不可达（或超时），改用 Gitee 镜像安装源。"
-    return $script:GiteeGitSource
+    Write-Warn "GitHub 不可达（或超时），改用 Gitee 镜像。"
+    return "gitee"
+}
+
+function Normalize-ReleaseTag {
+    param([string]$Tag)
+    $t = "$Tag".Trim()
+    if ([string]::IsNullOrWhiteSpace($t)) {
+        throw "release tag is empty"
+    }
+    if ($t.StartsWith("v") -or $t.StartsWith("V")) {
+        $bare = $t.Substring(1)
+        return @{ Tag = "v$bare"; Version = $bare }
+    }
+    return @{ Tag = "v$t"; Version = $t }
+}
+
+function Get-WheelFileName {
+    param([string]$Version)
+    $bare = (Normalize-ReleaseTag -Tag $Version).Version
+    return "doyoutrade-$bare-py3-none-any.whl"
+}
+
+function Resolve-ReleaseWheelUrl {
+    param(
+        [string]$Tag,
+        [ValidateSet("github", "gitee")]
+        [string]$Mirror = "github"
+    )
+    $norm = Normalize-ReleaseTag -Tag $Tag
+    $file = Get-WheelFileName -Version $norm.Version
+    if ($Mirror -eq "gitee") {
+        return "https://gitee.com/$($script:GiteeOwner)/$($script:GiteeRepo)/releases/download/$($norm.Tag)/$file"
+    }
+    return "https://github.com/$($script:GithubOwnerRepo)/releases/download/$($norm.Tag)/$file"
+}
+
+function Test-RemoteUrlExists {
+    param([string]$Uri)
+    try {
+        $resp = Invoke-WebRequest -Uri $Uri -Method Head -UseBasicParsing -TimeoutSec 15
+        return ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 400)
+    } catch {
+        # Some hosts reject HEAD; try a tiny ranged GET.
+        try {
+            $headers = @{ Range = "bytes=0-0" }
+            $resp = Invoke-WebRequest -Uri $Uri -Method Get -Headers $headers -UseBasicParsing -TimeoutSec 20
+            return ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 400)
+        } catch {
+            return $false
+        }
+    }
+}
+
+function Get-LatestReleaseTag {
+    param(
+        [ValidateSet("github", "gitee")]
+        [string]$Mirror = "github"
+    )
+    if ($Mirror -eq "gitee") {
+        $api = "https://gitee.com/api/v5/repos/$($script:GiteeOwner)/$($script:GiteeRepo)/releases/latest"
+    } else {
+        $api = "https://api.github.com/repos/$($script:GithubOwnerRepo)/releases/latest"
+    }
+    try {
+        $payload = Invoke-RestMethod -Uri $api -TimeoutSec 20
+    } catch {
+        throw "无法读取 $Mirror latest Release：$($_.Exception.Message)"
+    }
+    $tag = [string]$payload.tag_name
+    if ([string]::IsNullOrWhiteSpace($tag)) {
+        throw "$Mirror latest Release 缺少 tag_name"
+    }
+    return $tag
+}
+
+function Test-IsDevOrCiVersion {
+    param([string]$Version)
+    if ([string]::IsNullOrWhiteSpace($Version)) { return $false }
+    $v = $Version.Trim().ToLowerInvariant()
+    return ($v -match 'dev|ci|0\.0\.0')
+}
+
+function Resolve-DefaultInstallSource {
+    # Default: prebuilt Release wheel (embeds web UI). Explicit -Source /
+    # DOYOUTRADE_INSTALL_SOURCE still wins (handled by caller).
+    $mirror = Resolve-PreferredMirror
+    $tagInput = "$Version".Trim()
+    if ([string]::IsNullOrWhiteSpace($tagInput)) {
+        Write-Info "未指定版本——查询 $mirror latest Release…"
+        $tagInput = Get-LatestReleaseTag -Mirror $mirror
+    }
+    $norm = Normalize-ReleaseTag -Tag $tagInput
+    $wheelUrl = Resolve-ReleaseWheelUrl -Tag $norm.Tag -Mirror $mirror
+    Write-Info "安装源：$mirror Release $($norm.Tag) → $wheelUrl"
+    if (Test-RemoteUrlExists -Uri $wheelUrl) {
+        return $wheelUrl
+    }
+    # CI / local dry-build Setup.exe may pin 0.0.0-dev with no Release asset.
+    if (Test-IsDevOrCiVersion -Version $norm.Version) {
+        $gitSource = if ($mirror -eq "gitee") { $script:GiteeGitSource } else { $script:GithubGitSource }
+        Write-Warn "未找到预构建 wheel（开发/CI 版本 $($norm.Tag)）——回退到源码安装：$gitSource"
+        Write-Warn "正式用户请安装带版本号的 Release 包；源码安装需要本机 Node.js 才能打包网页控制台。"
+        return $gitSource
+    }
+    throw "Release wheel 不存在或无法下载：$wheelUrl（请确认 $mirror 上已发布 $($norm.Tag) 的 .whl）"
 }
 
 function Test-PathBehindReparsePoint {
@@ -600,12 +714,21 @@ function Ensure-Uv {
     Write-Ok "uv 安装完成 ($(uv --version))"
 }
 
-function Check-Node {
+function Check-NodeForSourceInstall {
+    # Only relevant when installing from git+/archive (no prebuilt wheel).
+    if ($script:EffectiveSource -notlike "git+*" `
+        -and $script:EffectiveSource -notlike "*.zip" `
+        -and $script:EffectiveSource -notlike "*archive*") {
+        return
+    }
+    if ($script:EffectiveSource -like "*.whl") {
+        return
+    }
     if (Get-Command npm -ErrorAction SilentlyContinue) {
-        Write-Ok "检测到 Node.js / npm — 安装时会自动打包网页控制台。"
+        Write-Ok "检测到 Node.js / npm — 源码安装时会打包网页控制台。"
     } else {
-        Write-Warn "未检测到 Node.js — 将安装为「API + CLI」模式（没有网页界面）。"
-        Write-Warn "  想要网页控制台：装好 Node.js LTS 后重跑本脚本即可。"
+        Write-Warn "正在从源码安装且未检测到 Node.js — 打出的包可能没有网页控制台。"
+        Write-Warn "  正式用户请改用 Release 预构建 wheel（不要设置 DOYOUTRADE_INSTALL_SOURCE）。"
     }
 }
 
@@ -761,6 +884,7 @@ function Install-DoYouTrade {
                 -Stage "git-missing" -Detail "source: $Source | git not on PATH and source is not a github/gitee git+ URL"
         }
     }
+    Check-NodeForSourceInstall
     $effectiveSource = $script:EffectiveSource
 
     Write-Info "正在安装 doyoutrade[qmt-proxy]（源：$effectiveSource）…"
@@ -853,7 +977,12 @@ function Install-DoYouTrade {
 }
 
 if ([string]::IsNullOrWhiteSpace($Source)) {
-    $Source = Resolve-DefaultInstallSource
+    try {
+        $Source = Resolve-DefaultInstallSource
+    } catch {
+        Write-Die -Message "无法解析默认安装源（Release wheel）。$($_.Exception.Message)" `
+            -Stage "resolve-wheel" -Detail $_.Exception.Message
+    }
 }
 
 Write-Host ""
@@ -862,7 +991,6 @@ Write-Host "DoYouTrade 安装脚本 (Windows，内置 qmt-proxy)"
 Write-Host "============================================================"
 Write-Host ""
 Ensure-Uv
-Check-Node
 Install-DoYouTrade
 
 Write-Host ""
@@ -872,12 +1000,13 @@ Write-Host ""
 Write-Host "  1. 在 PowerShell 运行：  doyoutrade" -ForegroundColor White
 Write-Host "     （默认 --mode both：同进程起 DoYouTrade:8000 与内置 qmt-proxy:8001）"
 Write-Host "     （若提示找不到命令，重开一个 PowerShell 窗口，或运行  uv tool update-shell  后重试）"
-Write-Host "  2. 首次启动会进入安装向导，按提示选择一个大模型供应商并填入 API Key。"
+Write-Host "  2. 首次启动会自动打开浏览器控制台，在网页向导里选择大模型供应商并填入 API Key。"
 Write-Host "  3. 登录券商 miniQMT / QMT 量化终端后，实时行情开箱即用（默认账户已自动指向本机 qmt-proxy）。"
 Write-Host "  4. 浏览器打开  http://localhost:8000  即是完整控制台。"
 Write-Host ""
 Write-Host "只想跑 DoYouTrade 本体： doyoutrade --mode doyoutrade    只跑行情代理： doyoutrade --mode qmt-proxy"
 Write-Host "默认使用本地 SQLite，零外部数据库依赖；进阶配置见 README。"
-Write-Host "升级：  uv tool upgrade doyoutrade      卸载：  uv tool uninstall doyoutrade"
+Write-Host "升级：应用内「设置 → 自动更新」，或重跑本安装脚本 / Setup.exe"
+Write-Host "卸载：  uv tool uninstall doyoutrade"
 Write-Host "============================================================"
 Write-Host ""

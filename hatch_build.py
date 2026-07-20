@@ -13,6 +13,8 @@ Git provenance (``doyoutrade/_git_version.json``) is frozen *before* the
 frontend build so npm/vite side-effects cannot mark a clean tag as dirty.
 
 Set ``DOYOUTRADE_SKIP_FRONTEND_BUILD=1`` to force API-only and skip the npm step.
+Set ``DOYOUTRADE_REQUIRE_FRONTEND=1`` (release CI) to fail the build when the
+frontend cannot be bundled — end-user wheels must never ship API-only.
 """
 
 from __future__ import annotations
@@ -45,12 +47,18 @@ class CustomBuildHook(BuildHookInterface):
             self._try_build_frontend(root, dist)
 
         if not (dist / "index.html").is_file():
-            self.app.display_warning(
+            require = os.environ.get("DOYOUTRADE_REQUIRE_FRONTEND") == "1"
+            msg = (
                 "frontend/dist not found and could not be built — packaging an "
                 "API-only wheel (the server runs without the bundled web UI). "
                 "Install Node.js and rebuild, or run `npm --prefix frontend run build` "
                 "before `uv build`, to include the UI."
             )
+            if require:
+                raise RuntimeError(
+                    f"{msg} DOYOUTRADE_REQUIRE_FRONTEND=1 forbids API-only release wheels."
+                )
+            self.app.display_warning(msg)
             return
 
         build_data.setdefault("force_include", {})[str(dist)] = "doyoutrade/_frontend"

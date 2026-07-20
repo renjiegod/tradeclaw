@@ -14,7 +14,61 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+          test -f dist/index.html
+
+      - name: Build wheel (frontend required)
+        env:
+          DOYOUTRADE_REQUIRE_FRONTEND: "1"
+        run: |
+          uv build
+          wheel="$(ls -1 dist/doyoutrade-*-py3-none-any.whl | head -n1)"
+          echo "WHEEL=$wheel" >> "$GITHUB_ENV"
+          echo "Built $wheel"
+          python - <<'PY'
+          import os, sys, zipfile
+          from pathlib import Path
+          wheel = Path(os.environ["WHEEL"])
+          with zipfile.ZipFile(wheel) as zf:
+              names = zf.namelist()
+          marker = "doyoutrade/_frontend/index.html"
+          if marker not in names:
+              sys.exit(f"FATAL: {wheel.name} missing {marker} ({len(names)} entries)")
+          print(f"OK: {wheel.name} contains {marker}")
+          PY
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: doyoutrade-wheel
+          path: dist/doyoutrade-*-py3-none-any.whl
+          if-no-files-found: error
+
+  build-installer:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -34,6 +88,8 @@ jobs:
             tests.test_windows_installer_hardening \
             tests.test_install_console_diagnostics \
             tests.test_windows_installer_python_pin \
+            tests.test_install_release_wheel \
+            tests.test_release_wheel \
             -v
 
       - name: 解析版本号
@@ -47,6 +103,7 @@ jobs:
             version="${version:-0.0.0-dev}"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
       - name: 安装 Inno Setup
         run: choco install innosetup --no-progress -y
@@ -61,9 +118,54 @@ jobs:
         with:
           name: DoYouTrade-Setup
           path: packaging/windows/dist/DoYouTrade-Setup.exe
+          if-no-files-found: error
 
-      - name: 发布到 Release
-        if: github.ref_type == 'tag'
+  publish:
+    needs: [build-wheel, build-installer]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download wheel
+        uses: actions/download-artifact@v7
+        with:
+          name: doyoutrade-wheel
+          path: dist
+
+      - name: Download Setup.exe
+        uses: actions/download-artifact@v7
+        with:
+          name: DoYouTrade-Setup
+          path: packaging/windows/dist
+
+      - name: List release assets
+        run: |
+          ls -la dist/
+          ls -la packaging/windows/dist/
+
+      - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: packaging/windows/dist/DoYouTrade-Setup.exe
+          files: |
+            dist/doyoutrade-*-py3-none-any.whl
+            packaging/windows/dist/DoYouTrade-Setup.exe
+
+      - name: Sync Release assets to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if [ -z "${GITEE_TOKEN}" ]; then
+            echo "FATAL: GITEE_TOKEN secret is required to mirror Release wheels to Gitee."
+            echo "Add a Gitee personal access token (projects + release attach) as repo secret GITEE_TOKEN."
+            exit 1
+          fi
+          tag="${GITHUB_REF_NAME}"
+          wheel="$(ls -1 dist/doyoutrade-*-py3-none-any.whl | head -n1)"
+          setup="packaging/windows/dist/DoYouTrade-Setup.exe"
+          python scripts/sync_gitee_release.py \
+            --tag "$tag" \
+            --name "$tag" \
+            --body "DoYouTrade $tag — prebuilt wheel (web UI bundled) + Windows Setup.exe" \
+            --asset "$wheel" \
+            --asset "$setup"

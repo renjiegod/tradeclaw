@@ -15,7 +15,12 @@
 
 .PARAMETER Source
     Forwarded to install.ps1 when set. Leave empty so install.ps1 can
-    auto-resolve GitHub vs Gitee via DOYOUTRADE_MIRROR / network probe.
+    auto-resolve GitHub vs Gitee Release wheels via DOYOUTRADE_MIRROR.
+
+.PARAMETER Version
+    Forwarded to install.ps1 (Release tag / version to install). The GUI
+    Setup.exe passes MyAppVersion here so the installed wheel matches the
+    installer. Also accepts DOYOUTRADE_INSTALL_VERSION.
 
 .PARAMETER Force
     Forwarded to install.ps1.
@@ -23,6 +28,7 @@
 [CmdletBinding()]
 param(
     [string]$Source = $env:DOYOUTRADE_INSTALL_SOURCE,
+    [string]$Version = $env:DOYOUTRADE_INSTALL_VERSION,
     [switch]$Force
 )
 
@@ -57,6 +63,9 @@ try {
     )
     if (-not [string]::IsNullOrWhiteSpace($Source)) {
         $argList += @("-Source", $Source)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Version)) {
+        $argList += @("-Version", $Version)
     }
     if ($Force) {
         $argList += "-Force"

@@ -222,7 +222,8 @@ class RestartCommandTests(unittest.TestCase):
         # PEP 508 direct reference (uv's --from rejects name[extra] args).
         self.assertIn(
             "tool install --force "
-            "'doyoutrade @ git+https://github.com/renjiegod/doyoutrade.git@v0.2.0'",
+            "'doyoutrade @ https://github.com/renjiegod/doyoutrade/releases/download/"
+            "v0.2.0/doyoutrade-0.2.0-py3-none-any.whl'",
             script,
         )
         # Relaunches whether or not the install succeeded (old version stays
@@ -231,46 +232,50 @@ class RestartCommandTests(unittest.TestCase):
         self.assertIn("&&", script)
         self.assertIn("||", script)
 
-    def test_requirement_uses_git_source_when_git_available(self):
+    def test_requirement_uses_github_release_wheel(self):
+        # Prebuilt wheel already embeds the web UI — no Node / git on the
+        # client machine, and no API-only fallback from a source build.
         req = updater._install_requirement(
-            self._staged(), platform="linux", which=lambda name: "/usr/bin/git"
-        )
-        self.assertEqual(
-            req, "doyoutrade @ git+https://github.com/renjiegod/doyoutrade.git@v0.2.0"
-        )
-
-    def test_requirement_falls_back_to_tag_archive_without_git(self):
-        # GUI-installed Windows machines usually have no git; uv would die
-        # with "Git executable not found" on a git+ source.
-        req = updater._install_requirement(
-            self._staged(), platform="linux", which=lambda name: None
+            self._staged(), platform="linux", mirror="github"
         )
         self.assertEqual(
             req,
-            "doyoutrade @ "
-            "https://github.com/renjiegod/doyoutrade/archive/refs/tags/v0.2.0.zip",
+            "doyoutrade @ https://github.com/renjiegod/doyoutrade/releases/download/"
+            "v0.2.0/doyoutrade-0.2.0-py3-none-any.whl",
+        )
+
+    def test_requirement_uses_gitee_release_wheel_when_mirrored(self):
+        req = updater._install_requirement(
+            self._staged(), platform="linux", mirror="gitee"
+        )
+        self.assertEqual(
+            req,
+            "doyoutrade @ https://gitee.com/renjie-god/doyoutrade/releases/download/"
+            "v0.2.0/doyoutrade-0.2.0-py3-none-any.whl",
         )
 
     def test_requirement_keeps_qmt_proxy_extra_on_windows(self):
         # --force replaces the tool venv with exactly what is requested;
         # dropping the extra would strip the embedded qmt-proxy on update.
         req = updater._install_requirement(
-            self._staged(), platform="win32", which=lambda name: "C:\\git\\git.exe"
+            self._staged(), platform="win32", mirror="github"
         )
         self.assertEqual(
             req,
             "doyoutrade[qmt-proxy] @ "
-            "git+https://github.com/renjiegod/doyoutrade.git@v0.2.0",
+            "https://github.com/renjiegod/doyoutrade/releases/download/"
+            "v0.2.0/doyoutrade-0.2.0-py3-none-any.whl",
         )
 
-    def test_requirement_windows_without_git_uses_archive_with_extra(self):
+    def test_requirement_windows_gitee_keeps_extra(self):
         req = updater._install_requirement(
-            self._staged(), platform="win32", which=lambda name: None
+            self._staged(), platform="win32", mirror="gitee"
         )
         self.assertEqual(
             req,
             "doyoutrade[qmt-proxy] @ "
-            "https://github.com/renjiegod/doyoutrade/archive/refs/tags/v0.2.0.zip",
+            "https://gitee.com/renjie-god/doyoutrade/releases/download/"
+            "v0.2.0/doyoutrade-0.2.0-py3-none-any.whl",
         )
 
     def test_relaunch_argv_falls_back_to_path_lookup(self):

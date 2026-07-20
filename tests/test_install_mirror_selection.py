@@ -50,6 +50,10 @@ class InstallShMirrorTests(unittest.TestCase):
         self.assertRegex(self.sh, r"connect-timeout\s+[1-9]")
         self.assertIn(_GITEE_GIT, self.sh)
         self.assertIn(_GITHUB_GIT, self.sh)
+        # Default path prefers Release wheels on both hosts.
+        self.assertIn("releases/download/", self.sh)
+        self.assertIn('GITEE_OWNER="renjie-god"', self.sh)
+        self.assertIn('GITHUB_OWNER_REPO="renjiegod/doyoutrade"', self.sh)
 
 
 class InstallPs1MirrorTests(unittest.TestCase):
@@ -66,6 +70,8 @@ class InstallPs1MirrorTests(unittest.TestCase):
         # when neither DOYOUTRADE_INSTALL_SOURCE nor -Source is provided.
         self.assertIn(_GITEE_GIT, self.ps1)
         self.assertIn("Resolve-DefaultInstallSource", self.ps1)
+        self.assertIn("releases/download/", self.ps1)
+        self.assertIn('GiteeOwner = "renjie-god"', self.ps1)
 
     def test_gitee_git_source_converts_to_archive(self) -> None:
         self.assertIn("Convert-GitSourceToArchiveUrl", self.ps1)
