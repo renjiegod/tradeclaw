@@ -4,6 +4,11 @@
 # 用法一（最省事）：
 #   curl -fsSL https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.sh | sh
 #
+# 中国网络 / Gitee 镜像：
+#   curl -fsSL https://gitee.com/renjie-god/doyoutrade/raw/main/install.sh | sh
+#   # 或强制走 Gitee 安装源：
+#   DOYOUTRADE_MIRROR=gitee sh install.sh
+#
 # 用法二（先审阅再执行，推荐谨慎用户）：
 #   curl -fsSL https://raw.githubusercontent.com/renjiegod/doyoutrade/main/install.sh -o install.sh
 #   less install.sh          # 看清楚它做了什么
@@ -20,17 +25,53 @@
 # qmt-proxy（在那台 Windows 直接 `doyoutrade`，已内置 qmt-proxy）。本机在首启向导里填入
 # 那台 Windows 的地址即可，或稍后 `doyoutrade-cli account create --base-url ...` 登记。
 #
-# 覆盖安装源（默认从 GitHub 主分支装）：
-#   DOYOUTRADE_INSTALL_SOURCE=/path/to/local/repo sh install.sh   # 本地目录 / fork
+# 安装源选择（优先级从高到低）：
+#   DOYOUTRADE_INSTALL_SOURCE=...   # 显式源（本地目录 / fork），始终优先
+#   DOYOUTRADE_MIRROR=gitee|cn|china|github|gh   # 强制镜像
+#   否则探测 GitHub 连通性（短超时）；不通则自动改用 Gitee
 # ---------------------------------------------------------------------------
 set -eu
 
-SOURCE="${DOYOUTRADE_INSTALL_SOURCE:-git+https://github.com/renjiegod/doyoutrade.git}"
+GITHUB_GIT_SOURCE="git+https://github.com/renjiegod/doyoutrade.git"
+GITEE_GIT_SOURCE="git+https://gitee.com/renjie-god/doyoutrade.git"
 
 info()  { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
 warn()  { printf '\033[1;33m[!]\033[0m %s\n' "$1"; }
 ok()    { printf '\033[1;32m[✓]\033[0m %s\n' "$1"; }
 die()   { printf '\033[1;31m[✗]\033[0m %s\n' "$1" >&2; exit 1; }
+
+github_reachable() {
+  # C: short probe — China networks often time out on github.com.
+  command -v curl >/dev/null 2>&1 || return 1
+  curl -fsSL --connect-timeout 3 --max-time 5 -o /dev/null https://github.com/ 2>/dev/null
+}
+
+resolve_default_source() {
+  # D: DOYOUTRADE_MIRROR forces a side; otherwise fall back via network probe.
+  mirror="$(printf '%s' "${DOYOUTRADE_MIRROR:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$mirror" in
+    gitee|cn|china)
+      printf '%s\n' "$GITEE_GIT_SOURCE"
+      return
+      ;;
+    github|gh)
+      printf '%s\n' "$GITHUB_GIT_SOURCE"
+      return
+      ;;
+  esac
+  if github_reachable; then
+    printf '%s\n' "$GITHUB_GIT_SOURCE"
+  else
+    warn "GitHub 不可达（或超时），改用 Gitee 镜像安装源。"
+    printf '%s\n' "$GITEE_GIT_SOURCE"
+  fi
+}
+
+if [ -n "${DOYOUTRADE_INSTALL_SOURCE:-}" ]; then
+  SOURCE="$DOYOUTRADE_INSTALL_SOURCE"
+else
+  SOURCE="$(resolve_default_source)"
+fi
 
 ensure_uv() {
   if command -v uv >/dev/null 2>&1; then
