@@ -2,6 +2,10 @@
   <b>中文</b>
 </p>
 
+<p align="center">
+  <img src="docs/assets/logo-256.png" alt="DoYouTrade" width="160">
+</p>
+
 <h1 align="center">DoYouTrade</h1>
 
 <p align="center">

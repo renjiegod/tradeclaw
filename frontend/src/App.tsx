@@ -4,7 +4,6 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   MessageOutlined,
-  RadarChartOutlined,
   ReloadOutlined,
   RobotOutlined,
   SearchOutlined,
@@ -430,8 +429,8 @@ function ConsoleShell() {
         trigger={null}
       >
         <div className="flex items-center gap-2 border-b border-shell-line px-5 py-5">
-          <RadarChartOutlined className="text-shell-accent" />
-          <span className="font-display text-lg text-shell-ink">Doyoutrade</span>
+          <img src="/logo-nav.png" alt="DoYouTrade" className="h-8 w-8 shrink-0 object-contain" />
+          <span className="font-display text-lg text-shell-ink">DoYouTrade</span>
         </div>
         <Menu
           mode="inline"

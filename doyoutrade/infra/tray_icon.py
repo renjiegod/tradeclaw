@@ -28,6 +28,8 @@ import os
 import sys
 import threading
 import webbrowser
+from importlib import resources
+from pathlib import Path
 from typing import Any
 
 from doyoutrade.observability import get_logger
@@ -35,7 +37,8 @@ from doyoutrade.observability import get_logger
 logger = get_logger(__name__)
 
 _TRAY_ICON_SIZE = 64
-_TRAY_ACCENT_RGB = (201, 133, 54)  # matches the web console's shell-accent color
+# Fallback accent if the bundled logo asset is missing (legacy drawn circle).
+_TRAY_ACCENT_RGB = (75, 95, 214)  # brand indigo from DYT logo palette
 
 
 def maybe_start_tray_icon(server: Any, host: str, port: int) -> None:
@@ -120,13 +123,19 @@ def _display_host(host: str) -> str:
 
 
 def _build_icon_image():
-    """Draw a minimal filled-circle tray icon with PIL — no bundled image asset.
+    """Load the bundled DYT logo for the tray, falling back to a drawn circle.
 
-    The repo ships no icon binary; drawing one at runtime keeps the tray
-    feature self-contained (no new binary resource to package/track).
+    Prefers ``doyoutrade/assets/logo-tray.png`` (packaged with the wheel), then
+    ``logo.png``. If neither is readable, draws a filled circle so the tray
+    feature stays self-contained.
     """
 
     from PIL import Image, ImageDraw
+
+    for name in ("logo-tray.png", "logo.png"):
+        loaded = _load_bundled_logo(name)
+        if loaded is not None:
+            return loaded.resize((_TRAY_ICON_SIZE, _TRAY_ICON_SIZE), Image.Resampling.LANCZOS)
 
     image = Image.new("RGBA", (_TRAY_ICON_SIZE, _TRAY_ICON_SIZE), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
@@ -136,3 +145,31 @@ def _build_icon_image():
         fill=(*_TRAY_ACCENT_RGB, 255),
     )
     return image
+
+
+def _load_bundled_logo(filename: str):
+    """Return a PIL image for *filename* under ``doyoutrade.assets``, or None."""
+
+    from PIL import Image
+
+    if not hasattr(Image, "open"):
+        # Test doubles for PIL may only stub ImageDraw; treat as unavailable.
+        return None
+
+    try:
+        pkg = resources.files("doyoutrade.assets")
+        candidate = pkg.joinpath(filename)
+        if candidate.is_file():
+            with candidate.open("rb") as fh:
+                return Image.open(fh).convert("RGBA")
+    except (FileNotFoundError, ModuleNotFoundError, AttributeError, OSError, TypeError):
+        pass
+
+    # Editable checkout fallback: doyoutrade/assets/ next to this module's package.
+    path = Path(__file__).resolve().parents[1] / "assets" / filename
+    if path.is_file():
+        try:
+            return Image.open(path).convert("RGBA")
+        except (OSError, AttributeError, TypeError):
+            return None
+    return None

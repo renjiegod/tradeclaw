@@ -1,4 +1,3 @@
-import { RocketOutlined } from "@ant-design/icons";
 import { Alert, Button, Form, Input, Select, Spin, Typography } from "antd";
 import { useEffect, useState } from "react";
 
@@ -116,8 +115,8 @@ export function SetupWizard({ onCompleted, onSkip }: SetupWizardProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
       <div className="w-full max-w-lg rounded-2xl border border-shell-line bg-card-bg p-6 shadow-2xl">
-        <div className="mb-4 flex items-center gap-2">
-          <RocketOutlined className="text-lg text-shell-accent" />
+        <div className="mb-4 flex items-center gap-3">
+          <img src="/logo-nav.png" alt="DoYouTrade" className="h-10 w-10 object-contain" />
           <Typography.Title level={4} className="!mb-0">
             欢迎使用 DoYouTrade
           </Typography.Title>
