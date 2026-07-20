@@ -117,6 +117,7 @@ packages = ["doyoutrade", "qmt_proxy_sdk"]
 [tool.hatch.build.targets.wheel.force-include]
 "alembic" = "doyoutrade/_migrations/alembic"
 "alembic.ini" = "doyoutrade/_migrations/alembic.ini"
+"doyoutrade/assets" = "doyoutrade/assets"
 
 # frontend/dist is a build artifact (may be absent in a fresh git checkout), so
 # it is force-included conditionally by the custom build hook below rather than

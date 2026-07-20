@@ -38,7 +38,8 @@ OutputBaseFilename=DoYouTrade-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayIcon={app}\doyoutrade.ico
+SetupIconFile=doyoutrade.ico
 SetupLogging=yes
 
 [Languages]
@@ -56,11 +57,12 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Source: "..\..\install-win.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "launch-doyoutrade.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: "doyoutrade.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\DoYouTrade"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{sys}\shell32.dll"; IconIndex: 13
+Name: "{group}\DoYouTrade"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\doyoutrade.ico"
 Name: "{group}\卸载 DoYouTrade"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\DoYouTrade"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{sys}\shell32.dll"; IconIndex: 13; Tasks: desktopicon
+Name: "{autodesktop}\DoYouTrade"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\doyoutrade.ico"; Tasks: desktopicon
 
 [Run]
 ; install-win.ps1 is invoked from [Code] (exit code checked). Only the
