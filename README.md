@@ -5,7 +5,7 @@
 <h1 align="center">DoYouTrade</h1>
 
 <p align="center">
-  <b>面向 A 股短线的多智能体 AI 交易平台 · 对话即可 选股 · 盯盘打板 · 复盘沉淀 · 写策略回测</b>
+  <b>面向 A 股短线的多智能体 AI 交易平台 · 对话即可 选股 · 盯盘打板 · 复盘沉淀 · 知识图谱 · 写策略回测</b>
 </p>
 
 <p align="center">
@@ -26,6 +26,7 @@
   <img src="https://img.shields.io/badge/🔗_LLM_原生-00A67E?style=flat-square" alt="LLM Native">
   <img src="https://img.shields.io/badge/🔍_全链路可观测-425CC7?style=flat-square" alt="Observability">
   <img src="https://img.shields.io/badge/🛡️_风控审批-B22222?style=flat-square" alt="Risk & Approval">
+  <img src="https://img.shields.io/badge/🕸_知识图谱-0D7377?style=flat-square" alt="Knowledge Graph">
   <img src="https://img.shields.io/badge/📟_QMT_实盘-1E90FF?style=flat-square" alt="QMT Live">
 </p>
 
@@ -41,6 +42,7 @@
   <a href="#-快速开始">快速开始</a> &nbsp;&middot;&nbsp;
   <a href="#-你能用它做什么">能做什么</a> &nbsp;&middot;&nbsp;
   <a href="#-打板复盘看板">打板复盘看板</a> &nbsp;&middot;&nbsp;
+  <a href="#-知识库图谱把复盘连成可检索的关系网">知识图谱</a> &nbsp;&middot;&nbsp;
   <a href="#-私有交易记忆你的复盘工作台">私有记忆</a> &nbsp;&middot;&nbsp;
   <a href="#-为什么选它">为什么选它</a> &nbsp;&middot;&nbsp;
   <a href="#-免责声明">免责声明</a>
@@ -55,7 +57,8 @@
 > ```
 >
 > - 🗣 **听懂人话** — 「看看今天打板情绪 + 龙虎榜谁在买」「把'低吸次日反包'写成策略回测茅台 2024」，AI 自己拉真实数据、跑真实回测。
-> - 🔒 **不编数字、本地私有** — 关键数字全部来自工具调用，LLM 绝不编造；自选 / 复盘 / 交割单 / 战法记忆只存在你自己机器，**不进 git、不外传**。
+> - 🕸 **复盘长成图谱** — 个股 · 题材 · 情绪周期 · 角色 · 战法 · 信号自动连成关系网；硬数据可溯源、LLM 观点可审批、历史认知可回溯。
+> - 🔒 **不编数字、本地私有** — 关键数字全部来自工具调用，LLM 绝不编造；自选 / 复盘 / 交割单 / 战法记忆 / 图谱只存在你自己机器，**不进 git、不外传**。
 > - 🕹 **你握方向盘** — 不荐股、不预测、不承诺收益；实盘仅在你接入券商 QMT 并显式授权后可用，每笔订单必过风控 + 审批闸门，平台不托管资金。
 >
 > 详情见 [docs/design.md](docs/design.md)（架构）· [docs/short-term-playbook.md](docs/short-term-playbook.md)（短线上手）· [AGENTS.md](AGENTS.md)（贡献规范）。
@@ -86,6 +89,14 @@
   </tr>
   <tr>
     <td width="50%" valign="top">
+      <h3>🕸 知识库图谱</h3>
+      <div align="left">
+        • 个股 ↔ 题材 ↔ 情绪周期 ↔ 角色 ↔ 战法 ↔ 信号，一图看清关系<br>
+        • 硬数据确定性投影（零 LLM 成本）+ 复盘日记抽取 + 人工确认<br>
+        • 双时态可回溯 · 寻路 / 社区着色 · Agent 只能提案、人审后落库
+      </div>
+    </td>
+    <td width="50%" valign="top">
       <h3>🧠 私有交易记忆</h3>
       <div align="left">
         • 情绪周期时间线 · 个股角色卡 · 交割单归因 · 打板模式库<br>
@@ -93,6 +104,8 @@
         • <b>本地私有 · 绝不进 git / 导出 / 外传</b>
       </div>
     </td>
+  </tr>
+  <tr>
     <td width="50%" valign="top">
       <h3>📊 多源行情 + 回测引擎</h3>
       <div align="left">
@@ -101,8 +114,6 @@
         • 回测与实盘同构，指标 / 报告 / run 卡片可复查
       </div>
     </td>
-  </tr>
-  <tr>
     <td width="50%" valign="top">
       <h3>🛡️ 渐进式执行 + 风控审批</h3>
       <div align="left">
@@ -111,12 +122,22 @@
         • 实盘仅在接入 QMT 后可用，随时可停
       </div>
     </td>
+  </tr>
+  <tr>
     <td width="50%" valign="top">
       <h3>🔍 全链路可观测</h3>
       <div align="left">
         • <code>run_id</code> / <code>trace_id</code> 贯穿每一次 cycle<br>
         • OpenTelemetry span + 调试会话 + 模型调用记录<br>
         • 任何改变走向的失败都可见、可追溯
+      </div>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🔒 本地私有 · 全开源</h3>
+      <div align="left">
+        • 复盘 / 交割单 / 图谱 / 战法只存在本机<br>
+        • 不托管资金、不上传记忆、不进 git<br>
+        • MIT，每一行代码可审
       </div>
     </td>
   </tr>
@@ -363,6 +384,7 @@ uv run doyoutrade-cli account create \
 | **盯盘异动（打板党刚需）** | 盘口盯盘规则：涨停 / 封单缩量 / 炸板打开命中即推飞书，tick 级、rising-edge 去重，不用一直守屏 |
 | **每日收盘复盘** | 定时抓当日账户对账单 + 市场四维（情绪 / 主线 / 龙虎）+ 私有记忆，自动生成结构化复盘并存档 |
 | **沉淀 & 唤起交易记忆** | 情绪周期 / 个股角色 / 交割单归因 / 打板战法，本地私有；下次聊到该票自动召回你的历史判断 |
+| **打开知识图谱** | 个股 · 题材 · 情绪周期 · 角色 · 战法 · 信号连成关系网；寻路、N 跳邻域、硬数据溯源到 CSV 行 |
 | **组多智能体投研团** | `investment_committee`（多空辩论 + 风控）/ `quant_strategy_desk`（筛选 + 因子 + 回测 + 风险审计） |
 | **接管调度 / 提醒** | Cron 定时任务（`--in` / `--at` / `--cron-expression`），到点自动跑一段对话或分析 |
 | **接入实盘（可选）** | 通过 QMT 拿实时 / 分钟级行情，风控 + 审批后真实下单 |
@@ -385,9 +407,34 @@ uv run doyoutrade-cli account create \
 
 ---
 
+## 🕸 知识库图谱：把复盘连成可检索的关系网
+
+控制台「**知识库 → 图谱**」页（`/knowledge`）把零散的角色卡、交割单、情绪周期、战法笔记投影成一张**可交互的关系图**——问「这只票和那个题材怎么连上的」「2023-07 那轮情绪里谁在主线」，一眼能看到，也能点进右侧详情溯源到本地 CSV 原文。
+
+<p align="center">
+  <img src="docs/assets/knowledge-graph.jpg" alt="DoYouTrade 知识库图谱：情绪周期邻域、题材归属与硬数据溯源" width="920">
+</p>
+
+<p align="center"><sub>以「2023-07 情绪周期」为中心展开 N 跳邻域：个股 / 题材 / 周期按类型着色；右侧事实句带来源标签与 <code>kb:…csv#L行号</code> 溯源。</sub></p>
+
+| 亮点 | 你得到什么 |
+|---|---|
+| 🧩 **受控本体** | 实体：个股 / 题材 / 情绪周期 / 角色 / 战法 / 信号；关系：担任角色、属于题材、题材龙头、交易于、使用战法、个股联动、活跃于周期…；支持 `custom.*` 扩展 Schema |
+| ⚙️ **双层构建** | **确定性投影**（角色卡 / 情绪时间线 / 交割单 FIFO / 强势股时间线 / 决策信号）— 零 LLM 成本、幂等可重跑；**复盘日记抽取** — 从 journal 抽出题材 / 龙头 / 战法 / 联动观点 |
+| 🏷 **出处分层** | 实线 = 硬数据 · 虚线 = LLM 观点 · 灰 = 已失效；每条边带 `confidence`、时间窗与 `source_ref` |
+| ⏳ **双时态可回溯** | `valid_at` / `invalid_at` + `expired_at`：角色换了、观点改了，旧认知仍可查——「当时怎么看这只票」而不是只剩最新结论 |
+| 🧭 **交互探索** | N 跳邻域（1/2/3）、同心环 / 力导向布局、按类型或社区着色、最短路寻路、布局持久化、导出 |
+| 🛡️ **Agent 不能擅自改图** | Agent 只能提交变更草案（immutable proposal hash）；本地用户审批后才原子落库；手动标记 / 待审批 / 冲突 / 撤销重做一应俱全 |
+
+**一句话用法**：导入交割单、记角色、跑每日复盘 → 点「同步投影」→ 搜股票代码 / 题材名 / `YYYY-MM` 情绪月 → 展开邻域或「寻路」看两实体如何相连。对话里助手也可经 `knowledge_graph` 工具先召回图谱事实，再顺着 `source_ref` 用 `knowledge_index` 钻取原文。
+
+> 图谱与文件知识库同源、同隐私边界：数据在本机 `~/.doyoutrade/knowledge` + 本地数据库，**不进 git、不外传**。投影脏数据进 `warnings` 显式可见，绝不静默丢弃。
+
+---
+
 ## 🧠 私有交易记忆：你的复盘工作台
 
-控制台「**知识库**」页（`/knowledge`）是一个**只属于你的**交易记忆库——KOL 靠常年手写复盘积累的东西，这里帮你自动沉淀、结构化、并在关键时刻主动唤起。**完全存在本机 `~/.doyoutrade/knowledge`，绝不进 git / 会话导出 / 回测报告 / 任何外传通道。**
+控制台「**知识库**」页（`/knowledge`）是一个**只属于你的**交易记忆库——KOL 靠常年手写复盘积累的东西，这里帮你自动沉淀、结构化、并在关键时刻主动唤起。**完全存在本机 `~/.doyoutrade/knowledge`，绝不进 git / 会话导出 / 回测报告 / 任何外传通道。** 结构化沉淀会进一步投影进上方的[知识库图谱](#-知识库图谱把复盘连成可检索的关系网)。
 
 | 区块 | 沉淀什么 | 怎么来 |
 |---|---|---|
@@ -395,8 +442,9 @@ uv run doyoutrade-cli account create \
 | 🏷 **个股角色卡** | 这票是龙头 / 中军 / 杂毛 / 事件型 + 你的策略备注 | 对话里"把这票记成龙头" |
 | 📒 **交割单归因** | 券商交割单 → FIFO 回合配对 → 胜率 / 盈亏比 / 最赚模式 vs 要规避的错误 | 导入 `trades/` 券商 CSV |
 | 📕 **打板模式库** | 你自己的战法总结：哪种打法在什么情绪阶段有效 | 对话里"记进模式库" |
+| 🕸 **知识图谱** | 把上面四类（+ 信号）连成可检索关系网，硬数据可点回原文 | 「图谱」Tab · 「同步投影」 |
 
-> **写入默认只读**——只有你明说"记到 knowledge 里 / 更新这票角色"时才写，AI 不会擅自落盘你的判断。下次聊到某只票、或问"现在情绪周期"，助手会**先召回你的历史记忆再作答**（是"你当时怎么看"，不是"所以现在买"）。
+> **写入默认只读**——只有你明说"记到 knowledge 里 / 更新这票角色"时才写，AI 不会擅自落盘你的判断；图谱侧 Agent 只能提案、须你审批。下次聊到某只票、或问"现在情绪周期"，助手会**先召回你的历史记忆与图谱邻域再作答**（是"你当时怎么看"，不是"所以现在买"）。
 
 ---
 
@@ -415,6 +463,7 @@ uv run doyoutrade-cli account create \
 | 盯盘：涨停 / 封单缩量 / 炸板打开，命中推飞书 | `monitor create --preset limit_up_open\|limit_up_seal_shrink\|...`（tick 级、去重） | 需 QMT 实时行情 |
 | 每天收盘自动复盘并存档 | `cron create --task-kind daily_review`（市场四维 + 账户 + 记忆 → `journal/`）| 复盘框架免费；当日成交对账单需 QMT |
 | 沉淀情绪周期 / 个股角色 / 打板战法、复盘交割单 | 控制台「知识库」复盘工作台（对话里"记到 knowledge"）| 免费、本地私有 |
+| 看个股-题材-周期怎么连、寻路 / N 跳邻域 | 控制台「知识库 → 图谱」（同步投影后搜代码 / 题材 / `YYYY-MM`）| 免费、本地私有 |
 | 把"低吸次日反包 / N 连板断板出场"写成可回测策略 | `strategy authoring` + `backtest run`，用**真实回测数字**代替拍脑袋 | 免费日线回测 |
 | 自选股盘中看盘口（涨跌幅 / 成交额 / 振幅 / 距涨停 / 封单） | 控制台「自选股」页 + `watchlist quotes` | 需 QMT 实时行情 |
 
@@ -431,11 +480,12 @@ uv run doyoutrade-cli account create \
 散户被"荐股诈骗、黑 V 晒单造假、黑盒量化"坑怕了。DoYouTrade 的差异化恰恰是这几件**别人给不了**的事：
 
 - **🚫 不编数字、可溯源** — AI 只转述工具查到的真实行情 / 回测，绝不自己造数；每次运行 `run_id` / `trace_id` 一线到底，能查到是哪个 symbol、什么区间、算出了什么。对比"截图晒单 / 隔空喊单"——这里**一切可复现**。
-- **🔒 本地私有** — 你的自选、复盘、交割单、战法记忆只存在你自己机器（SQLite + 本地知识库），**不托管、不上传、不进 git**。
+- **🕸 复盘长成图谱** — 角色卡 / 交割单 / 情绪 / 战法投影成关系网；硬数据点回 CSV 行号，LLM 观点必须人审，历史认知双时态可回溯。
+- **🔒 本地私有** — 你的自选、复盘、交割单、战法记忆、图谱只存在你自己机器（SQLite + 本地知识库），**不托管、不上传、不进 git**。
 - **🕹️ 你握方向盘** — 不荐股、不预测、不承诺收益；实盘要你亲自接 QMT + 每单人工审批，随时可停。**不做**账户托管 / 收益排名 / 付费荐股 / 一键跟单。
 - **📦 开箱即用 + 全开源** — 免 token 免费源克隆即用（baostock / akshare），MIT，每一行代码可审。
 
-> 一句话：**它把关键事实交给工具、把决策权交给你、把你的记忆留在你手里。**
+> 一句话：**它把关键事实交给工具、把决策权交给你、把你的记忆与关系网留在你手里。**
 
 ---
 
@@ -493,7 +543,7 @@ uv run doyoutrade-cli assistant run \
 |------|------|
 | Assistant | 对话式选股 / 写策略 / 回测，含 trace / 工具调用 / debug 导出 |
 | **MarketReview（打板复盘）** | 情绪温度计 / 连板梯队 / 龙虎榜 / 资金流 / 题材热度一页看盘 |
-| **Knowledge（复盘工作台）** | 情绪周期时间线 / 个股角色卡 / 交割单归因 / 打板模式库（本地私有）|
+| **Knowledge（复盘工作台）** | 交割单归因 / **知识图谱**（邻域 · 寻路 · 溯源）/ 战法库 / 全库文件（本地私有）|
 | Tasks / TaskDetail | 交易任务生命周期、回测配置与结果 |
 | Strategies | 策略定义（`sd-…`）管理与源码查看 |
 | Accounts | QMT 连接与账户配置（`accounts` 表唯一来源） |
@@ -540,7 +590,7 @@ uv run doyoutrade-cli --help
 | `cron` | 定时 / 延时任务（`--in` / `--at` / `--cron-expression`） |
 | `assistant` | 真实对话验证与会话导出 |
 | `debug` / `cycle` / `route` | run 调试视图、trace 追踪、模型调用日志、模型路由 |
-| `swarm` / `knowledge` | 多智能体投研团、私有知识库 |
+| `swarm` / `knowledge` | 多智能体投研团、私有知识库与图谱（同步投影 / 查询） |
 
 ### 常用 Make 目标
 
@@ -578,19 +628,20 @@ doyoutrade/
 ├── data/            # 多源数据层与 auto 降级（mock/baostock/akshare/tushare/qmt）
 ├── backtest/        # 回测引擎（与实盘同构）
 ├── assistant/       # AI 助手主 Agent、prompt、工具面
+├── knowledge/       # 私有知识库：归因 / 角色 / 图谱投影与抽取 / Schema / 编辑审批
 ├── swarm/           # 多智能体 DAG 编排 + preset 投研团
-├── tools/           # in-process 工具（含 _contract / _coercion / _identifier_kinds）
-├── observability/   # OpenTelemetry 初始化 + debug span 导出
+├── tools/           # in-process 工具（含 knowledge_graph / knowledge_index）
+├── observability/   # OpenTelemetry 初始化 + namespace span 导出
 ├── debug/           # 调试会话与结构化事件
 ├── models/          # 模型调用记录（model_invocations）
-├── persistence/     # SQLAlchemy 模型 / repository / serializer
-├── api/             # FastAPI app
+├── persistence/     # SQLAlchemy 模型 / repository / serializer（含 kg_*）
+├── api/             # FastAPI app（含 /knowledge/graph/*）
 └── cli/             # doyoutrade-cli（与助手同款工具面）
 
-frontend/            # React 18 + Vite + TypeScript 控制台
+frontend/            # React 18 + Vite + TypeScript 控制台（含 KnowledgeGraphPanel）
 qmt-proxy/           # Windows 端 QMT REST 代理（含一键安装脚本）
 alembic/             # 数据库迁移
-docs/                # 设计文档、E2E 测试指南
+docs/                # 设计文档、E2E 指南、README 截图（docs/assets/）
 tests/               # stdlib unittest + E2E
 ```
 
