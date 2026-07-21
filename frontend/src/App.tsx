@@ -77,7 +77,7 @@ const EMPTY_SYSTEM_STATE: SystemState = {
   running_count: 0,
 };
 
-type NavLeaf = { key: ConsolePageKey; label: string; icon?: React.ReactNode };
+type NavLeaf = { key: ConsolePageKey; label: string; icon?: React.ReactNode; hideInCloud?: boolean };
 type NavGroup = { key: string; label: string; icon: React.ReactNode; children: NavLeaf[] };
 type NavEntry = NavLeaf | NavGroup;
 
@@ -109,7 +109,8 @@ const NAV_TREE: NavEntry[] = [
     children: [
       { key: "tasks", label: "任务" },
       { key: "strategies", label: "策略库" },
-      { key: "accounts", label: "账户" },
+      // 券商账户接入是本地客户端的事（交易留在本地）；云端隐藏。
+      { key: "accounts", label: "账户", hideInCloud: true },
     ],
   },
   {
@@ -130,8 +131,10 @@ const NAV_TREE: NavEntry[] = [
     icon: <SettingOutlined />,
     children: [
       { key: "model_invocations", label: "模型调用记录" },
-      { key: "settings_models", label: "模型配置" },
-      { key: "settings", label: "设置" },
+      // 云端由平台统一供模型（用户不配 key）；全局 YAML/qmt-proxy 等基础设施
+      // 设置由平台托管，用户改了只会出错 —— 两项云端隐藏。
+      { key: "settings_models", label: "模型配置", hideInCloud: true },
+      { key: "settings", label: "设置", hideInCloud: true },
     ],
   },
 ];
@@ -140,6 +143,26 @@ const NAV_TREE: NavEntry[] = [
 const GROUP_KEY_BY_PAGE: Partial<Record<ConsolePageKey, string>> = Object.fromEntries(
   NAV_TREE.filter(isNavGroup).flatMap((group) => group.children.map((leaf) => [leaf.key, group.key])),
 );
+
+const _leavesOf = (entry: NavEntry): NavLeaf[] => (isNavGroup(entry) ? entry.children : [entry]);
+
+/** Page keys hidden in the cloud deployment (local-only infra: broker accounts,
+ * model-key config, global YAML/qmt-proxy settings). Also used to guard routes
+ * so a hidden page is unreachable by direct URL in cloud mode. */
+export const CLOUD_HIDDEN_PAGES: ReadonlySet<ConsolePageKey> = new Set(
+  NAV_TREE.flatMap(_leavesOf).filter((leaf) => leaf.hideInCloud).map((leaf) => leaf.key),
+);
+
+/** NAV_TREE with cloud-hidden leaves removed (and now-empty groups dropped).
+ * Local mode returns the full tree unchanged — same bundle, one flag. */
+export function visibleNavTree(mode: string): NavEntry[] {
+  if (mode !== "cloud") return NAV_TREE;
+  return NAV_TREE.flatMap((entry) => {
+    if (!isNavGroup(entry)) return entry.hideInCloud ? [] : [entry];
+    const children = entry.children.filter((leaf) => !leaf.hideInCloud);
+    return children.length ? [{ ...entry, children }] : [];
+  });
+}
 
 const PATHS: Record<ConsolePageKey, string> = {
   agents: "/agents",
@@ -407,6 +430,13 @@ function ConsoleShell() {
     };
   }, []);
 
+  // Defense-in-depth: a cloud-hidden page must be unreachable by direct URL,
+  // not just missing from the nav. Boolean predicate (NOT a JSX-returning
+  // helper — that would trip react-refresh's component hoisting); the routes
+  // inline <Navigate> to the copilot when this is true.
+  const isCloudHidden = (key: ConsolePageKey): boolean =>
+    deploymentMode === "cloud" && CLOUD_HIDDEN_PAGES.has(key);
+
   const selectedKey = menuKeyFromPathname(location.pathname);
   const currentGroupKey = GROUP_KEY_BY_PAGE[selectedKey];
   const [openKeys, setOpenKeys] = useState<string[]>(() => (currentGroupKey ? [currentGroupKey] : []));
@@ -455,7 +485,7 @@ function ConsoleShell() {
           selectedKeys={[selectedKey]}
           openKeys={openKeys}
           onOpenChange={(keys) => setOpenKeys(keys as string[])}
-          items={NAV_TREE.map((entry) =>
+          items={visibleNavTree(deploymentMode).map((entry) =>
             isNavGroup(entry)
               ? {
                   key: entry.key,
@@ -522,7 +552,14 @@ function ConsoleShell() {
             />
           ) : null}
           <PageRefreshContext.Provider value={pageRefreshToken}>
-            <Outlet context={outletContext} />
+            {/* Defense-in-depth: a cloud-hidden page reached by direct URL
+                redirects to the copilot (ConsoleShell is the layout for all
+                child routes, so guarding the Outlet covers every path). */}
+            {isCloudHidden(selectedKey) ? (
+              <Navigate to="/assistant" replace />
+            ) : (
+              <Outlet context={outletContext} />
+            )}
           </PageRefreshContext.Provider>
         </Layout.Content>
       </Layout>
