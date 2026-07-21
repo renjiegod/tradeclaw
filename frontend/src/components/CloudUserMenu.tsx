@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Avatar, Button, Dropdown, type MenuProps } from "antd";
 import { KeyOutlined, LogoutOutlined, UserOutlined } from "@ant-design/icons";
 
+import { beginAuthRedirect } from "../api";
+
 /**
  * Cloud-only header chrome (logged-in user avatar / name / logout / console
  * link). Rendered ONLY when the deployment is "cloud" — in the single-machine
@@ -38,6 +40,9 @@ export function CloudUserMenu({ mode }: { mode?: string | null }) {
   if (mode !== "cloud") return null;
 
   const logout = async () => {
+    // 先置位"正在回登录入口":清除 cookie 后到整页导航卸载前的窗口里,页面上仍在
+    // 飞行的后台请求会以失效 cookie 拿到 401,置位后这些 401 不再弹「请求失败」。
+    beginAuthRedirect(false); // 本函数自己整页跳转,无需 beginAuthRedirect 再跳
     try {
       await fetch("/api/console/v1/auth/logout", {
         method: "POST",

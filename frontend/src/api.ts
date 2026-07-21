@@ -178,6 +178,39 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 未认证(会话失效)统一处理。
+ *
+ * cloud 部署下,copilot 网关对无有效 session 的非导航请求返回
+ * `401 {"error":"not_authenticated"}`(见 dytcopilot/gateway.py)。退出登录清除
+ * 会话 cookie 与整页导航之间存在竞态:此刻仍在飞行的后台轮询 / SSE 重连 / inflight
+ * 请求会以失效 cookie 命中网关拿到该 401。命中即说明会话已失效,应回到登录入口,
+ * 而不是弹出「请求失败」错误弹窗吓用户。local 单机后端不做认证、不会返回该 body,
+ * 故此路径天然只在 cloud 生效。
+ */
+let authRedirectInFlight = false;
+
+/** 是否正处于"回登录入口"跳转中——供全局错误弹窗在此期间抑制「请求失败」。 */
+export function isAuthRedirectInFlight(): boolean {
+  return authRedirectInFlight;
+}
+
+/**
+ * 标记"正在跳转到登录入口":抑制这期间的错误弹窗,并让跳转幂等(多个后台请求同时
+ * 401 只跳一次)。
+ *
+ * @param redirect 是否由本函数发起整页跳转到 "/"(网关据 `Accept` 对 HTML 导航 302
+ *   到 GitHub 登录)。退出登录按钮自身会跳转,只需传 `false` 预先置位以抑制清除
+ *   cookie 后在途请求触发的 401 弹窗。
+ */
+export function beginAuthRedirect(redirect = true): void {
+  if (authRedirectInFlight) return;
+  authRedirectInFlight = true;
+  if (redirect && typeof window !== "undefined") {
+    window.location.assign("/");
+  }
+}
+
 const RECENT_API_ERRORS_MAX = 8;
 const RECENT_API_ERROR_TTL_MS = 15_000;
 const recentApiErrors: Array<{ error: ApiError; recordedAt: number }> = [];
@@ -289,6 +322,22 @@ function parseErrorResponse(rawText: string, status: number): ParsedErrorRespons
   }
 }
 
+/**
+ * 从错误响应体构造 {@link ApiError}、登记到"最近错误"、对未认证 401 触发回登录,
+ * 然后抛出。统一 {@link request} 与几个绕过它的裸 `fetch` 路径(流式路由测试 /
+ * 文件上传 / multipart),避免这段错误装配逻辑在多处重复、且各处对 401 处理不一致。
+ */
+function throwApiError(rawText: string, status: number): never {
+  const parsed = parseErrorResponse(rawText, status);
+  const error = new ApiError(parsed.message, status, parsed);
+  rememberApiError(error);
+  if (status === 401 && rawText.includes("not_authenticated")) {
+    // 会话失效(退出登录竞态或 cookie 过期):回登录入口,别把它暴露成「请求失败」。
+    beginAuthRedirect();
+  }
+  throw error;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
@@ -299,11 +348,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const rawText = await response.text();
-    const parsed = parseErrorResponse(rawText, response.status);
-    const error = new ApiError(parsed.message, response.status, parsed);
-    rememberApiError(error);
-    throw error;
+    throwApiError(await response.text(), response.status);
   }
 
   if (response.status === 204) {
@@ -1767,11 +1812,7 @@ export async function streamModelRouteTest(
     signal,
   });
   if (!response.ok || !response.body) {
-    const rawText = await response.text();
-    const parsed = parseErrorResponse(rawText, response.status);
-    const error = new ApiError(parsed.message, response.status, parsed);
-    rememberApiError(error);
-    throw error;
+    throwApiError(await response.text(), response.status);
   }
 
   const reader = response.body.getReader();
@@ -2464,11 +2505,7 @@ export async function uploadFile(file: File): Promise<import("./types").UploadRe
     body: form,
   });
   if (!response.ok) {
-    const rawText = await response.text();
-    const parsed = parseErrorResponse(rawText, response.status);
-    const error = new ApiError(parsed.message, response.status, parsed);
-    rememberApiError(error);
-    throw error;
+    throwApiError(await response.text(), response.status);
   }
   return response.json() as Promise<import("./types").UploadResult>;
 }
@@ -2497,11 +2534,7 @@ async function postMultipart<T>(path: string, form: FormData): Promise<T> {
     body: form,
   });
   if (!response.ok) {
-    const rawText = await response.text();
-    const parsed = parseErrorResponse(rawText, response.status);
-    const error = new ApiError(parsed.message, response.status, parsed);
-    rememberApiError(error);
-    throw error;
+    throwApiError(await response.text(), response.status);
   }
   return (await response.json()) as T;
 }

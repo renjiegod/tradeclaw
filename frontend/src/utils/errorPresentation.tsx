@@ -1,6 +1,6 @@
 import { Button, Descriptions, Modal, Space, Typography, message } from "antd";
 
-import { ApiError, findRecentApiError } from "../api";
+import { ApiError, findRecentApiError, isAuthRedirectInFlight } from "../api";
 import { formatDateTimeUtc8 } from "./datetime";
 
 type ShowErrorDialogOptions = {
@@ -116,6 +116,9 @@ async function copyErrorState(state: ErrorDialogState): Promise<void> {
 }
 
 export function showErrorDialog(error: unknown, options?: ShowErrorDialogOptions): void {
+  // 会话失效正在跳回登录入口时,后台在途请求会连环抛 401;此刻弹「请求失败」只会
+  // 在导航离开前一闪吓到用户,直接抑制。
+  if (isAuthRedirectInFlight()) return;
   const state = buildErrorState(error, options);
   const displayTime = formatDateTimeUtc8(state.timestamp, state.timestamp);
   Modal.error({
