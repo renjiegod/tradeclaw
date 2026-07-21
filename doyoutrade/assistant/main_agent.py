@@ -108,9 +108,9 @@ def builtin_tool_names() -> tuple[str, ...]:
     Cached: the tool set is static per process. Lazy import avoids a heavy /
     potentially circular import at module load.
     """
-    from doyoutrade.tools import build_default_tool_registry
+    from doyoutrade.tools import resolve_tool_registry_factory
 
-    return tuple(build_default_tool_registry().names)
+    return tuple(resolve_tool_registry_factory()().names)
 
 
 def is_builtin_agent(agent: str | Mapping[str, Any] | None) -> bool:

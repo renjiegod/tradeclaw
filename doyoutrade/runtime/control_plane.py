@@ -75,9 +75,9 @@ class RuntimeControlPlane:
             except Exception:
                 tools = []
         else:
-            from doyoutrade.tools import build_default_tool_registry
+            from doyoutrade.tools import resolve_tool_registry_factory
 
-            tools = build_default_tool_registry().list_tools()
+            tools = resolve_tool_registry_factory()().list_tools()
         return {
             "available": self._assistant_service is not None,
             "tool_count": len(tools),

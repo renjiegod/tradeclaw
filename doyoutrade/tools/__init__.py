@@ -1179,6 +1179,53 @@ def build_default_tool_registry(
     return OperationRegistry(tools, tool_result_max_chars=tool_result_max_chars)
 
 
+def resolve_tool_registry_factory() -> _Callable[..., OperationRegistry]:
+    """Return the tool-registry factory the runtime should assemble tools with.
+
+    ``DOYOUTRADE_TOOL_REGISTRY_FACTORY`` (format ``package.module:callable``)
+    lets a deployment layer (e.g. a cloud profile) swap the agent's tool
+    surface without forking: the named callable must accept the same keyword
+    arguments as :func:`build_default_tool_registry` and return an
+    :class:`OperationRegistry`. Unset/blank → the built-in default.
+
+    Resolution failures **raise** (never fall back silently): a deployment
+    that configured a factory expects the restricted/customized surface, and
+    silently serving the default tool set instead would undo exactly the
+    gating the factory exists to apply.
+    """
+    spec = (_os.environ.get("DOYOUTRADE_TOOL_REGISTRY_FACTORY") or "").strip()
+    if not spec:
+        return build_default_tool_registry
+    module_name, sep, attr_name = spec.partition(":")
+    if not sep or not module_name.strip() or not attr_name.strip():
+        raise ValueError(
+            "DOYOUTRADE_TOOL_REGISTRY_FACTORY must be 'package.module:callable', "
+            f"got {spec!r}"
+        )
+    import importlib
+
+    try:
+        module = importlib.import_module(module_name.strip())
+    except ImportError as exc:
+        raise ImportError(
+            f"DOYOUTRADE_TOOL_REGISTRY_FACTORY module {module_name.strip()!r} "
+            f"could not be imported: {exc}"
+        ) from exc
+    try:
+        factory = getattr(module, attr_name.strip())
+    except AttributeError as exc:
+        raise AttributeError(
+            f"DOYOUTRADE_TOOL_REGISTRY_FACTORY attribute {attr_name.strip()!r} "
+            f"not found in module {module_name.strip()!r}"
+        ) from exc
+    if not callable(factory):
+        raise TypeError(
+            f"DOYOUTRADE_TOOL_REGISTRY_FACTORY target {spec!r} resolved to "
+            f"non-callable {type(factory).__name__}"
+        )
+    return factory
+
+
 from doyoutrade.tools.bash import (
     BashTaskManager,
     ExecuteBashTool,
@@ -1189,6 +1236,7 @@ __all__ = [
     "OperationHandler",
     "OperationRegistry",
     "build_default_tool_registry",
+    "resolve_tool_registry_factory",
     "LoadSkillTool",
     "CompactTool",
     "BashTaskManager",

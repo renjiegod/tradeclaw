@@ -39,7 +39,7 @@ from doyoutrade.assistant.lifecycle_commands import parse_lifecycle_command
 from doyoutrade.assistant.slash_commands import resolve_skill_command_key, build_skill_invocation_message
 from doyoutrade.assistant.skill_preload import build_preloaded_skills_prompt
 from doyoutrade.assistant.main_agent import builtin_skill_names, is_main_agent
-from doyoutrade.tools import OperationRegistry, build_default_tool_registry
+from doyoutrade.tools import OperationRegistry, resolve_tool_registry_factory
 from doyoutrade.assistant.approvals import (
     APPROVAL_ALLOWLIST_CONFIG_KEY,
     APPROVAL_COMMAND_PREFIXES_CONFIG_KEY,
@@ -654,7 +654,9 @@ class AssistantService:
         # consumes this repo to build the reminder; here we just plumb it
         # into the default tool registry so ``LoadSkillTool`` can write.
         self._loaded_skill_repository = loaded_skill_repository
-        self.tool_registry = tool_registry or build_default_tool_registry(
+        # ``resolve_tool_registry_factory`` honors DOYOUTRADE_TOOL_REGISTRY_FACTORY
+        # so a deployment layer can swap the tool surface (see doyoutrade.tools).
+        self.tool_registry = tool_registry or resolve_tool_registry_factory()(
             tool_result_max_chars=get_config().assistant.tool_result_max_chars,
             loaded_skill_repository=loaded_skill_repository,
             assistant_repository=self.repository,
