@@ -43,12 +43,12 @@ from doyoutrade.tools import OperationRegistry, resolve_tool_registry_factory
 from doyoutrade.assistant.approvals import (
     APPROVAL_ALLOWLIST_CONFIG_KEY,
     APPROVAL_COMMAND_PREFIXES_CONFIG_KEY,
-    DEFAULT_APPROVAL_RULES,
     ApprovalBroker,
     ApprovalRule,
     is_auto_approved,
     match_approval_rule,
     normalize_command_prefix,
+    resolve_approval_policy,
 )
 from doyoutrade.assistant.questions import QuestionBroker, QuestionResolution
 from doyoutrade.assistant.channels.base import ChannelDeliveryHandle
@@ -671,8 +671,10 @@ class AssistantService:
         # Blocking tool-call approvals (WireHookHandle-style): rules decide
         # which calls suspend on a pending future; channels / the web API
         # resolve through ``self.approval_broker``.
+        # ``resolve_approval_policy`` honors DOYOUTRADE_APPROVAL_POLICY so a
+        # deployment layer can swap the HITL rule set (see approvals.py).
         self.approval_rules: tuple[ApprovalRule, ...] = (
-            tuple(approval_rules) if approval_rules is not None else DEFAULT_APPROVAL_RULES
+            tuple(approval_rules) if approval_rules is not None else resolve_approval_policy()
         )
         self.approval_broker = ApprovalBroker()
         # Blocking ask_user_question waits (same future-broker skeleton as

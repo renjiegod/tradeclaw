@@ -126,6 +126,59 @@ DEFAULT_APPROVAL_RULES: tuple[ApprovalRule, ...] = (
 )
 
 
+def resolve_approval_policy() -> tuple["ApprovalRule", ...]:
+    """Return the approval rule set the runtime should gate tool calls with.
+
+    ``DOYOUTRADE_APPROVAL_POLICY`` (format ``package.module:callable``) lets a
+    deployment layer swap the policy without forking. The named callable takes
+    no arguments and returns a tuple/list of :class:`ApprovalRule`. Unset/blank
+    → the built-in :data:`DEFAULT_APPROVAL_RULES`.
+
+    A cloud profile whose tool surface already denies trade/write outright
+    (see the confined ``execute_bash``) points this at a callable returning
+    ``()`` so those commands hit the tool's instant deny instead of hanging on
+    a human-approval future that will never resolve in a headless run.
+
+    Resolution failures **raise** (never fall back silently): a deployment that
+    configured a policy expects that policy, and silently serving the default
+    HITL rule set instead would change the security posture it chose.
+    """
+    import os
+
+    spec = (os.environ.get("DOYOUTRADE_APPROVAL_POLICY") or "").strip()
+    if not spec:
+        return DEFAULT_APPROVAL_RULES
+    module_name, sep, attr_name = spec.partition(":")
+    if not sep or not module_name.strip() or not attr_name.strip():
+        raise ValueError(
+            "DOYOUTRADE_APPROVAL_POLICY must be 'package.module:callable', "
+            f"got {spec!r}"
+        )
+    import importlib
+
+    try:
+        module = importlib.import_module(module_name.strip())
+    except ImportError as exc:
+        raise ImportError(
+            f"DOYOUTRADE_APPROVAL_POLICY module {module_name.strip()!r} "
+            f"could not be imported: {exc}"
+        ) from exc
+    try:
+        policy = getattr(module, attr_name.strip())
+    except AttributeError as exc:
+        raise AttributeError(
+            f"DOYOUTRADE_APPROVAL_POLICY attribute {attr_name.strip()!r} "
+            f"not found in module {module_name.strip()!r}"
+        ) from exc
+    if not callable(policy):
+        raise TypeError(
+            f"DOYOUTRADE_APPROVAL_POLICY target {spec!r} resolved to "
+            f"non-callable {type(policy).__name__}"
+        )
+    rules = policy()
+    return tuple(rules)
+
+
 def match_approval_rule(
     rules: tuple[ApprovalRule, ...] | list[ApprovalRule],
     tool_name: str,
