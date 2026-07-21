@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,23 @@ from doyoutrade.cli.main import run_async_command
 
 _DIAGNOSTIC_EXPORT_WAIT_SECONDS = 5.0
 _DIAGNOSTIC_EXPORT_POLL_SECONDS = 0.25
+
+
+# A copilot chat turn drives a reasoning model through several tool-call rounds,
+# which can legitimately exceed the historical 120s client read timeout — the
+# server keeps running the turn, but the CLI client would give up and report a
+# spurious ``api_timeout``. ``DOYOUTRADE_ASSISTANT_TIMEOUT_SECONDS`` overrides it
+# (default 120.0) so long turns complete client-side. Malformed values fall back
+# to the default rather than crash the CLI.
+def _assistant_timeout_seconds() -> float:
+    raw = (os.environ.get("DOYOUTRADE_ASSISTANT_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return 120.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 120.0
+    return value if value > 0 else 120.0
 
 
 @click.group()
@@ -1059,7 +1077,7 @@ def assistant_chat(session_id: str, message: str | None, message_file: str | Non
             json={"content": content},
             meta=read_session_meta(),
             not_found_error_code="assistant_session_not_found",
-            timeout_seconds=120.0,
+            timeout_seconds=_assistant_timeout_seconds(),
         )
 
     ctx = click.get_current_context()
@@ -1140,7 +1158,7 @@ def assistant_run(
             json={"content": content},
             meta=meta,
             not_found_error_code="assistant_session_not_found",
-            timeout_seconds=120.0,
+            timeout_seconds=_assistant_timeout_seconds(),
         )
         if not sent.get("ok"):
             diagnostic, _ = await _invoke_export(
