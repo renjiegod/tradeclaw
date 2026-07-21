@@ -1395,6 +1395,8 @@ export type ModelRouteRow = {
 /** ``GET /setup/status`` — whether the default agent has a usable model route. */
 export type SetupStatus = {
   configured: boolean;
+  /** "cloud" when hosted (renders cloud-only chrome); defaults to "local". */
+  deployment_mode?: "local" | "cloud";
 };
 
 /**

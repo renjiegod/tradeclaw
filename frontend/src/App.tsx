@@ -30,6 +30,7 @@ import {
   listTasks,
   listPendingApprovals,
 } from "./api";
+import { CloudUserMenu } from "./components/CloudUserMenu";
 import { SETUP_WIZARD_SKIPPED_KEY, SetupWizard } from "./components/SetupWizard";
 import { UpdateBanner } from "./components/UpdateFlow";
 import { type ConsoleOutletContext, useConsoleOutlet } from "./consoleOutletContext";
@@ -388,6 +389,23 @@ function ConsoleShell() {
 
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("sidebar_collapsed") === "true");
   const [pageRefreshToken, setPageRefreshToken] = useState(0);
+  // Deployment mode drives cloud-only header chrome (user menu). Local build
+  // leaves it "local" and renders nothing extra.
+  const [deploymentMode, setDeploymentMode] = useState<string>("local");
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await getSetupStatus();
+        if (!cancelled && status.deployment_mode) setDeploymentMode(status.deployment_mode);
+      } catch {
+        // /setup/status unavailable → stay "local" (no cloud chrome).
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const selectedKey = menuKeyFromPathname(location.pathname);
   const currentGroupKey = GROUP_KEY_BY_PAGE[selectedKey];
@@ -474,6 +492,7 @@ function ConsoleShell() {
             <ApiHealthHeaderStatus health={health} />
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <CloudUserMenu mode={deploymentMode} />
           <Button
             className="rounded-xl"
             onClick={async () => {

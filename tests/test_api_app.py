@@ -4660,7 +4660,7 @@ class SetupWizardApiTests(unittest.TestCase):
             resp = client.get("/setup/status")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"configured": False})
+        self.assertEqual(resp.json(), {"configured": False, "deployment_mode": "local"})
 
     def test_status_true_after_route_created_and_bound(self):
         client, service, assistant_service = self._client()
@@ -4685,7 +4685,7 @@ class SetupWizardApiTests(unittest.TestCase):
             resp = client.get("/setup/status")
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"configured": True})
+        self.assertEqual(resp.json(), {"configured": True, "deployment_mode": "local"})
 
     def test_status_503_when_model_route_repository_missing(self):
         service = _FakeService()  # no model_route_repository attribute
@@ -4749,7 +4749,7 @@ class SetupWizardApiTests(unittest.TestCase):
 
         agent = asyncio.run(assistant_service.agent_repo.get_agent("agent_default"))
         self.assertEqual(agent["model_route_name"], "default")
-        self.assertEqual(status_after.json(), {"configured": True})
+        self.assertEqual(status_after.json(), {"configured": True, "deployment_mode": "local"})
 
     def test_complete_rejects_unsupported_provider_kind(self):
         client, _service, assistant_service = self._client()

@@ -3143,6 +3143,13 @@ def create_app(
     async def get_setup_status():
         from doyoutrade.onboarding import agent_route_usable
 
+        # Deployment mode is an env-level flag (not user YAML): a hosted/cloud
+        # deployment sets DOYOUTRADE_DEPLOYMENT_MODE=cloud so the SAME frontend
+        # build can conditionally render cloud-only chrome (user menu, plan,
+        # logout). Unknown/unset → "local" (unchanged single-machine behavior).
+        deployment_mode = (os.environ.get("DOYOUTRADE_DEPLOYMENT_MODE") or "local").strip().lower()
+        if deployment_mode not in ("local", "cloud"):
+            deployment_mode = "local"
         try:
             agent_repo = getattr(assistant_service, "agent_repo", None)
             if agent_repo is None:
@@ -3151,7 +3158,7 @@ def create_app(
             if route_repository is None:
                 raise RuntimeError("model routes are not configured")
             configured = await agent_route_usable(route_repository, agent_repo)
-            return {"configured": configured}
+            return {"configured": configured, "deployment_mode": deployment_mode}
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
