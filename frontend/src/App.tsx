@@ -420,7 +420,10 @@ function ConsoleShell() {
     (async () => {
       try {
         const status = await getSetupStatus();
-        if (!cancelled && status.deployment_mode) setDeploymentMode(status.deployment_mode);
+        if (!cancelled && status.deployment_mode) {
+          setDeploymentMode(status.deployment_mode);
+          if (status.deployment_mode === "cloud") document.title = "DoYouTrade Cloud";
+        }
       } catch {
         // /setup/status unavailable → stay "local" (no cloud chrome).
       }
@@ -479,6 +482,11 @@ function ConsoleShell() {
         <div className="flex items-center gap-2 border-b border-shell-line px-5 py-5">
           <img src="/logo-nav.png" alt="DoYouTrade" className="h-8 w-8 shrink-0 object-contain" />
           <span className="font-display text-lg text-shell-ink">DoYouTrade</span>
+          {deploymentMode === "cloud" ? (
+            <span className="rounded-md border border-soft-tag-border bg-soft-tag-bg px-1.5 py-0.5 text-xs font-semibold text-soft-tag-text">
+              Cloud
+            </span>
+          ) : null}
         </div>
         <Menu
           mode="inline"
