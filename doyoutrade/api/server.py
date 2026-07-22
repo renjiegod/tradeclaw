@@ -124,11 +124,26 @@ def _mount_frontend(app) -> None:
 
     @app.middleware("http")
     async def spa_navigation_fallback(request, call_next):
-        if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
-            first_segment = request.url.path.lstrip("/").split("/", 1)[0]
-            if first_segment in SPA_ROUTE_PREFIXES:
-                return FileResponse(spa_index)
-        return await call_next(request)
+        if request.method != "GET":
+            return await call_next(request)
+        first_segment = request.url.path.lstrip("/").split("/", 1)[0]
+        if first_segment not in SPA_ROUTE_PREFIXES:
+            return await call_next(request)
+        if "text/html" in request.headers.get("accept", ""):
+            # no-store：index.html 兜底不许进 HTTP 缓存。缓存过的 HTML 会被
+            # 回放给同 URL 的 fetch(*/*)，前端 response.json() 解析失败，
+            # 整个 shell 数据刷新报错（线上事故：/tasks 页「数据刷新失败」）。
+            response = FileResponse(spa_index, headers={"Cache-Control": "no-store"})
+        else:
+            response = await call_next(request)
+        # 同一 URL 按 Accept 分流 HTML / JSON，两种变体都必须声明 Vary: Accept，
+        # 否则浏览器/中间层缓存会跨变体串台。
+        vary = response.headers.get("vary")
+        if vary is None:
+            response.headers["vary"] = "Accept"
+        elif "accept" not in vary.lower():
+            response.headers["vary"] = f"{vary}, Accept"
+        return response
 
     app.mount("/", _SPAStaticFiles(directory=str(dist_dir), html=True), name="frontend")
     logger.info("serving frontend bundle from %s", dist_dir)

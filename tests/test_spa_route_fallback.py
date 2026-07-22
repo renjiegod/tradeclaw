@@ -60,6 +60,18 @@ class SpaRouteFallbackTests(unittest.TestCase):
         self.assertIn("text/html", resp.headers["content-type"])
         self.assertIn("spa-index", resp.text)
 
+    def test_content_negotiated_variants_are_cache_safe(self) -> None:
+        # 同一 URL 按 Accept 返回两种内容：HTML 兜底禁止缓存（no-store），
+        # 两种变体都声明 Vary: Accept —— 否则浏览器把导航缓存的 index.html
+        # 回放给 fetch(*/*)，前端 JSON 解析失败（曾致线上「数据刷新失败」）。
+        with TestClient(self.app) as client:
+            html = client.get("/tasks", headers={"accept": BROWSER_ACCEPT})
+            api = client.get("/tasks", headers={"accept": "*/*"})
+        self.assertEqual(html.headers.get("cache-control"), "no-store")
+        self.assertIn("Accept", html.headers.get("vary", ""))
+        self.assertIn("Accept", api.headers.get("vary", ""))
+        self.assertEqual(api.json(), {"tasks": []})
+
     def test_browser_navigation_to_parametrized_route_serves_spa(self) -> None:
         with TestClient(self.app) as client:
             resp = client.get("/tasks/task-123", headers={"accept": BROWSER_ACCEPT})
