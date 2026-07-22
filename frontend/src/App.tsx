@@ -10,7 +10,7 @@ import {
   SearchOutlined,
   SettingOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, ConfigProvider, Layout, Menu, message, Spin } from "antd";
+import { Alert, Button, ConfigProvider, Drawer, Layout, Menu, message, Spin } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -433,6 +433,10 @@ function ConsoleShell() {
   const navigate = useNavigate();
 
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("sidebar_collapsed") === "true");
+  // <lg 视口：Sider 常收起，导航改为 Drawer 浮层，避免挤压正文。
+  // 窄屏下的 collapsed 状态不写回 localStorage，桌面偏好不受影响。
+  const [isNarrow, setIsNarrow] = useState(false);
+  const [navDrawerOpen, setNavDrawerOpen] = useState(false);
   const [pageRefreshToken, setPageRefreshToken] = useState(0);
   // Deployment mode drives cloud-only chrome (user menu, 数据接入 nav).
   // `null` = not yet determined: a direct URL to a cloud-only page must NOT be
@@ -500,12 +504,58 @@ function ConsoleShell() {
     [approvals, dataRefreshFailed, health, instances, loading, refresh, runtimeStatus, setSystemState, systemState],
   );
 
+  const navBrand = (
+    <div className="flex items-center gap-2 border-b border-shell-line px-5 py-5">
+      <img src="/logo-nav.png" alt="DoYouTrade" className="h-8 w-8 shrink-0 object-contain" />
+      <span className="font-display text-lg text-shell-ink">DoYouTrade</span>
+      {deploymentMode === "cloud" ? (
+        <span className="rounded-md border border-soft-tag-border bg-soft-tag-bg px-1.5 py-0.5 text-xs font-semibold text-soft-tag-text">
+          Cloud
+        </span>
+      ) : null}
+    </div>
+  );
+  const navMenuItems = visibleNavTree(deploymentMode).map((entry) =>
+    isNavGroup(entry)
+      ? {
+          key: entry.key,
+          icon: entry.icon,
+          label: entry.label,
+          children: entry.children.map((leaf) => ({ key: leaf.key, label: leaf.label })),
+        }
+      : { key: entry.key, icon: entry.icon, label: entry.label },
+  );
+  const handleNavClick = (key: string) => {
+    if (key in PATHS) {
+      navigate(PATHS[key as ConsolePageKey]);
+    }
+    setNavDrawerOpen(false);
+  };
+  const navFootnotes = (
+    <>
+      <div className="mx-3 mt-1 rounded-xl border border-shell-line/60 bg-white/40 px-3 py-2 text-[11px] leading-snug text-shell-muted">
+        仅供研究 / 教育用途，不构成投资建议；不荐股、不预测涨跌，据此操作风险自负。
+      </div>
+      <SidebarVersionBadge />
+    </>
+  );
+
   return (
     <Layout className="min-h-screen bg-[radial-gradient(circle_at_0%_0%,#f9f1e3_0%,transparent_38%),radial-gradient(circle_at_95%_20%,#f2e6d8_0%,transparent_36%),#f4efe6]">
       <Layout.Sider
         width={232}
         collapsedWidth={0}
-        collapsed={collapsed}
+        breakpoint="lg"
+        onBreakpoint={(broken) => {
+          setIsNarrow(broken);
+          if (broken) {
+            setCollapsed(true);
+          } else {
+            setNavDrawerOpen(false);
+            setCollapsed(localStorage.getItem("sidebar_collapsed") === "true");
+          }
+        }}
+        collapsed={isNarrow ? true : collapsed}
         onCollapse={(val) => {
           setCollapsed(val);
           localStorage.setItem("sidebar_collapsed", String(val));
@@ -513,49 +563,51 @@ function ConsoleShell() {
         className="!bg-[rgba(255,253,249,0.72)] !backdrop-blur"
         trigger={null}
       >
-        <div className="flex items-center gap-2 border-b border-shell-line px-5 py-5">
-          <img src="/logo-nav.png" alt="DoYouTrade" className="h-8 w-8 shrink-0 object-contain" />
-          <span className="font-display text-lg text-shell-ink">DoYouTrade</span>
-          {deploymentMode === "cloud" ? (
-            <span className="rounded-md border border-soft-tag-border bg-soft-tag-bg px-1.5 py-0.5 text-xs font-semibold text-soft-tag-text">
-              Cloud
-            </span>
-          ) : null}
-        </div>
+        {navBrand}
         <Menu
           mode="inline"
           selectedKeys={[selectedKey]}
           openKeys={openKeys}
           onOpenChange={(keys) => setOpenKeys(keys as string[])}
-          items={visibleNavTree(deploymentMode).map((entry) =>
-            isNavGroup(entry)
-              ? {
-                  key: entry.key,
-                  icon: entry.icon,
-                  label: entry.label,
-                  children: entry.children.map((leaf) => ({ key: leaf.key, label: leaf.label })),
-                }
-              : { key: entry.key, icon: entry.icon, label: entry.label },
-          )}
-          onClick={({ key }) => {
-            if (key in PATHS) {
-              navigate(PATHS[key as ConsolePageKey]);
-            }
-          }}
+          items={navMenuItems}
+          onClick={({ key }) => handleNavClick(key)}
           className="border-e-0 bg-transparent px-3 py-4"
         />
-        <div className="mx-3 mt-1 rounded-xl border border-shell-line/60 bg-white/40 px-3 py-2 text-[11px] leading-snug text-shell-muted">
-          仅供研究 / 教育用途，不构成投资建议；不荐股、不预测涨跌，据此操作风险自负。
-        </div>
-        <SidebarVersionBadge />
+        {navFootnotes}
       </Layout.Sider>
+      <Drawer
+        placement="left"
+        open={navDrawerOpen}
+        onClose={() => setNavDrawerOpen(false)}
+        width="min(280px, 84vw)"
+        rootClassName="lg:hidden"
+        styles={{ body: { padding: 0 } }}
+        title={null}
+        closable={false}
+      >
+        {navBrand}
+        <Menu
+          mode="inline"
+          selectedKeys={[selectedKey]}
+          openKeys={openKeys}
+          onOpenChange={(keys) => setOpenKeys(keys as string[])}
+          items={navMenuItems}
+          onClick={({ key }) => handleNavClick(key)}
+          className="border-e-0 bg-transparent px-3 py-4"
+        />
+        {navFootnotes}
+      </Drawer>
       <Layout>
-        <Layout.Header className="flex h-auto items-center justify-between gap-2 border-b border-shell-line bg-transparent px-5 py-3">
-          <div className="flex items-center gap-2">
+        <Layout.Header className="flex h-auto items-center justify-between gap-2 border-b border-shell-line bg-transparent px-3 py-3 lg:px-5">
+          <div className="flex min-w-0 items-center gap-2">
             <Button
               type="text"
-              icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              icon={(isNarrow ? !navDrawerOpen : collapsed) ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
               onClick={() => {
+                if (isNarrow) {
+                  setNavDrawerOpen(true);
+                  return;
+                }
                 setCollapsed(!collapsed);
                 localStorage.setItem("sidebar_collapsed", String(!collapsed));
               }}
@@ -582,7 +634,7 @@ function ConsoleShell() {
           </Button>
           </div>
         </Layout.Header>
-        <Layout.Content className="px-5 py-5">
+        <Layout.Content className="px-3 py-4 lg:px-5 lg:py-5">
           <UpdateBanner />
           {dataRefreshFailed && !loading ? (
             <Alert
