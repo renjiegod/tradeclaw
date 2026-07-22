@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.engine import URL
 from sqlalchemy.engine.url import make_url
@@ -158,6 +158,28 @@ async def verify_market_schema(conn, *, drivername: str) -> None:
     )
 
 
+# Waiting bound for a busy SQLite lock before raising "database is locked".
+# Sized for the worst legitimate writer we have: a market-bars range sync commits
+# a symbol's multi-year backfill in a single transaction, which can hold the write
+# lock for well over the sqlite3 default of 5s.
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+
+
+def _sqlite_on_connect(dbapi_connection, connection_record):
+    # WAL lets readers proceed while a writer holds the lock (rollback-journal mode
+    # blocks them outright), and busy_timeout makes lock contention wait instead of
+    # failing immediately. synchronous=NORMAL is the recommended pairing with WAL.
+    # PRAGMA failures must surface — a silently missing busy_timeout reintroduces
+    # spurious "database is locked" failures under concurrent sync/backtest load.
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
+
+
 def create_engine_and_session_factory(
     url: str,
     echo: bool = False,
@@ -170,10 +192,13 @@ def create_engine_and_session_factory(
     parsed = make_url(url)
     # aiosqlite + default QueuePool: multiple pooled connections to one SQLite file can
     # stall checkout (e.g. another connection holds a lock). NullPool matches SQLite usage.
+    is_sqlite = "sqlite" in (parsed.drivername or "")
     pool_kw: dict = {}
-    if "sqlite" in (parsed.drivername or ""):
+    if is_sqlite:
         pool_kw["poolclass"] = NullPool
     engine = create_async_engine(url, echo=echo, pool_pre_ping=pool_pre_ping, **pool_kw)
+    if is_sqlite:
+        event.listen(engine.sync_engine, "connect", _sqlite_on_connect)
     if os.environ.get("DOYOUTRADE_RUNTIME_DIAG") == "1":
         runtime_diag(
             f"create_engine: driver={parsed.drivername!r} pool={type(engine.pool).__name__}"
