@@ -65,12 +65,19 @@ def _bar_payload(bar: Any, *, interval: str) -> dict[str, Any]:
     }
 
 
-def _is_a_share_stock(row: dict[str, Any]) -> bool:
+def _is_syncable_a_share(row: dict[str, Any]) -> bool:
+    """Catalog rows whose K-line the local warehouse should sync.
+
+    Covers A-share **stocks** and on-exchange **ETFs** (both .SH/.SZ, tradable).
+    Indices (``is_tradable=False``) and any other instrument type are excluded —
+    they live in the catalog for watchlist/charting but never enter the
+    K-line sync scope.
+    """
     symbol = str(row.get("symbol") or "").strip().upper()
     if not symbol.endswith((".SH", ".SZ", ".BJ")):
         return False
     instrument_type = str(row.get("instrument_type") or "").strip().lower()
-    if instrument_type and instrument_type not in {"stock", "a_share", "ashare"}:
+    if instrument_type and instrument_type not in {"stock", "a_share", "ashare", "etf"}:
         return False
     if row.get("is_tradable") is False:
         return False
@@ -386,7 +393,7 @@ class MarketDataSyncService:
                 offset=offset,
             )
             for row in rows:
-                if not isinstance(row, dict) or not _is_a_share_stock(row):
+                if not isinstance(row, dict) or not _is_syncable_a_share(row):
                     continue
                 symbol = str(row.get("symbol") or "").strip()
                 if not symbol or symbol in seen:

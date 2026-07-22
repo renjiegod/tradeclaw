@@ -11,6 +11,7 @@ import {
 } from "../api";
 import { usePageRefreshToken } from "../pageRefreshContext";
 import type { InstrumentCatalogRow } from "../types";
+import { instrumentTypeLabel } from "../utils/instrumentType";
 
 import { DEFAULT_INSTRUMENT_SOURCE } from "../components/UniverseSymbolSelect";
 
@@ -53,6 +54,20 @@ export function StocksPage() {
       { title: "代码", dataIndex: "symbol", key: "symbol" },
       { title: "名称", dataIndex: "display_name", key: "display_name" },
       { title: "市场", dataIndex: "market", key: "market" },
+      {
+        title: "类型",
+        dataIndex: "instrument_type",
+        key: "instrument_type",
+        render: (t: string | null) => instrumentTypeLabel(t),
+        // Client-side filter over the loaded page (catalog paging is server-side).
+        filters: [
+          { text: "股票", value: "stock" },
+          { text: "ETF", value: "etf" },
+          { text: "指数", value: "index" },
+        ],
+        onFilter: (value: boolean | React.Key, record: InstrumentCatalogRow) =>
+          record.instrument_type === value,
+      },
       {
         title: "同步来源",
         dataIndex: "last_sync_source",
@@ -183,7 +198,7 @@ export function StocksPage() {
   return (
     <div className="flex flex-col gap-4">
       <Typography.Title level={3} className="!mb-0">
-        股票
+        标的目录
       </Typography.Title>
       <Typography.Paragraph type="secondary" className="!mb-0">
         手动从 akshare / QMT 同步到本地表；实例的观察标的与 universe 仅能从此目录选择。

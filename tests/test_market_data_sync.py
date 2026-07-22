@@ -364,6 +364,10 @@ class MarketDataSyncServiceTests(unittest.IsolatedAsyncioTestCase):
                 {"symbol": "600000.SH", "instrument_type": "stock", "is_tradable": True},
                 {"symbol": "000001.SZ", "instrument_type": "stock", "is_tradable": True},
                 {"symbol": "110000.SH", "instrument_type": "bond", "is_tradable": True},
+                # ETF is tradable and must enter the K-line sync scope.
+                {"symbol": "510300.SH", "instrument_type": "etf", "is_tradable": True},
+                # An index is non-tradable and stays excluded.
+                {"symbol": "000300.SH", "instrument_type": "index", "is_tradable": False},
             ]
         )
 
@@ -387,9 +391,13 @@ class MarketDataSyncServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch("doyoutrade.data.market_sync.emit_debug_event", new_callable=AsyncMock) as emit:
             symbols = await service._list_symbols()
-        # Full A-share catalog (the bond is filtered by _is_a_share_stock), not
-        # the watchlist subset.
-        self.assertEqual(sorted(s for s, _ in symbols), ["000001.SZ", "600000.SH"])
+        # Full A-share catalog: stocks + ETF are synced; the bond and the
+        # non-tradable index are filtered by _is_syncable_a_share. Not the
+        # watchlist subset.
+        self.assertEqual(
+            sorted(s for s, _ in symbols),
+            ["000001.SZ", "510300.SH", "600000.SH"],
+        )
         scope_payload = [
             call.args[1]
             for call in emit.await_args_list

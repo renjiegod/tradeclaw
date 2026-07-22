@@ -8,7 +8,10 @@ from typing import Any
 
 from doyoutrade.infra.qmt_proxy_client import QmtProxyRestClient
 
-from doyoutrade.data.instrument_catalog.a_share_equity import is_cn_a_share_equity_symbol
+from doyoutrade.data.instrument_catalog.a_share_equity import (
+    is_cn_a_share_equity_symbol,
+    is_cn_a_share_etf_symbol,
+)
 from doyoutrade.data.instrument_catalog.index_seeds import index_seed_rows
 from doyoutrade.data.instrument_catalog.normalize import canonical_symbol_from_qmt_stock_code
 
@@ -53,8 +56,13 @@ async def _enrich_rows_from_instrument_info(
             else:
                 out["display_name"] = sym
             out["is_tradable"] = payload.get("IsTrading")
-            it = str(payload.get("instrument_type") or "stock")[:64]
-            out["instrument_type"] = it
+            # QMT's instrument_type string for funds is inconsistent; pin ETFs
+            # by our canonical-symbol classifier so the type column / K-line
+            # sync gate / frontend reliably see "etf" rather than "stock".
+            if is_cn_a_share_etf_symbol(sym):
+                out["instrument_type"] = "etf"
+            else:
+                out["instrument_type"] = str(payload.get("instrument_type") or "stock")[:64]
             out["raw"] = {**(out.get("raw") or {}), "instrument_info": payload}
             return out
 
@@ -86,7 +94,10 @@ async def sync_qmt_catalog(
                 sym = canonical_symbol_from_qmt_stock_code(str(code))
                 if not sym or sym in seen:
                     continue
-                if not is_cn_a_share_equity_symbol(sym):
+                # Keep both stocks and ETFs; other on-exchange contracts
+                # (可转债/LOF/封闭式) stay filtered out (they often 400 on
+                # get_instrument_info and must not enter the tradable universe).
+                if not (is_cn_a_share_equity_symbol(sym) or is_cn_a_share_etf_symbol(sym)):
                     continue
                 seen.add(sym)
                 out_rows.append(
@@ -127,7 +138,11 @@ async def sync_qmt_catalog(
             or payload.get("InstrumentID")
             or sym
         )
-        itype = str(payload.get("instrument_type") or "stock")[:64]
+        itype = (
+            "etf"
+            if is_cn_a_share_etf_symbol(sym)
+            else str(payload.get("instrument_type") or "stock")[:64]
+        )
         out_rows.append(
             {
                 "symbol": sym,

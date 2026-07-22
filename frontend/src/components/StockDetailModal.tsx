@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import { getInstrumentCatalogItem, getQuotesOnce } from "../api";
 import type { InstrumentCatalogRow, QuoteSnapshot } from "../types";
+import { instrumentTypeLabel } from "../utils/instrumentType";
 import { LocalMarketKlinePanel } from "./LocalMarketKlinePanel";
 
 type StockDetailModalProps = {
@@ -94,7 +95,7 @@ export function StockDetailModal({ symbol, onClose, quote }: StockDetailModalPro
             <Typography.Text type="secondary">{symbol}</Typography.Text>
           </Space>
         ) : (
-          "股票详情"
+          "标的详情"
         )
       }
       open={open}
@@ -113,8 +114,8 @@ export function StockDetailModal({ symbol, onClose, quote }: StockDetailModalPro
             <span>代码: {symbol}</span>
             <span>名称: {row?.display_name ?? "—"}</span>
             <span>市场: {row?.market ?? "—"}</span>
-            <span>类型: {row?.instrument_type ?? "—"}</span>
-            <span>股价: {suspended ? "停牌" : formatNumber(effectiveQuote?.price)}</span>
+            <span>类型: {instrumentTypeLabel(row?.instrument_type)}</span>
+            <span>现价: {suspended ? "停牌" : formatNumber(effectiveQuote?.price)}</span>
             <span className="flex items-center gap-1">涨跌幅: {suspended ? <Tag color="default">停牌</Tag> : <ChangePctTag value={effectiveQuote?.change_pct} />}</span>
             <span>成交额: {formatAmount(effectiveQuote?.amount)}</span>
             <span>行情时间: {effectiveQuote?.timestamp ?? "—"}</span>

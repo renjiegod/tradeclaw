@@ -211,7 +211,17 @@ class MockTradingDataProvider:
         # summary can reconcile per-trade PnL against this same cost.
         fee = Decimal("0")
         if self.fee_model is not None:
-            fee = self.fee_model.compute_fee(intent.action, qty, price)
+            # 场内 ETF 卖出免征印花税；股票照常。按 symbol 分类判定。
+            from doyoutrade.data.instrument_catalog.a_share_equity import (
+                is_cn_a_share_etf_symbol,
+            )
+
+            fee = self.fee_model.compute_fee(
+                intent.action,
+                qty,
+                price,
+                stamp_tax_exempt=is_cn_a_share_etf_symbol(symbol),
+            )
         if intent.action == "buy":
             self._cash -= notional + fee
             self._apply_buy_position(symbol, qty, price, mode=mode)

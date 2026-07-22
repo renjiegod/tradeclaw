@@ -55,10 +55,21 @@ class AShareFeeModel:
     stamp_tax_rate: Decimal = _DEFAULT_STAMP_TAX_RATE
     transfer_fee_rate: Decimal = _DEFAULT_TRANSFER_FEE_RATE
 
-    def compute_fee(self, side: str, quantity: Any, price: Any) -> Decimal:
+    def compute_fee(
+        self,
+        side: str,
+        quantity: Any,
+        price: Any,
+        *,
+        stamp_tax_exempt: bool = False,
+    ) -> Decimal:
         """Total fee (元, quantized to 0.01) for one fill.
 
         ``side`` is ``"buy"`` or ``"sell"``; 印花税 applies to sells only.
+        ``stamp_tax_exempt`` waives 印花税 even on the sell leg — set it for
+        instruments the exchange exempts (场内 ETF/基金), so ETF backtests do
+        not carry the stock-only stamp tax. Defaults to ``False`` so stock
+        fills stay byte-for-byte unchanged.
         Zero / non-positive notional yields ``Decimal("0")`` (no fee, and no
         minimum-commission floor — a no-op fill is not a trade).
         """
@@ -73,7 +84,8 @@ class AShareFeeModel:
         if commission < self.min_commission:
             commission = self.min_commission
         transfer = notional * self.transfer_fee_rate
-        stamp = notional * self.stamp_tax_rate if str(side).lower() == "sell" else Decimal("0")
+        charge_stamp = str(side).lower() == "sell" and not stamp_tax_exempt
+        stamp = notional * self.stamp_tax_rate if charge_stamp else Decimal("0")
 
         total = commission + transfer + stamp
         return total.quantize(_CENT, rounding=ROUND_HALF_UP)

@@ -366,7 +366,7 @@ export const MonitorFormModal: React.FC<Props> = ({ rule, onSaved, onClose }) =>
         <Form.Item name="scope_kind" label="监控范围">
           <Radio.Group>
             <Radio value="watchlist_tag">自选股标签</Radio>
-            <Radio value="symbols">指定股票</Radio>
+            <Radio value="symbols">指定标的</Radio>
           </Radio.Group>
         </Form.Item>
 
@@ -382,8 +382,8 @@ export const MonitorFormModal: React.FC<Props> = ({ rule, onSaved, onClose }) =>
         ) : (
           <Form.Item
             name="scope_symbols"
-            label="股票代码"
-            rules={[{ required: true, message: "请选择至少一个股票代码" }]}
+            label="标的代码"
+            rules={[{ required: true, message: "请选择至少一个标的代码" }]}
             extra="输入代码 / 名称 / 拼音搜索后选中添加；粘贴逗号分隔的代码也会自动拆分。"
           >
             <SymbolTagsSelect placeholder="搜索添加，例如 600519 或 贵州茅台" />

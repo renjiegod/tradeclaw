@@ -69,6 +69,20 @@ class FeeModelMathTests(unittest.TestCase):
     def test_zero_notional_no_fee(self) -> None:
         self.assertEqual(self.m.compute_fee("buy", 0, 10), Decimal("0"))
 
+    def test_etf_sell_waives_stamp_tax(self) -> None:
+        # ETF 卖出免印花税：与股票卖出 10.10 相比，去掉 5.0 印花税 → 5.10
+        self.assertEqual(
+            self.m.compute_fee("sell", 1000, 10, stamp_tax_exempt=True),
+            Decimal("5.10"),
+        )
+
+    def test_etf_buy_unchanged_by_exemption(self) -> None:
+        # 买入本就不收印花税，豁免标志不改变买入费
+        self.assertEqual(
+            self.m.compute_fee("buy", 1000, 10, stamp_tax_exempt=True),
+            self.m.compute_fee("buy", 1000, 10),
+        )
+
 
 class FeeConfigGateTests(unittest.TestCase):
     def test_none_and_empty_are_off(self) -> None:
@@ -112,6 +126,37 @@ class LedgerFeeTests(unittest.TestCase):
         # 100000 - 10000 - 5.10
         self.assertEqual(store._cash, Decimal("89994.90"))
         self.assertEqual(fill.fee, 5.10)
+
+    def _sell(self, store: MockTradingDataProvider, symbol: str) -> FillRecord:
+        intent = OrderIntent(
+            intent_id="oi-2",
+            symbol=symbol,
+            action="sell",  # type: ignore[arg-type]
+            amount=1000.0,
+            order_type="market",
+            tif="day",
+            strategy_tag="t",
+            price_reference=10.0,
+            rationale="",
+        )
+        fill = FillRecord(intent_id="oi-2", symbol=symbol, side="sell", quantity=1000, price=10.0)
+        store.apply_synthetic_fill(intent, fill)
+        return fill
+
+    def test_stock_sell_charges_stamp_but_etf_sell_does_not(self) -> None:
+        # Stock sell: commission floor 5 + transfer 0.1 + stamp 5.0 = 10.10
+        stock_store = MockTradingDataProvider(cash=100000.0, ledger_settlement_mode="t0")
+        stock_store.fee_model = AShareFeeModel()
+        stock_store._apply_buy_position("600000.SH", Decimal("1000"), Decimal("10"), mode="t0")
+        stock_fill = self._sell(stock_store, "600000.SH")
+        self.assertEqual(stock_fill.fee, 10.10)
+
+        # ETF sell: stamp tax waived → 5 + 0.1 = 5.10
+        etf_store = MockTradingDataProvider(cash=100000.0, ledger_settlement_mode="t0")
+        etf_store.fee_model = AShareFeeModel()
+        etf_store._apply_buy_position("510300.SH", Decimal("1000"), Decimal("10"), mode="t0")
+        etf_fill = self._sell(etf_store, "510300.SH")
+        self.assertEqual(etf_fill.fee, 5.10)
 
 
 class FeeConfigWiringTests(unittest.TestCase):
