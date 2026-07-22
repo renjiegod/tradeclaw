@@ -3,6 +3,7 @@ import {
   PlusOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
+  SaveOutlined,
   SettingOutlined,
 } from "@ant-design/icons";
 import {
@@ -34,6 +35,7 @@ import {
   updateQmtProxyConfig,
 } from "../api";
 import { PageIntro } from "../components/PageIntro";
+import { ToolbarButton } from "../components/ToolbarButton";
 import { UpdateSection } from "../components/UpdateFlow";
 import { usePageRefreshToken } from "../pageRefreshContext";
 import type {
@@ -562,12 +564,8 @@ function SystemConfigTab() {
           （YAML 保留注释）。标「需重启」的字段保存后需重启进程才生效；密钥字段保存时留空则不改动。
         </Typography.Text>
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>
-            刷新
-          </Button>
-          <Button type="primary" onClick={() => void onSave()} loading={saving}>
-            保存系统配置
-          </Button>
+          <ToolbarButton icon={<ReloadOutlined />} onClick={() => void load()} loading={loading} label="刷新" />
+          <ToolbarButton type="primary" icon={<SaveOutlined />} onClick={() => void onSave()} loading={saving} label="保存系统配置" />
         </Space>
       </div>
 
@@ -1459,12 +1457,8 @@ function QmtProxyConfigTab({ active }: { active: boolean }) {
           </Tag>
         </Typography.Text>
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>
-            刷新
-          </Button>
-          <Button type="primary" onClick={() => void onSave()} loading={saving}>
-            保存 qmt-proxy 配置
-          </Button>
+          <ToolbarButton icon={<ReloadOutlined />} onClick={() => void load()} loading={loading} label="刷新" />
+          <ToolbarButton type="primary" icon={<SaveOutlined />} onClick={() => void onSave()} loading={saving} label="保存 qmt-proxy 配置" />
         </Space>
       </div>
 

@@ -1,4 +1,5 @@
-import { Button, Space, Spin, Tag, Typography, message } from "antd";
+import { CloudSyncOutlined, ReloadOutlined, StarFilled, StarOutlined } from "@ant-design/icons";
+import { Space, Spin, Tag, Typography, message } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -11,6 +12,7 @@ import {
   syncInstrumentCatalog,
 } from "../api";
 import { LocalMarketKlinePanel } from "../components/LocalMarketKlinePanel";
+import { ToolbarButton } from "../components/ToolbarButton";
 import { SymbolRoleCards } from "../components/SymbolRoleCards";
 import { usePageRefreshToken } from "../pageRefreshContext";
 import type { InstrumentCatalogRow, WatchlistEntry } from "../types";
@@ -152,21 +154,29 @@ export function StockDetailPage() {
           </div>
         </div>
         <Space size={8} wrap>
-          <Button
+          <ToolbarButton
             size="small"
             type={watchlistEntry ? "default" : "primary"}
             danger={watchlistEntry != null}
             loading={watchlistBusy}
+            icon={watchlistEntry ? <StarFilled /> : <StarOutlined />}
+            label={watchlistEntry ? "移除自选" : "加入自选"}
             onClick={() => void toggleWatchlist()}
-          >
-            {watchlistEntry ? "移除自选" : "加入自选"}
-          </Button>
-          <Button size="small" loading={syncing} onClick={() => void refreshOne("akshare")}>
-            从 akshare 刷新
-          </Button>
-          <Button size="small" loading={syncing} onClick={() => void refreshOne("qmt")}>
-            从 QMT 刷新
-          </Button>
+          />
+          <ToolbarButton
+            size="small"
+            loading={syncing}
+            icon={<ReloadOutlined />}
+            label="从 akshare 刷新"
+            onClick={() => void refreshOne("akshare")}
+          />
+          <ToolbarButton
+            size="small"
+            loading={syncing}
+            icon={<CloudSyncOutlined />}
+            label="从 QMT 刷新"
+            onClick={() => void refreshOne("qmt")}
+          />
         </Space>
       </section>
 
