@@ -1,6 +1,6 @@
 [project]
 name = "doyoutrade"
-version = "0.1.17"
+version = "0.1.18"
 description = "Multi-agent trading platform"
 license = "MIT"
 requires-python = ">=3.12"
