@@ -11,6 +11,7 @@ export type ConsoleOutletContext = {
   systemState: SystemState;
   loading: boolean;
   dataRefreshFailed: boolean;
+  deploymentMode: string | null;
   refresh: (options?: { silent?: boolean }) => Promise<void>;
   setSystemState: Dispatch<SetStateAction<SystemState>>;
 };

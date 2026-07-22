@@ -361,6 +361,13 @@ function TasksOutlet() {
   return <TasksPage onMutated={() => void refresh()} />;
 }
 
+function AgentsOutlet() {
+  // deploymentMode 是 ConsoleShell 的 state，只能经 outlet context 取；
+  // 直接在 App() 路由表里引用它会命中未定义变量（历史白屏事故）。
+  const { deploymentMode } = useConsoleOutlet();
+  return <AgentsPage deploymentMode={deploymentMode} />;
+}
+
 function ApprovalsOutlet() {
   const { refresh } = useConsoleOutlet();
   // ApprovalsPage 自取全量数据并自轮询；这里只保留对全局 pending（导航徽标 /
@@ -493,6 +500,7 @@ function ConsoleShell() {
     () => ({
       approvals,
       dataRefreshFailed,
+      deploymentMode,
       health,
       instances,
       loading,
@@ -501,7 +509,7 @@ function ConsoleShell() {
       setSystemState,
       systemState,
     }),
-    [approvals, dataRefreshFailed, health, instances, loading, refresh, runtimeStatus, setSystemState, systemState],
+    [approvals, dataRefreshFailed, deploymentMode, health, instances, loading, refresh, runtimeStatus, setSystemState, systemState],
   );
 
   const navBrand = (
@@ -690,7 +698,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/assistant" replace />} />
         <Route element={<ConsoleShell />}>
-          <Route path="/agents" element={<RoutePage><AgentsPage deploymentMode={deploymentMode} /></RoutePage>} />
+          <Route path="/agents" element={<RoutePage><AgentsOutlet /></RoutePage>} />
           <Route path="/cron_jobs" element={<RoutePage><CronJobsPage /></RoutePage>} />
           <Route path="/channels" element={<RoutePage><ChannelsPage /></RoutePage>} />
           <Route path="/assistant" element={<RoutePage><AssistantPage /></RoutePage>} />
