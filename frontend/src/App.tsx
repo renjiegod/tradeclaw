@@ -541,7 +541,7 @@ function ConsoleShell() {
   );
 
   return (
-    <Layout className="min-h-screen bg-[radial-gradient(circle_at_0%_0%,#f9f1e3_0%,transparent_38%),radial-gradient(circle_at_95%_20%,#f2e6d8_0%,transparent_36%),#f4efe6]">
+    <Layout className="h-[100dvh] overflow-hidden bg-[radial-gradient(circle_at_0%_0%,#f9f1e3_0%,transparent_38%),radial-gradient(circle_at_95%_20%,#f2e6d8_0%,transparent_36%),#f4efe6]">
       <Layout.Sider
         width={232}
         collapsedWidth={0}
@@ -597,7 +597,7 @@ function ConsoleShell() {
         />
         {navFootnotes}
       </Drawer>
-      <Layout>
+      <Layout className="min-h-0">
         <Layout.Header className="flex h-auto items-center justify-between gap-2 border-b border-shell-line bg-transparent px-3 py-3 lg:px-5">
           <div className="flex min-w-0 items-center gap-2">
             <Button
@@ -629,12 +629,17 @@ function ConsoleShell() {
               }
             }}
             loading={loading}
+            icon={<ReloadOutlined />}
+            title="刷新"
+            aria-label="刷新"
           >
-            <ReloadOutlined /> 刷新
+            <span className="hidden sm:inline">刷新</span>
           </Button>
           </div>
         </Layout.Header>
-        <Layout.Content className="px-3 py-4 lg:px-5 lg:py-5">
+        {/* 内容区自身滚动（外层 Layout 固定 100dvh），使全高页面能 flex 精确填充、
+            不再依赖 calc(100dvh-Nrem) 魔法数字；侧边栏 / 顶栏随之固定不随内容滚动。 */}
+        <Layout.Content className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-4 lg:px-5 lg:py-5">
           <UpdateBanner />
           {dataRefreshFailed && !loading ? (
             <Alert
