@@ -35,6 +35,7 @@
 </p>
 
 <p align="center">
+  <a href="https://doyoutrade.cloud"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-doyoutrade.cloud-0D7377?style=flat-square" alt="Website"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-D22128?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="License"></a>
   <img src="https://img.shields.io/badge/version-0.1.11-blue?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey?style=flat-square" alt="Platform">
@@ -42,6 +43,7 @@
 </p>
 
 <p align="center">
+  <a href="https://doyoutrade.cloud"><b>官网</b></a> &nbsp;&middot;&nbsp;
   <a href="#-核心特性">核心特性</a> &nbsp;&middot;&nbsp;
   <a href="#-快速开始">快速开始</a> &nbsp;&middot;&nbsp;
   <a href="#-你能用它做什么">能做什么</a> &nbsp;&middot;&nbsp;
@@ -65,7 +67,7 @@
 > - 🔒 **不编数字、本地私有** — 关键数字全部来自工具调用，LLM 绝不编造；自选 / 复盘 / 交割单 / 战法记忆 / 图谱只存在你自己机器，**不进 git、不外传**。
 > - 🕹 **你握方向盘** — 不荐股、不预测、不承诺收益；实盘仅在你接入券商 QMT 并显式授权后可用，每笔订单必过风控 + 审批闸门，平台不托管资金。
 >
-> 详情见 [docs/design.md](docs/design.md)（架构）· [docs/short-term-playbook.md](docs/short-term-playbook.md)（短线上手）· [AGENTS.md](AGENTS.md)（贡献规范）。
+> 产品介绍与上手路径见官网 **[doyoutrade.cloud](https://doyoutrade.cloud)**；仓库内详情见 [docs/design.md](docs/design.md)（架构）· [docs/short-term-playbook.md](docs/short-term-playbook.md)（短线上手）· [AGENTS.md](AGENTS.md)（贡献规范）。
 
 ---
 
@@ -151,6 +153,8 @@
 ---
 
 ## 🚀 快速开始
+
+想先了解产品、能力与上手路径？请访问官网 **[https://doyoutrade.cloud](https://doyoutrade.cloud)**。下面是本地安装。
 
 ### 最快：一条命令装完即用（推荐）
 
@@ -660,6 +664,7 @@ npm --prefix frontend run build        # 前端 type check
 npm --prefix frontend run test         # 前端 vitest
 ```
 
+- 官网：[https://doyoutrade.cloud](https://doyoutrade.cloud)
 - 总体设计：[docs/design.md](docs/design.md)
 - E2E 指南：[docs/e2e-testing.md](docs/e2e-testing.md)
 - 贡献者 / Agent 工作规范：[AGENTS.md](AGENTS.md)
