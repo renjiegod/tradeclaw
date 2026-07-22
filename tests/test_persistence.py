@@ -2969,3 +2969,46 @@ class ObservabilityTtlPruneTests(unittest.IsolatedAsyncioTestCase):
             await prune_observability_rows(self.session_factory, ttl_days=0)
         with self.assertRaises(ValueError):
             await prune_observability_rows(self.session_factory, ttl_days=-3)
+
+
+class SqliteEngineConcurrencyPragmaTests(unittest.IsolatedAsyncioTestCase):
+    """create_engine_and_session_factory must arm on-disk SQLite connections
+    with WAL + busy_timeout so a long sync write transaction cannot make a
+    concurrent backtest read/write fail instantly with "database is locked"."""
+
+    async def asyncSetUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        db_path = Path(self.tempdir.name) / "pragma.db"
+        self.engine, self.session_factory = create_engine_and_session_factory(
+            f"sqlite+aiosqlite:///{db_path}"
+        )
+
+    async def asyncTearDown(self):
+        await dispose_engine(self.engine)
+        self.tempdir.cleanup()
+
+    async def test_sqlite_connections_get_wal_and_busy_timeout(self):
+        from sqlalchemy import text as sa_text
+
+        from doyoutrade.persistence.db import SQLITE_BUSY_TIMEOUT_MS
+
+        async with self.engine.connect() as conn:
+            journal_mode = await conn.scalar(sa_text("PRAGMA journal_mode"))
+            busy_timeout = await conn.scalar(sa_text("PRAGMA busy_timeout"))
+            synchronous = await conn.scalar(sa_text("PRAGMA synchronous"))
+        self.assertEqual(str(journal_mode).lower(), "wal")
+        self.assertEqual(int(busy_timeout), SQLITE_BUSY_TIMEOUT_MS)
+        # synchronous=NORMAL is 1
+        self.assertEqual(int(synchronous), 1)
+
+    async def test_pragmas_apply_to_every_new_connection(self):
+        # NullPool means each session gets a fresh connection; the connect
+        # listener must arm each one, not just the first.
+        from sqlalchemy import text as sa_text
+
+        for _ in range(2):
+            async with self.engine.connect() as conn:
+                journal_mode = await conn.scalar(sa_text("PRAGMA journal_mode"))
+                busy_timeout = await conn.scalar(sa_text("PRAGMA busy_timeout"))
+            self.assertEqual(str(journal_mode).lower(), "wal")
+            self.assertGreater(int(busy_timeout), 0)
