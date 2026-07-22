@@ -50,7 +50,7 @@ export function CloudUserMenu({ mode }: { mode?: string | null }) {
         credentials: "include",
       });
     } finally {
-      window.location.href = "/"; // → 302 to GitHub login
+      window.location.href = "/"; // 网关对未登录导航 302 到 /console/ 登录页
     }
   };
 
