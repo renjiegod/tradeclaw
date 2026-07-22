@@ -57,9 +57,43 @@ def _frontend_dist_dir() -> Path | None:
     return None
 
 
+# First path segments owned by the SPA router (frontend/src/App.tsx <Routes>).
+# Several collide with same-named JSON API routes (GET /tasks, /accounts,
+# /watchlist, /approvals, and parametrized ones like /tasks/{task_id}) — FastAPI
+# matches API routes before the SPA mount, so a browser hard-navigation to
+# /tasks used to render raw JSON instead of the app. Keep in sync with the
+# frontend router when adding top-level pages.
+SPA_ROUTE_PREFIXES = frozenset(
+    {
+        "agents",
+        "cron_jobs",
+        "channels",
+        "assistant",
+        "swarm",
+        "tasks",
+        "accounts",
+        "stocks",
+        "watchlist",
+        "stock_monitor",
+        "market_review",
+        "strategies",
+        "knowledge",
+        "approvals",
+        "model_invocations",
+        "settings",
+        "data_console",
+    }
+)
+
+
 def _mount_frontend(app) -> None:
     """Serve the SPA bundle same-origin, as the LAST route so it never shadows
     an API route. Missing paths fall back to index.html for client-side routing.
+
+    Browser hard-navigations (Accept lists text/html) to SPA-owned paths are
+    answered with index.html via middleware even when a same-named API route
+    exists; programmatic clients (fetch/httpx/curl send ``*/*`` or JSON,
+    EventSource sends ``text/event-stream``) still reach the API unchanged.
     """
 
     dist_dir = _frontend_dist_dir()
@@ -71,6 +105,7 @@ def _mount_frontend(app) -> None:
         return
 
     from starlette.exceptions import HTTPException as StarletteHTTPException
+    from starlette.responses import FileResponse
     from starlette.staticfiles import StaticFiles
 
     class _SPAStaticFiles(StaticFiles):
@@ -84,6 +119,16 @@ def _mount_frontend(app) -> None:
                 if exc.status_code == 404:
                     return await super().get_response("index.html", scope)
                 raise
+
+    spa_index = dist_dir / "index.html"
+
+    @app.middleware("http")
+    async def spa_navigation_fallback(request, call_next):
+        if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
+            first_segment = request.url.path.lstrip("/").split("/", 1)[0]
+            if first_segment in SPA_ROUTE_PREFIXES:
+                return FileResponse(spa_index)
+        return await call_next(request)
 
     app.mount("/", _SPAStaticFiles(directory=str(dist_dir), html=True), name="frontend")
     logger.info("serving frontend bundle from %s", dist_dir)
