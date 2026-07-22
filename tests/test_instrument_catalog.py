@@ -5,7 +5,10 @@ from pathlib import Path
 from doyoutrade.config import get_config
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from doyoutrade.data.instrument_catalog.a_share_equity import is_cn_a_share_equity_symbol
+from doyoutrade.data.instrument_catalog.a_share_equity import (
+    is_cn_a_share_equity_symbol,
+    is_cn_a_share_etf_symbol,
+)
 from doyoutrade.data.instrument_catalog.normalize import (
     canonical_symbol_from_qmt_stock_code,
     canonical_symbol_from_doyoutrade_or_akshare,
@@ -36,6 +39,43 @@ class NormalizeTests(unittest.TestCase):
             canonical_symbol_from_qmt_stock_code("000036.SZ"),
         )
         self.assertEqual(canonical_symbol_from_qmt_stock_code("000036.SH"), "000036.SZ")
+
+    def test_sh_etf_codes_get_sh_suffix(self):
+        """上交所 ETF (51/56/58xxxx) 必须落到 .SH，不能被兜底成 .SZ。"""
+        self.assertEqual(canonical_symbol_from_doyoutrade_or_akshare("510300"), "510300.SH")
+        self.assertEqual(canonical_symbol_from_doyoutrade_or_akshare("588000"), "588000.SH")
+        self.assertEqual(canonical_symbol_from_doyoutrade_or_akshare("560010"), "560010.SH")
+        # 深交所 ETF (15xxxx) 仍是 .SZ
+        self.assertEqual(canonical_symbol_from_doyoutrade_or_akshare("159915"), "159915.SZ")
+
+
+class EtfFilterTests(unittest.TestCase):
+    def test_recognises_sh_and_sz_etf(self):
+        self.assertTrue(is_cn_a_share_etf_symbol("510300.SH"))
+        self.assertTrue(is_cn_a_share_etf_symbol("588000.SH"))
+        self.assertTrue(is_cn_a_share_etf_symbol("560010.SH"))
+        self.assertTrue(is_cn_a_share_etf_symbol("159915.SZ"))
+
+    def test_rejects_stocks_and_non_etf_funds(self):
+        # 普通股票不是 ETF
+        self.assertFalse(is_cn_a_share_etf_symbol("600000.SH"))
+        self.assertFalse(is_cn_a_share_etf_symbol("000001.SZ"))
+        self.assertFalse(is_cn_a_share_etf_symbol("300750.SZ"))
+        # LOF (16xxxx SZ) / 封闭式 (18xxxx SZ) / 债券可转债 —— 有意排除
+        self.assertFalse(is_cn_a_share_etf_symbol("161725.SZ"))
+        self.assertFalse(is_cn_a_share_etf_symbol("184801.SZ"))
+        self.assertFalse(is_cn_a_share_etf_symbol("115940.SZ"))
+        # 非规范形式
+        self.assertFalse(is_cn_a_share_etf_symbol("510300"))
+        self.assertFalse(is_cn_a_share_etf_symbol("00700.HK"))
+
+    def test_etf_and_equity_are_disjoint(self):
+        """同一 symbol 不会既是股票又是 ETF。"""
+        for sym in ("600000.SH", "510300.SH", "159915.SZ", "000001.SZ"):
+            self.assertFalse(
+                is_cn_a_share_equity_symbol(sym) and is_cn_a_share_etf_symbol(sym),
+                sym,
+            )
 
 
 class ASshareFilterTests(unittest.TestCase):

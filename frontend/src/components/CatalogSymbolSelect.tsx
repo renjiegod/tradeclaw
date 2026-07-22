@@ -76,13 +76,13 @@ export function CatalogSymbolSelect({ value, onChange, disabled }: Props) {
   } else if (loadError) {
     notFound = (
       <Typography.Text type="danger" className="!text-xs">
-        加载股票目录失败：{loadError}
+        加载标的目录失败：{loadError}
       </Typography.Text>
     );
   } else if (catalogTotal === 0) {
     notFound = (
       <Typography.Text type="secondary" className="!text-xs">
-        股票目录为空，请先在「股票」页同步后再选择。
+        标的目录为空，请先在「标的」页同步后再选择。
       </Typography.Text>
     );
   } else if (options.length === 0) {
@@ -96,7 +96,7 @@ export function CatalogSymbolSelect({ value, onChange, disabled }: Props) {
   return (
     <div>
       <Typography.Text type="secondary" className="!text-xs">
-        从已入库股票目录选择（需先在「股票」页同步）
+        从已入库标的目录选择（需先在「标的」页同步）
       </Typography.Text>
       <Select
         mode="multiple"

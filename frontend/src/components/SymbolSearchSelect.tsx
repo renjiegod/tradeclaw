@@ -115,7 +115,7 @@ function notFoundContent(searching: boolean, loadError: string | null): ReactNod
   if (loadError) {
     return (
       <Typography.Text type="danger" className="!text-xs">
-        搜索股票失败：{loadError}
+        搜索标的失败：{loadError}
       </Typography.Text>
     );
   }
@@ -258,7 +258,7 @@ export function SymbolAutoComplete({ id, value, onChange, disabled, placeholder,
       disabled={disabled}
       allowClear
       style={style}
-      placeholder={placeholder ?? "股票代码 / 名称 / 拼音搜索"}
+      placeholder={placeholder ?? "标的代码 / 名称 / 拼音搜索"}
       // A filter box accepts arbitrary text, so an empty suggestion list is not
       // an error state; only surface the spinner and real load failures.
       notFoundContent={searching ? <Spin size="small" /> : loadError ? notFoundContent(false, loadError) : null}

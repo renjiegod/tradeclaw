@@ -94,6 +94,9 @@ def normalize_ak_a_symbol(code_raw: Any) -> str:
     p1 = code[0]
     if p2 in ("60", "68") or code.startswith("688"):
         return f"{code}.SH"
+    # 上交所 ETF：51/56/58xxxx。若不显式识别会掉进末尾兜底被误判成 .SZ。
+    if p2 in ("51", "56", "58"):
+        return f"{code}.SH"
     if p2 in ("00", "30"):
         return f"{code}.SZ"
     if p1 in ("4", "8", "9") or p2 in ("43", "83", "87", "92"):
@@ -127,6 +130,35 @@ def _cell_str(cell: Any) -> str:
     return s
 
 
+def _sync_fetch_etf_rows() -> List[Dict[str, str]]:
+    """ETF listings via ``fund_etf_spot_em`` (代码/名称 spot snapshot).
+
+    Kept in its own wrapper so a partial ETF-feed failure is logged without
+    losing the stock rows already collected (same tolerance policy as the BJ
+    table). Rows are tagged ``instrument_type="etf"`` so downstream catalog
+    sync writes them tradable rather than as plain stocks.
+    """
+    try:
+        with _silence_akshare_progress():
+            df_etf = ak.fund_etf_spot_em()
+    except Exception as exc:
+        logger.warning(
+            "akshare fund_etf_spot_em failed: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return []
+    rows: List[Dict[str, str]] = []
+    for _, row in df_etf.iterrows():
+        code = _cell_str(row.get("代码"))
+        name = _cell_str(row.get("名称"))
+        if not code or not name:
+            continue
+        sym = normalize_ak_a_symbol(code)
+        rows.append({"symbol": sym, "name": name, "market": "CN", "instrument_type": "etf"})
+    return rows
+
+
 def _sync_fetch_spot_rows() -> List[Dict[str, str]]:
     out: List[Dict[str, str]] = []
 
@@ -138,7 +170,7 @@ def _sync_fetch_spot_rows() -> List[Dict[str, str]]:
         if not code or not name:
             continue
         sym = normalize_ak_a_symbol(code)
-        out.append({"symbol": sym, "name": name, "market": "CN"})
+        out.append({"symbol": sym, "name": name, "market": "CN", "instrument_type": "stock"})
 
     # Keep BJ fetch in its own wrapper so a partial failure here is logged
     # without losing the A-share rows we already collected above.
@@ -163,7 +195,12 @@ def _sync_fetch_spot_rows() -> List[Dict[str, str]]:
             if not code or not name:
                 continue
             sym = normalize_ak_a_symbol(code)
-            out.append({"symbol": sym, "name": name, "market": "CN"})
+            out.append({"symbol": sym, "name": name, "market": "CN", "instrument_type": "stock"})
+
+    # ETF listings (场内基金) so `stock lookup` and catalog sync surface them
+    # alongside stocks. A missing/failed ETF feed degrades to zero ETF rows
+    # (logged), never drops the stock rows above.
+    out.extend(_sync_fetch_etf_rows())
 
     return out
 

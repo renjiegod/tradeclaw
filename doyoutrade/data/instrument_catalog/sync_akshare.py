@@ -40,12 +40,17 @@ async def sync_akshare_catalog(
             continue
         if want is not None and sym not in want:
             continue
+        # ``instrument_type`` comes from the listing fetcher: "stock" for the
+        # A-share / BJ code tables, "etf" for the fund_etf_spot_em rows. Both
+        # are on-exchange tradable (ETF sells are stamp-tax exempt, handled at
+        # the fee layer). Fall back to "stock" for legacy rows without a type.
+        instrument_type = str(r.get("instrument_type") or "stock")
         out_rows.append(
             {
                 "symbol": sym,
                 "display_name": r.get("name") or "",
                 "market": r.get("market") or "CN",
-                "instrument_type": "stock",
+                "instrument_type": instrument_type,
                 "is_tradable": True,
                 "last_sync_source": "akshare",
                 "last_sync_at": _utcnow(),

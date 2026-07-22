@@ -20,13 +20,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import akshare as ak
 import httpx
 
 from doyoutrade.data.bar_timestamp import normalize_bar_timestamp
 from doyoutrade.data.constants import DEFAULT_BAR_ADJUST
+from doyoutrade.data.instrument_catalog.a_share_equity import is_cn_a_share_etf_symbol
 
 logger = logging.getLogger(__name__)
 from doyoutrade.data.instrumentation import data_span
@@ -86,40 +87,58 @@ class AkshareHistoricalProvider:
         adjust: str,
     ) -> List[Bar]:
         period = _INTERVAL_PERIOD_MAP.get(interval, "daily")
-        # akshare stock_zh_a_hist expects bare 6-digit code without exchange suffix
+        # akshare hist endpoints expect the bare 6-digit code without suffix.
         ak_symbol = symbol.replace(".SH", "").replace(".SZ", "").replace(".BJ", "")
 
         # normalize adjust to what akshare accepts
         adjust_param = _ADJUST_MAP.get(adjust, "")
 
+        # ETFs (场内基金) live on a different akshare endpoint: stock_zh_a_hist
+        # returns nothing for them, so route them to fund_etf_hist_em. Both
+        # return the same 日期/开盘/收盘/最高/最低/成交量/成交额 column layout,
+        # so the row-parsing loop below is shared.
+        is_etf = is_cn_a_share_etf_symbol(symbol)
+        api_name = "fund_etf_hist_em" if is_etf else "stock_zh_a_hist"
+
+        def _call() -> Any:
+            if is_etf:
+                return ak.fund_etf_hist_em(
+                    symbol=ak_symbol,
+                    period=period,
+                    start_date=start_time.replace("-", ""),
+                    end_date=end_time.replace("-", ""),
+                    adjust=adjust_param,
+                )
+            return ak.stock_zh_a_hist(
+                symbol=ak_symbol,
+                start_date=start_time.replace("-", ""),
+                end_date=end_time.replace("-", ""),
+                period=period,
+                adjust=adjust_param,
+            )
+
         df = None
         for attempt in range(3):
             try:
-                df = ak.stock_zh_a_hist(
-                    symbol=ak_symbol,
-                    start_date=start_time.replace("-", ""),
-                    end_date=end_time.replace("-", ""),
-                    period=period,
-                    adjust=adjust_param,
-                )
+                df = _call()
                 break
             except Exception as exc:
                 logger.warning(
-                    "akshare stock_zh_a_hist failed for %s (attempt %d/3): %s",
-                    symbol, attempt + 1, exc,
+                    "akshare %s failed for %s (attempt %d/3): %s",
+                    api_name, symbol, attempt + 1, exc,
                 )
                 if attempt == 2:
                     logger.error(
-                        "akshare stock_zh_a_hist gave up for %s [%s, %s]: %s",
-                        symbol, start_time, end_time, exc,
+                        "akshare %s gave up for %s [%s, %s]: %s",
+                        api_name, symbol, start_time, end_time, exc,
                     )
                     return []
                 time.sleep(0.8 * (attempt + 1))
 
         if df is None or df.empty:
             logger.warning(
-                "akshare stock_zh_a_hist returned no data for %s [%s, %s]",
-                symbol, start_time, end_time,
+                "akshare %s returned no data for %s [%s, %s]",
+                api_name, symbol, start_time, end_time,
             )
             return []
 

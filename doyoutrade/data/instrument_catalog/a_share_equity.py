@@ -1,6 +1,53 @@
-"""Canonical-symbol whitelist: 沪深北 A 股股票（排除 ETF/基金/债券/可转债等非股票合约）。"""
+"""Canonical-symbol classifiers: 沪深北 A 股股票 与 沪深 ETF。
+
+``is_cn_a_share_equity_symbol`` keeps the historical **stock** allowlist (excludes
+ETF/基金/债券/可转债). ``is_cn_a_share_etf_symbol`` recognises exchange-traded
+funds so they can enter the catalog / K-line sync / universe as tradable
+instruments alongside stocks (they were previously filtered out entirely).
+"""
 
 from __future__ import annotations
+
+
+def _split_base_suffix(symbol: str) -> tuple[str, str] | None:
+    """Return ``(6-digit base, exchange suffix)`` for a canonical A-share symbol.
+
+    Returns ``None`` for anything that is not a ``NNNNNN.<SH|SZ|BJ>`` form, so
+    both classifiers reject malformed / non-A-share symbols identically.
+    """
+    s = (symbol or "").strip().upper()
+    if "." not in s:
+        return None
+    base, suf = s.rsplit(".", 1)
+    if suf not in ("SH", "SZ", "BJ"):
+        return None
+    if len(base) != 6 or not base.isdigit():
+        return None
+    return base, suf
+
+
+def is_cn_a_share_etf_symbol(symbol: str) -> bool:
+    """Return True if ``symbol`` looks like a mainland A-share **ETF**.
+
+    Prefix allowlist aligned with the on-exchange ETF ranges:
+
+    * 上交所 (.SH): ``51xxxx`` / ``56xxxx`` / ``58xxxx`` (含科创板 ``588`` 系).
+    * 深交所 (.SZ): ``15xxxx`` (``159xxx`` 系).
+
+    Deliberately narrow — LOF (``16``/``50``xxxx SH, ``16``xxxx SZ), 封闭式基金
+    (``18``xxxx SZ) 与债券 ETF 之外的场内基金不在此列，避免把非 ETF 合约当成
+    ETF 灌进可交易 universe。ETF 卖出免征印花税、最小交易单位 100 份，与股票一致。
+    """
+    parsed = _split_base_suffix(symbol)
+    if parsed is None:
+        return False
+    base, suf = parsed
+    p2 = base[:2]
+    if suf == "SH":
+        return p2 in ("51", "56", "58")
+    if suf == "SZ":
+        return p2 == "15"
+    return False
 
 
 def is_cn_a_share_equity_symbol(symbol: str) -> bool:

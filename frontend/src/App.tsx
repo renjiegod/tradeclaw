@@ -128,7 +128,7 @@ const NAV_TREE: NavEntry[] = [
     label: "行情研究",
     icon: <SearchOutlined />,
     children: [
-      { key: "stocks", label: "股票" },
+      { key: "stocks", label: "标的" },
       { key: "watchlist", label: "自选股" },
       { key: "stock_monitor", label: "盯盘" },
       { key: "market_review", label: "市场复盘" },
