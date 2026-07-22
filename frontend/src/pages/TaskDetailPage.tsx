@@ -2,6 +2,9 @@ import {
   AppstoreOutlined,
   ArrowLeftOutlined,
   DatabaseOutlined,
+  DeleteOutlined,
+  PauseOutlined,
+  StopOutlined,
   DollarOutlined,
   ExperimentOutlined,
   FallOutlined,
@@ -34,6 +37,7 @@ import {
   stopTaskRun,
 } from "../api";
 import { BacktestOverviewPanel } from "../components/BacktestOverviewPanel";
+import { ToolbarButton } from "../components/ToolbarButton";
 import { BacktestRunChartPanel } from "../components/BacktestRunChartPanel";
 import { BacktestRunConfigPanel } from "../components/BacktestRunConfigPanel";
 import { BacktestSummaryHeader } from "../components/BacktestSummaryHeader";
@@ -417,9 +421,11 @@ export function TaskDetailPage() {
             <Space wrap>
               {instance.mode !== "backtest" ? (
                 <>
-                  <Button
+                  <ToolbarButton
                     className="rounded-xl"
                     type={instance.status === "running" ? "default" : "primary"}
+                    icon={instance.status === "running" ? <PauseOutlined /> : <PlayCircleOutlined />}
+                    label={instance.status === "running" ? "暂停" : "启动"}
                     onClick={async () => {
                       if (instance.status === "running") {
                         await pauseTask(instance.task_id);
@@ -428,27 +434,27 @@ export function TaskDetailPage() {
                       }
                       await refresh();
                     }}
-                  >
-                    {instance.status === "running" ? "暂停" : "启动"}
-                  </Button>
-                  <Button
+                  />
+                  <ToolbarButton
                     className="rounded-xl"
                     danger
+                    icon={<StopOutlined />}
+                    label="停止"
                     disabled={!canStopTask(instance.status)}
-                    title={!canStopTask(instance.status) ? "请先启动任务后再停止" : undefined}
+                    title={!canStopTask(instance.status) ? "请先启动任务后再停止" : "停止"}
                     onClick={async () => {
                       await stopTask(instance.task_id);
                       await refresh();
                     }}
-                  >
-                    停止
-                  </Button>
+                  />
                 </>
               ) : (
                 <>
-                  <Button
+                  <ToolbarButton
                     className="rounded-xl"
                     loading={backtestRunActing || backtestRunLoading}
+                    icon={backtestRun?.status === "running" ? <PauseOutlined /> : <PlayCircleOutlined />}
+                    label={backtestRun?.status === "running" ? "暂停回测" : "继续回测"}
                     disabled={!backtestRun || !["running", "paused"].includes(backtestRun.status)}
                     onClick={async () => {
                       if (!backtestRun) return;
@@ -465,13 +471,13 @@ export function TaskDetailPage() {
                         setBacktestRunActing(false);
                       }
                     }}
-                  >
-                    {backtestRun?.status === "running" ? "暂停回测" : "继续回测"}
-                  </Button>
-                  <Button
+                  />
+                  <ToolbarButton
                     className="rounded-xl"
                     danger
                     loading={backtestRunActing}
+                    icon={<StopOutlined />}
+                    label="停止回测"
                     disabled={!backtestRun || !["running", "paused", "pending"].includes(backtestRun.status)}
                     onClick={async () => {
                       if (!backtestRun) return;
@@ -484,15 +490,15 @@ export function TaskDetailPage() {
                         setBacktestRunActing(false);
                       }
                     }}
-                  >
-                    停止回测
-                  </Button>
+                  />
                 </>
               )}
-              <Button
+              <ToolbarButton
                 className="rounded-xl"
                 danger
                 type="primary"
+                icon={<DeleteOutlined />}
+                label="删除"
                 onClick={() => {
                   Modal.confirm({
                     title: "删除任务",
@@ -513,9 +519,7 @@ export function TaskDetailPage() {
                     },
                   });
                 }}
-              >
-                删除
-              </Button>
+              />
             </Space>
           </div>
           <div className="flex flex-wrap items-center gap-2">

@@ -2,6 +2,7 @@ import {
   BulbOutlined,
   CopyOutlined,
   DownOutlined,
+  FormOutlined,
   MenuUnfoldOutlined,
   PaperClipOutlined,
   PlusOutlined,
@@ -58,6 +59,7 @@ import type {
 } from "../types";
 import { type ToolCallEntry } from "../components/assistant/types";
 import { ApprovalQueueCard } from "../components/ApprovalQueueCard";
+import { ToolbarButton } from "../components/ToolbarButton";
 import { MessageContentRenderer } from "../components/assistant/MessageContentRenderer";
 import { ThinkingSpinner } from "../components/assistant/ThinkingSpinner";
 import {
@@ -1661,7 +1663,7 @@ export function AssistantPage() {
   );
 
   return (
-    <div>
+    <div className="flex min-h-0 flex-1 flex-col">
       <input
         ref={fileInputRef}
         type="file"
@@ -1695,7 +1697,7 @@ export function AssistantPage() {
           }
         }}
       />
-      <div className="grid h-[calc(100dvh-7rem)] grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         <Card
           className="flex min-h-0 flex-col rounded-3xl border-shell-line bg-card-bg/95 [&>.ant-card-body]:flex [&>.ant-card-body]:min-h-0 [&>.ant-card-body]:flex-1 [&>.ant-card-body]:flex-col"
           title={
@@ -1706,14 +1708,14 @@ export function AssistantPage() {
           </Space>
         }
         extra={
-          <Space wrap>
+          <Space wrap size={4}>
             <Button
               className="lg:!hidden"
               icon={<MenuUnfoldOutlined />}
               onClick={() => setMobileRailOpen(true)}
-            >
-              会话
-            </Button>
+              title="会话"
+              aria-label="会话"
+            />
             {activeModelRoute ? (
               <Tag color="blue" className="!hidden md:!inline-block">
                 使用的模型: {activeModelRoute}
@@ -1721,7 +1723,8 @@ export function AssistantPage() {
             ) : null}
             <Tooltip title="调试模式：逐条展示每个工具调用与思考卡片；关闭后执行过程折叠为单个进度卡片">
               <Space size={4} data-testid="assistant-debug-mode-toggle">
-                <span className="text-xs text-gray-500">调试模式</span>
+                <BulbOutlined className="text-gray-500 lg:hidden" />
+                <span className="hidden text-xs text-gray-500 lg:inline">调试模式</span>
                 <Switch
                   size="small"
                   checked={debugRenderMode}
@@ -1729,16 +1732,19 @@ export function AssistantPage() {
                 />
               </Space>
             </Tooltip>
-            <Button
+            <ToolbarButton
               icon={<CopyOutlined />}
               loading={isCopying}
               disabled={!sessionId}
               onClick={() => void handleCopyConversation()}
               title="复制完整会话（含工具调用、思维链、系统提示词等），用于交给 AI 编程工具分析"
-            >
-              复制会话
-            </Button>
-            <Button onClick={() => void createNewSession()}>新会话</Button>
+              label="复制会话"
+            />
+            <ToolbarButton
+              icon={<FormOutlined />}
+              onClick={() => void createNewSession()}
+              label="新会话"
+            />
           </Space>
         }
       >
@@ -1925,9 +1931,11 @@ export function AssistantPage() {
             </div>
           </div>
         ) : null}
-        <div className="mt-4 flex gap-2 pb-[env(safe-area-inset-bottom)]">
+        {/* items-end：附件 / 发送按钮贴输入框底部对齐，不随多行输入被拉伸成高条 */}
+        <div className="mt-3 flex items-end gap-2 pb-[env(safe-area-inset-bottom)]">
           <Input.TextArea
             ref={inputRef}
+            className="min-w-0 flex-1"
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onPressEnter={(event) => {
@@ -1943,11 +1951,14 @@ export function AssistantPage() {
             icon={<PlusOutlined />}
             onClick={() => void handleUploadClick()}
             disabled={sending}
+            title="上传文件"
             aria-label="上传文件"
           />
           <Button
             type="primary"
             icon={sending || isStopping || activeSession?.status === "running" ? <StopOutlined /> : <SendOutlined />}
+            title={sending || isStopping || activeSession?.status === "running" ? "停止" : "发送"}
+            aria-label={sending || isStopping || activeSession?.status === "running" ? "停止" : "发送"}
             loading={isStopping}
             disabled={
               sending || isStopping || activeSession?.status === "running"
@@ -1960,7 +1971,9 @@ export function AssistantPage() {
                 : () => void submit()
             }
           >
-            {sending || isStopping || activeSession?.status === "running" ? "停止" : "发送"}
+            <span className="hidden sm:inline">
+              {sending || isStopping || activeSession?.status === "running" ? "停止" : "发送"}
+            </span>
           </Button>
         </div>
       </Card>

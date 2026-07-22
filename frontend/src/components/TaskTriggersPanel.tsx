@@ -1,5 +1,13 @@
-import { ReloadOutlined } from "@ant-design/icons";
-import { Button, Card, Empty, Modal, Space, Spin, Tag, Typography, message } from "antd";
+import {
+  CaretRightOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  PauseOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  ThunderboltOutlined,
+} from "@ant-design/icons";
+import { Card, Empty, Modal, Space, Spin, Tag, Typography, message } from "antd";
 import { useCallback, useEffect, useState } from "react";
 
 import {
@@ -16,6 +24,7 @@ import type {
   TriggerStatus,
 } from "../types";
 import { SOFT_TAG_CLASSNAME } from "../styles/classNames";
+import { ToolbarButton } from "./ToolbarButton";
 import { formatBacktestRange, formatDateTimeUtc8 } from "../utils/datetime";
 import { TriggerFormModal } from "./TriggerFormModal";
 
@@ -133,18 +142,16 @@ function TriggerCard({ trigger, busy, onEdit, onToggle, onRun, onDelete }: Trigg
           </Typography.Text>
         ) : null}
         <Space size={8} wrap>
-          <Button size="small" disabled={busy} onClick={() => onEdit(trigger)}>
-            编辑
-          </Button>
-          <Button size="small" disabled={busy} onClick={() => onToggle(trigger)}>
-            {toggleLabel}
-          </Button>
-          <Button size="small" disabled={busy} onClick={() => onRun(trigger)}>
-            立即运行
-          </Button>
-          <Button size="small" danger disabled={busy} onClick={() => onDelete(trigger)}>
-            删除
-          </Button>
+          <ToolbarButton size="small" icon={<EditOutlined />} label="编辑" disabled={busy} onClick={() => onEdit(trigger)} />
+          <ToolbarButton
+            size="small"
+            icon={trigger.status === "paused" ? <CaretRightOutlined /> : <PauseOutlined />}
+            label={toggleLabel}
+            disabled={busy}
+            onClick={() => onToggle(trigger)}
+          />
+          <ToolbarButton size="small" icon={<ThunderboltOutlined />} label="立即运行" disabled={busy} onClick={() => onRun(trigger)} />
+          <ToolbarButton size="small" danger icon={<DeleteOutlined />} label="删除" disabled={busy} onClick={() => onDelete(trigger)} />
         </Space>
       </Space>
     </Card>
@@ -269,17 +276,15 @@ export function TaskTriggersPanel({ task }: TaskTriggersPanelProps) {
       }
       extra={
         <Space size={8}>
-          <Button
+          <ToolbarButton
             size="small"
             type="primary"
+            icon={<PlusOutlined />}
+            label="新建触发器"
             onClick={() => setEditing(null)}
             data-testid="new-trigger-button"
-          >
-            + 新建触发器
-          </Button>
-          <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={reload}>
-            刷新
-          </Button>
+          />
+          <ToolbarButton size="small" icon={<ReloadOutlined />} loading={loading} onClick={reload} label="刷新" />
         </Space>
       }
       data-testid="task-triggers-panel"

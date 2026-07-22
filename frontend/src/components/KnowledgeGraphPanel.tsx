@@ -2,6 +2,7 @@ import {
   ApartmentOutlined,
   DownloadOutlined,
   ReloadOutlined,
+  SaveOutlined,
   SyncOutlined,
 } from "@ant-design/icons";
 import {
@@ -698,18 +699,23 @@ export function KnowledgeGraphPanel() {
               icon={<DownloadOutlined />}
               disabled={!data}
               data-testid="kg-export"
+              title="导出"
+              aria-label="导出"
             >
-              导出
+              <span className="hidden lg:inline">导出</span>
             </Button>
           </Dropdown>
           <Button
             size="small"
+            icon={<SaveOutlined />}
             disabled={!data}
             loading={savingLayout}
             onClick={() => void saveLayout()}
             data-testid="kg-save-layout"
+            title="保存布局"
+            aria-label="保存布局"
           >
-            保存布局
+            <span className="hidden lg:inline">保存布局</span>
           </Button>
           <Button
             size="small"
@@ -717,8 +723,10 @@ export function KnowledgeGraphPanel() {
             loading={syncing}
             onClick={() => void runSync()}
             data-testid="kg-sync"
+            title="同步投影"
+            aria-label="同步投影"
           >
-            同步投影
+            <span className="hidden lg:inline">同步投影</span>
           </Button>
           <Button
             size="small"
@@ -727,8 +735,10 @@ export function KnowledgeGraphPanel() {
             disabled={!entity.trim() && !data}
             onClick={() => reQuery(hops, includeExpired)}
             data-testid="kg-refresh"
+            title="刷新"
+            aria-label="刷新"
           >
-            刷新
+            <span className="hidden lg:inline">刷新</span>
           </Button>
         </div>
       }

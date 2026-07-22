@@ -1,4 +1,4 @@
-import { ReloadOutlined } from "@ant-design/icons";
+import { CheckCircleOutlined, EditOutlined, ReloadOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, Modal, Space, Spin, Table, Tabs, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -13,6 +13,7 @@ import {
 } from "../api";
 import { JsonCodeBlock } from "../components/JsonCodeBlock";
 import { PageIntro } from "../components/PageIntro";
+import { ToolbarButton } from "../components/ToolbarButton";
 import { StrategyFileTree } from "../components/StrategyFileTree";
 import { usePageRefreshToken } from "../pageRefreshContext";
 import type {
@@ -465,19 +466,22 @@ export function StrategiesPage() {
                   使用后端编译器验证当前持久化源码是否能真实编译。
                 </Typography.Text>
                 <Space>
-                  <Button
+                  <ToolbarButton
+                    icon={<EditOutlined />}
+                    label="重命名"
                     onClick={() =>
                       openRenameDefinition({
                         definition_id: definitionDetail.definition_id,
                         name: definitionDetail.name,
                       } as StrategyDefinitionRow)
                     }
-                  >
-                    重命名
-                  </Button>
-                  <Button onClick={() => void handleCompileDefinition()} loading={compileLoading}>
-                    编译验证
-                  </Button>
+                  />
+                  <ToolbarButton
+                    icon={<CheckCircleOutlined />}
+                    label="编译验证"
+                    onClick={() => void handleCompileDefinition()}
+                    loading={compileLoading}
+                  />
                 </Space>
               </div>
               <Descriptions size="small" column={1} bordered>
