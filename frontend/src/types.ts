@@ -15,7 +15,8 @@ export type ConsolePageKey =
   | "model_invocations"
   | "settings_models"
   | "settings"
-  | "knowledge";
+  | "knowledge"
+  | "data_console";
 
 /** Swarm worker（任务）实时状态。与后端 SwarmTaskRecord.status 对齐。 */
 export type SwarmWorkerStatus =

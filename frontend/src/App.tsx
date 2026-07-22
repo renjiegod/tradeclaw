@@ -1,4 +1,5 @@
 import {
+  ApiOutlined,
   CheckCircleOutlined,
   LineChartOutlined,
   MenuFoldOutlined,
@@ -58,6 +59,7 @@ const ModelInvocationsPage = lazy(() => import("./pages/ModelInvocationsPage").t
 const ModelSettingsPage = lazy(() => import("./pages/ModelSettingsPage").then((m) => ({ default: m.ModelSettingsPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
 const KnowledgePage = lazy(() => import("./pages/KnowledgePage").then((m) => ({ default: m.KnowledgePage })));
+const DataConsolePage = lazy(() => import("./pages/DataConsolePage").then((m) => ({ default: m.DataConsolePage })));
 
 function RoutePage({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<div className="flex h-64 items-center justify-center"><Spin /></div>}>{children}</Suspense>;
@@ -77,7 +79,15 @@ const EMPTY_SYSTEM_STATE: SystemState = {
   running_count: 0,
 };
 
-type NavLeaf = { key: ConsolePageKey; label: string; icon?: React.ReactNode; hideInCloud?: boolean };
+type NavLeaf = {
+  key: ConsolePageKey;
+  label: string;
+  icon?: React.ReactNode;
+  /** 本地基础设施页（券商账户 / 模型 key / 全局设置），cloud 部署隐藏。 */
+  hideInCloud?: boolean;
+  /** 云端专属页（如数据接入：管理 dytc API key / 用量），local 部署隐藏。 */
+  cloudOnly?: boolean;
+};
 type NavGroup = { key: string; label: string; icon: React.ReactNode; children: NavLeaf[] };
 type NavEntry = NavLeaf | NavGroup;
 
@@ -137,6 +147,9 @@ const NAV_TREE: NavEntry[] = [
       { key: "settings", label: "设置", hideInCloud: true },
     ],
   },
+  // 云端数据接入（dytc API Keys / 用量 / 接入教程）——管理云端行情 API 凭证，
+  // 单机部署没有对应后端，local 隐藏（cloudOnly）。
+  { key: "data_console", label: "数据接入", icon: <ApiOutlined />, cloudOnly: true },
 ];
 
 /** 反查某个页面 key 所属的分组 key（顶层项无分组，返回 undefined）。 */
@@ -153,13 +166,21 @@ export const CLOUD_HIDDEN_PAGES: ReadonlySet<ConsolePageKey> = new Set(
   NAV_TREE.flatMap(_leavesOf).filter((leaf) => leaf.hideInCloud).map((leaf) => leaf.key),
 );
 
-/** NAV_TREE with cloud-hidden leaves removed (and now-empty groups dropped).
- * Local mode returns the full tree unchanged — same bundle, one flag. */
-export function visibleNavTree(mode: string): NavEntry[] {
-  if (mode !== "cloud") return NAV_TREE;
-  return NAV_TREE.flatMap((entry) => {
-    if (!isNavGroup(entry)) return entry.hideInCloud ? [] : [entry];
-    const children = entry.children.filter((leaf) => !leaf.hideInCloud);
+/** Page keys that only exist in the cloud deployment (dytc data-console:
+ * API keys / usage / guide). Local mode hides them from the nav AND redirects
+ * direct URLs away (no backing API on a single-machine install). */
+export const CLOUD_ONLY_PAGES: ReadonlySet<ConsolePageKey> = new Set(
+  NAV_TREE.flatMap(_leavesOf).filter((leaf) => leaf.cloudOnly).map((leaf) => leaf.key),
+);
+
+/** NAV_TREE filtered for the deployment mode — two-way: cloud drops
+ * `hideInCloud` leaves, everything else (local, or mode not yet known/null)
+ * drops `cloudOnly` leaves. Groups left empty by filtering are removed. */
+export function visibleNavTree(mode: string | null): NavEntry[] {
+  const keep = (leaf: NavLeaf) => (mode === "cloud" ? !leaf.hideInCloud : !leaf.cloudOnly);
+  return NAV_TREE.flatMap((entry): NavEntry[] => {
+    if (!isNavGroup(entry)) return keep(entry) ? [entry] : [];
+    const children = entry.children.filter(keep);
     return children.length ? [{ ...entry, children }] : [];
   });
 }
@@ -182,6 +203,7 @@ const PATHS: Record<ConsolePageKey, string> = {
   model_invocations: "/model_invocations",
   settings_models: "/settings/models",
   settings: "/settings",
+  data_console: "/data_console",
 };
 
 function usePlatformData() {
@@ -412,20 +434,26 @@ function ConsoleShell() {
 
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("sidebar_collapsed") === "true");
   const [pageRefreshToken, setPageRefreshToken] = useState(0);
-  // Deployment mode drives cloud-only header chrome (user menu). Local build
-  // leaves it "local" and renders nothing extra.
-  const [deploymentMode, setDeploymentMode] = useState<string>("local");
+  // Deployment mode drives cloud-only chrome (user menu, 数据接入 nav).
+  // `null` = not yet determined: a direct URL to a cloud-only page must NOT be
+  // redirected away before the mode is known (would bounce a legit cloud user
+  // off /data_console on hard refresh), so we keep the "unknown" state
+  // explicit and render a pending Spin for cloud-only pages until resolved.
+  const [deploymentMode, setDeploymentMode] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const status = await getSetupStatus();
-        if (!cancelled && status.deployment_mode) {
-          setDeploymentMode(status.deployment_mode);
-          if (status.deployment_mode === "cloud") document.title = "DoYouTrade Cloud";
-        }
+        if (cancelled) return;
+        const mode = status.deployment_mode ?? "local";
+        setDeploymentMode(mode);
+        if (mode === "cloud") document.title = "DoYouTrade Cloud";
       } catch {
-        // /setup/status unavailable → stay "local" (no cloud chrome).
+        // /setup/status unavailable → treat as "local" (no cloud chrome).
+        // MUST resolve to a concrete mode: staying null would leave cloud-only
+        // pages spinning forever.
+        if (!cancelled) setDeploymentMode("local");
       }
     })();
     return () => {
@@ -433,12 +461,18 @@ function ConsoleShell() {
     };
   }, []);
 
-  // Defense-in-depth: a cloud-hidden page must be unreachable by direct URL,
-  // not just missing from the nav. Boolean predicate (NOT a JSX-returning
-  // helper — that would trip react-refresh's component hoisting); the routes
-  // inline <Navigate> to the copilot when this is true.
+  // Defense-in-depth: pages missing from the nav must also be unreachable by
+  // direct URL. Boolean predicates (NOT JSX-returning helpers — that would
+  // trip react-refresh's component hoisting); the Outlet below inlines
+  // <Navigate>/<Spin> based on them.
   const isCloudHidden = (key: ConsolePageKey): boolean =>
     deploymentMode === "cloud" && CLOUD_HIDDEN_PAGES.has(key);
+  // Cloud-only page in a resolved non-cloud deployment → redirect away.
+  const isLocalBlocked = (key: ConsolePageKey): boolean =>
+    deploymentMode !== null && deploymentMode !== "cloud" && CLOUD_ONLY_PAGES.has(key);
+  // Cloud-only page while the mode is still unknown → wait, don't redirect.
+  const isModePending = (key: ConsolePageKey): boolean =>
+    deploymentMode === null && CLOUD_ONLY_PAGES.has(key);
 
   const selectedKey = menuKeyFromPathname(location.pathname);
   const currentGroupKey = GROUP_KEY_BY_PAGE[selectedKey];
@@ -560,11 +594,17 @@ function ConsoleShell() {
             />
           ) : null}
           <PageRefreshContext.Provider value={pageRefreshToken}>
-            {/* Defense-in-depth: a cloud-hidden page reached by direct URL
+            {/* Defense-in-depth: a mode-restricted page reached by direct URL
                 redirects to the copilot (ConsoleShell is the layout for all
-                child routes, so guarding the Outlet covers every path). */}
-            {isCloudHidden(selectedKey) ? (
+                child routes, so guarding the Outlet covers every path). While
+                the mode is still unknown, cloud-only pages render a pending
+                Spin instead of redirecting (avoid bouncing cloud users). */}
+            {isCloudHidden(selectedKey) || isLocalBlocked(selectedKey) ? (
               <Navigate to="/assistant" replace />
+            ) : isModePending(selectedKey) ? (
+              <div className="flex h-64 items-center justify-center">
+                <Spin />
+              </div>
             ) : (
               <Outlet context={outletContext} />
             )}
@@ -612,6 +652,7 @@ export default function App() {
           <Route path="/model_invocations" element={<RoutePage><ModelInvocationsPage /></RoutePage>} />
           <Route path="/settings/models" element={<RoutePage><ModelSettingsOutlet /></RoutePage>} />
           <Route path="/settings" element={<RoutePage><SettingsPage /></RoutePage>} />
+          <Route path="/data_console" element={<RoutePage><DataConsolePage /></RoutePage>} />
         </Route>
         <Route path="*" element={<Navigate to="/assistant" replace />} />
       </Routes>

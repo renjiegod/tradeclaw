@@ -50,6 +50,9 @@ export function menuKeyFromPathname(pathname: string): ConsolePageKey {
   if (pathname.startsWith("/model_invocations")) {
     return "model_invocations";
   }
+  if (pathname.startsWith("/data_console")) {
+    return "data_console";
+  }
   if (pathname.startsWith("/settings/models")) {
     return "settings_models";
   }

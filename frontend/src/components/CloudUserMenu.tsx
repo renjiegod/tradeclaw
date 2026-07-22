@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Avatar, Button, Dropdown, type MenuProps } from "antd";
-import { KeyOutlined, LogoutOutlined, UserOutlined } from "@ant-design/icons";
+import { ApiOutlined, LogoutOutlined, UserOutlined } from "@ant-design/icons";
 
 import { beginAuthRedirect } from "../api";
 
@@ -19,6 +20,7 @@ type Me = {
 
 export function CloudUserMenu({ mode }: { mode?: string | null }) {
   const [me, setMe] = useState<Me | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (mode !== "cloud") return;
@@ -67,10 +69,12 @@ export function CloudUserMenu({ mode }: { mode?: string | null }) {
       : []),
     {
       key: "console",
-      icon: <KeyOutlined />,
-      label: "API Keys / 用量",
+      icon: <ApiOutlined />,
+      label: "数据接入",
+      // 数据控制台已并入本前端（/data_console 模块），走 SPA 内部跳转；
+      // 旧 /console SPA 不再从该域名提供。
       onClick: () => {
-        window.location.href = "/console/";
+        navigate("/data_console");
       },
     },
     { type: "divider" },
