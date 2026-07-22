@@ -381,6 +381,23 @@ describe("AgentFormModal", () => {
     });
   }, 15000);
 
+  it("locks max_turns in cloud mode (operator-controlled) but leaves it editable locally", async () => {
+    // Cloud: the 最大轮数 input is disabled — the operator sets it in the dytc
+    // admin console and the server clamps it regardless.
+    const { unmount } = render(
+      <AgentFormModal deploymentMode="cloud" onSaved={vi.fn()} onClose={vi.fn()} />,
+    );
+    const cloudInput = await screen.findByLabelText("最大轮数");
+    expect((cloudInput as HTMLInputElement).disabled).toBe(true);
+    unmount();
+    cleanup();
+
+    // Local (default): the same input is editable.
+    render(<AgentFormModal onSaved={vi.fn()} onClose={vi.fn()} />);
+    const localInput = await screen.findByLabelText("最大轮数");
+    expect((localInput as HTMLInputElement).disabled).toBe(false);
+  }, 15000);
+
   it("renders a restricted form for the builtin agent and submits only the runtime knobs", async () => {
     const onSaved = vi.fn();
     render(

@@ -690,7 +690,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/assistant" replace />} />
         <Route element={<ConsoleShell />}>
-          <Route path="/agents" element={<RoutePage><AgentsPage /></RoutePage>} />
+          <Route path="/agents" element={<RoutePage><AgentsPage deploymentMode={deploymentMode} /></RoutePage>} />
           <Route path="/cron_jobs" element={<RoutePage><CronJobsPage /></RoutePage>} />
           <Route path="/channels" element={<RoutePage><ChannelsPage /></RoutePage>} />
           <Route path="/assistant" element={<RoutePage><AssistantPage /></RoutePage>} />

@@ -6,7 +6,7 @@ import { AgentFormModal } from "../components/AgentFormModal";
 import { Button, Row, Col, Spin } from "antd";
 import { usePageRefreshToken } from "../pageRefreshContext";
 
-export function AgentsPage() {
+export function AgentsPage({ deploymentMode }: { deploymentMode?: string | null }) {
   const pageRefreshToken = usePageRefreshToken();
   const [agents, setAgents] = React.useState<Agent[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -71,6 +71,7 @@ export function AgentsPage() {
       {showForm && (
         <AgentFormModal
           agent={editingAgent}
+          deploymentMode={deploymentMode}
           onSaved={handleSaved}
           onClose={() => { setShowForm(false); setEditingAgent(undefined); }}
         />

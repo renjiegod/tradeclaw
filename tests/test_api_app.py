@@ -1475,6 +1475,58 @@ class ApiAppTests(unittest.TestCase):
             )
             self.assertTrue(updated_body["context_compaction"]["allow_slash_compact"])
 
+    def test_cloud_mode_clamps_agent_max_turns_on_create_and_update(self):
+        # In a cloud deployment the operator sets max_turns in the dytc admin
+        # console; the spawner injects it as DOYOUTRADE_CLOUD_AGENT_MAX_TURNS and
+        # the client clamps user-supplied max_turns to it (UI, direct API, and
+        # custom agents alike) so it cannot be raised from the per-user page.
+        service = _FakeService()
+        assistant_service = _FakeAssistantService()
+        app = create_app(service, _FakeApprovalGate(), assistant_service=assistant_service)
+
+        with patch.dict(
+            os.environ,
+            {"DOYOUTRADE_DEPLOYMENT_MODE": "cloud", "DOYOUTRADE_CLOUD_AGENT_MAX_TURNS": "8"},
+        ), TestClient(app) as client:
+            created = client.post(
+                "/assistant/agents",
+                json={"name": "Greedy Agent", "system_prompt": "hi", "max_turns": 999},
+            )
+            self.assertEqual(created.status_code, 201)
+            agent_id = created.json()["id"]
+            self.assertEqual(created.json()["max_turns"], 8)  # clamped on create
+
+            updated = client.put(
+                f"/assistant/agents/{agent_id}",
+                json={"max_turns": 999},
+            )
+            self.assertEqual(updated.status_code, 200)
+            self.assertEqual(updated.json()["max_turns"], 8)  # clamped on update
+
+            # An update that omits max_turns is still pinned to the forced value.
+            updated2 = client.put(
+                f"/assistant/agents/{agent_id}",
+                json={"system_prompt": "changed"},
+            )
+            self.assertEqual(updated2.status_code, 200)
+            self.assertEqual(updated2.json()["max_turns"], 8)
+
+    def test_local_mode_keeps_user_supplied_agent_max_turns(self):
+        # Regression: outside cloud mode the user's max_turns is honored.
+        service = _FakeService()
+        assistant_service = _FakeAssistantService()
+        app = create_app(service, _FakeApprovalGate(), assistant_service=assistant_service)
+
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("DOYOUTRADE_DEPLOYMENT_MODE", "DOYOUTRADE_CLOUD_AGENT_MAX_TURNS")}
+        with patch.dict(os.environ, env, clear=True), TestClient(app) as client:
+            created = client.post(
+                "/assistant/agents",
+                json={"name": "Local Agent", "system_prompt": "hi", "max_turns": 42},
+            )
+            self.assertEqual(created.status_code, 201)
+            self.assertEqual(created.json()["max_turns"], 42)
+
     def test_builtin_main_agent_api_contract(self):
         from doyoutrade.assistant.main_agent import MAIN_AGENT_ID
 

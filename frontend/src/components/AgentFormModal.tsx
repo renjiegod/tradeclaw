@@ -41,6 +41,10 @@ import { MultiSelectWithBulkActions } from "./MultiSelectWithBulkActions";
 
 type Props = {
   agent?: Agent;
+  /** When "cloud", max_turns is operator-controlled (dytc admin console) and
+   * the input is locked — the server clamps it regardless, this just reflects
+   * that in the UI. Undefined/"local" keeps the field user-editable. */
+  deploymentMode?: string | null;
   onSaved: (agent: Agent) => void;
   onClose: () => void;
 };
@@ -58,7 +62,8 @@ const ADVANCED_PANEL_FIELDS: Record<string, string[]> = {
   ctx: ["context_compaction"],
 };
 
-export const AgentFormModal: React.FC<Props> = ({ agent, onSaved, onClose }) => {
+export const AgentFormModal: React.FC<Props> = ({ agent, deploymentMode, onSaved, onClose }) => {
+  const maxTurnsLocked = deploymentMode === "cloud";
   const [form] = Form.useForm();
   const [saving, setSaving] = React.useState(false);
   // Advanced sections stay collapsed by default; validation failures inside a
@@ -465,8 +470,12 @@ export const AgentFormModal: React.FC<Props> = ({ agent, onSaved, onClose }) => 
               children: (
                 <Row gutter={16}>
                   <Col span={12}>
-                    <Form.Item name="max_turns" label="最大轮数">
-                      <InputNumber min={1} style={{ width: "100%" }} />
+                    <Form.Item
+                      name="max_turns"
+                      label="最大轮数"
+                      extra={maxTurnsLocked ? "由云端管理后台统一配置，此处不可修改" : undefined}
+                    >
+                      <InputNumber min={1} style={{ width: "100%" }} disabled={maxTurnsLocked} />
                     </Form.Item>
                   </Col>
                 </Row>

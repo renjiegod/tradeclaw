@@ -74,6 +74,35 @@ def _parse_structured_value_error(exc: ValueError) -> dict[str, Any] | None:
     return payload
 
 
+def _cloud_forced_max_turns() -> int | None:
+    """In a cloud deployment, the agent tool-call-round cap (max_turns) is set
+    by the operator in the dytc admin console, not by end users. The copilot
+    spawner injects the resolved value as DOYOUTRADE_CLOUD_AGENT_MAX_TURNS; when
+    present (and valid) the agent CRUD endpoints clamp max_turns to it so a user
+    cannot raise it via the UI, a direct API call, or a custom agent.
+
+    Returns the forced value, or None when not in cloud mode / unset / invalid
+    (local single-machine deployments keep the user-controlled behavior)."""
+    if (os.environ.get("DOYOUTRADE_DEPLOYMENT_MODE") or "local").strip().lower() != "cloud":
+        return None
+    raw = os.environ.get("DOYOUTRADE_CLOUD_AGENT_MAX_TURNS")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "ignoring invalid DOYOUTRADE_CLOUD_AGENT_MAX_TURNS=%r (not an int)", raw
+        )
+        return None
+    if value < 1:
+        logger.warning(
+            "ignoring out-of-range DOYOUTRADE_CLOUD_AGENT_MAX_TURNS=%r (must be >= 1)", raw
+        )
+        return None
+    return value
+
+
 def _normalize_optional_string(value, *, field_name: str) -> str | None:
     if value is None:
         return None
@@ -1968,6 +1997,13 @@ def create_app(
                 ),
                 "is_default": False,
             }
+            forced_max_turns = _cloud_forced_max_turns()
+            if forced_max_turns is not None and agent_data["max_turns"] != forced_max_turns:
+                logger.info(
+                    "cloud clamp: create agent name=%s max_turns %s -> %s (admin-configured)",
+                    name, agent_data["max_turns"], forced_max_turns,
+                )
+                agent_data["max_turns"] = forced_max_turns
             return await assistant_service.agent_repo.create_agent(agent_data)
         except Exception as exc:
             logger.exception("create_assistant_agent failed")
@@ -2035,6 +2071,13 @@ def create_app(
                     )
                 elif value is not None:
                     updates[key] = value
+            forced_max_turns = _cloud_forced_max_turns()
+            if forced_max_turns is not None and updates.get("max_turns") != forced_max_turns:
+                logger.info(
+                    "cloud clamp: update agent id=%s max_turns %s -> %s (admin-configured)",
+                    agent_id, updates.get("max_turns", "<unchanged>"), forced_max_turns,
+                )
+                updates["max_turns"] = forced_max_turns
             return await assistant_service.agent_repo.update_agent(agent_id, updates)
         except RecordNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
