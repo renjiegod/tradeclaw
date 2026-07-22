@@ -337,7 +337,7 @@ export function TasksPage({ onMutated }: Props) {
         footer={null}
         width={760}
         destroyOnHidden
-        styles={{ body: { maxHeight: "calc(100vh - 160px)", overflowY: "auto", paddingTop: 8 } }}
+        styles={{ body: { maxHeight: "calc(100dvh - 160px)", overflowY: "auto", paddingTop: 8 } }}
       >
         <CreateAgentCard
           ref={createCardRef}
