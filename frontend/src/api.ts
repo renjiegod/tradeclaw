@@ -199,9 +199,9 @@ export function isAuthRedirectInFlight(): boolean {
  * 标记"正在跳转到登录入口":抑制这期间的错误弹窗,并让跳转幂等(多个后台请求同时
  * 401 只跳一次)。
  *
- * @param redirect 是否由本函数发起整页跳转到 "/"(网关据 `Accept` 对 HTML 导航 302
- *   到 GitHub 登录)。退出登录按钮自身会跳转,只需传 `false` 预先置位以抑制清除
- *   cookie 后在途请求触发的 401 弹窗。
+ * @param redirect 是否由本函数发起整页跳转到 "/"(网关据 `Accept` 对未登录 HTML 导航
+ *   302 到 /console/ 登录页,不直跳 GitHub OAuth,避免静默重登)。退出登录按钮自身会
+ *   跳转,只需传 `false` 预先置位以抑制清除 cookie 后在途请求触发的 401 弹窗。
  */
 export function beginAuthRedirect(redirect = true): void {
   if (authRedirectInFlight) return;
