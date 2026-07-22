@@ -5523,6 +5523,8 @@ class TradingPlatformService:
         session = await self.debug_session_repository.get_session(session_id)
         if session.task_id != record.task_id:
             raise RecordNotFoundError(f"debug session not found: {session_id}")
+        # Same read barrier as get_run_debug_view — see comment there.
+        await drain_debug_span_persist_queue()
         spans = []
         if self.debug_session_span_repository is not None:
             span_records = await self.debug_session_span_repository.list_spans_for_session(session_id)
@@ -5669,6 +5671,8 @@ class TradingPlatformService:
         resolved_from_id: str,
         run_row: dict[str, Any] | None = None,
     ) -> dict:
+        # Same read barrier as get_run_debug_view — see comment there.
+        await drain_debug_span_persist_queue()
         spans: list[dict] = []
         if self.debug_session_span_repository is not None:
             span_records = await self.debug_session_span_repository.list_spans_for_session(session_id)
@@ -5751,6 +5755,12 @@ class TradingPlatformService:
         the narrow, trace-scoped view; broader carriers return session-scoped spans and aggregated
         model invocations across related cycle runs.
         """
+        # Read barrier: span export persists through an async queue, and a backtest
+        # flips its run status to completed *before* the queue is drained, so a
+        # caller polling run status can read this view while the tail of the run's
+        # spans (typically the newest cycle's whole trace) is still queued. Waiting
+        # for the queue here makes the view read-your-writes; no-op when idle.
+        await drain_debug_span_persist_queue()
         row: dict[str, Any] | None = None
         if self.cycle_run_repository is not None:
             row = await self.cycle_run_repository.get_by_run_id(run_id)
@@ -5875,6 +5885,8 @@ class TradingPlatformService:
                 f"invalid trace_id: {trace_id!r} (expected 32-char lowercase hex OpenTelemetry trace id)"
             )
 
+        # Same read barrier as get_run_debug_view — see comment there.
+        await drain_debug_span_persist_queue()
         spans: list[dict] = []
         if self.debug_session_span_repository is not None:
             span_snapshots = await self.debug_session_span_repository.list_spans_for_trace(normalized)
