@@ -106,6 +106,7 @@ import type {
   SwarmPresetSummary,
   SwarmRun,
   VersionInfo,
+  AssistantStopResponse,
 } from "./types";
 
 export type {

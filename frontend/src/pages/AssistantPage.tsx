@@ -46,6 +46,7 @@ import { TracesPanel } from "../components/TracesPanel";
 import { usePageRefreshToken } from "../pageRefreshContext";
 import { MODEL_INVOCATION_PROSE_CLASSNAME } from "../styles/classNames";
 import type {
+  Agent,
   AssistantChannel,
   AssistantEvent,
   AssistantMessage,

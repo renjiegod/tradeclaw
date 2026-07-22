@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run check:responsive && vite build",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
+    "check:types": "node scripts/check-types.mjs",
+    "build": "npm run check:types && npm run check:responsive && vite build",
     "check:responsive": "node scripts/check-responsive.mjs",
     "preview": "vite preview",
     "test": "vitest run"
