@@ -26,4 +26,8 @@ describe("menuKeyFromPathname", () => {
     expect(menuKeyFromPathname("/settings/models")).toBe("settings_models");
     expect(menuKeyFromPathname("/market_review")).toBe("market_review");
   });
+
+  it("maps /data_console to data_console (cloud-only module)", () => {
+    expect(menuKeyFromPathname("/data_console")).toBe("data_console");
+  });
 });

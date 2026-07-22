@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { CLOUD_HIDDEN_PAGES, visibleNavTree } from "./App";
+import { CLOUD_HIDDEN_PAGES, CLOUD_ONLY_PAGES, visibleNavTree } from "./App";
 
-function leafKeys(mode: string): Set<string> {
+function leafKeys(mode: string | null): Set<string> {
   const out = new Set<string>();
   for (const entry of visibleNavTree(mode)) {
     if ("children" in entry) entry.children.forEach((l) => out.add(l.key));
@@ -23,15 +23,27 @@ describe("cloud nav filtering", () => {
     expect(keys.has("model_invocations")).toBe(true);
   });
 
-  it("shows everything in local mode (single-machine build unchanged)", () => {
+  it("shows the cloud-only data console in cloud mode only", () => {
+    expect(leafKeys("cloud").has("data_console")).toBe(true);
+    expect(leafKeys("local").has("data_console")).toBe(false);
+    // mode not yet resolved (null) behaves like local: no cloud-only entries
+    expect(leafKeys(null).has("data_console")).toBe(false);
+  });
+
+  it("shows everything except cloud-only pages in local mode", () => {
     const keys = leafKeys("local");
     expect(keys.has("accounts")).toBe(true);
     expect(keys.has("settings_models")).toBe(true);
     expect(keys.has("settings")).toBe(true);
+    expect(keys.has("data_console")).toBe(false);
   });
 
   it("CLOUD_HIDDEN_PAGES is exactly the three local-only pages", () => {
     expect([...CLOUD_HIDDEN_PAGES].sort()).toEqual(["accounts", "settings", "settings_models"]);
+  });
+
+  it("CLOUD_ONLY_PAGES is exactly the data console", () => {
+    expect([...CLOUD_ONLY_PAGES].sort()).toEqual(["data_console"]);
   });
 
   it("keeps groups that still have visible members in cloud", () => {
