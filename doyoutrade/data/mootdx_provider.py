@@ -69,6 +69,12 @@ _XDXR_CATEGORY_EX_RIGHTS = 1
 # process-global config file; keep provider construction single-flighted.
 _MOOTDX_LOCK = threading.RLock()
 
+# Live ECS verification on July 23, 2026 showed this legacy HQ host answered
+# daily bars immediately while mootdx's dynamic discovery returned an empty HQ
+# server and several newer hosts returned no bars. Keep it first so remote
+# bootstrap converges quickly before falling back to the broader HQ pool.
+_PREFERRED_STD_SERVERS: tuple[tuple[str, int], ...] = (("115.238.56.198", 7709),)
+
 
 def symbol_to_tdx_code(symbol: str) -> Optional[str]:
     """Map ``600000.SH`` / ``000001.SZ`` / ``430047.BJ`` to the bare 通达信 code.
@@ -661,6 +667,7 @@ def _make_std_client() -> Any:
         )
 
     for server in _candidate_std_servers(
+        preferred=_PREFERRED_STD_SERVERS,
         bestip=_safe_config_get(config, "BESTIP"),
         configured=_safe_config_get(config, "SERVER"),
         builtin=HQ_HOSTS,
@@ -724,6 +731,7 @@ def _safe_config_get(config_module: Any, key: str) -> Any:
 
 def _candidate_std_servers(
     *,
+    preferred: Sequence[Any],
     bestip: Any,
     configured: Any,
     builtin: Sequence[Any],
@@ -737,6 +745,9 @@ def _candidate_std_servers(
             return
         seen.add(server)
         out.append(server)
+
+    for raw in preferred:
+        add(raw)
 
     if isinstance(bestip, dict):
         add(bestip.get("HQ"))

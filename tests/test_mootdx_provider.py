@@ -239,6 +239,7 @@ class FactoryWiringTests(unittest.TestCase):
 class StdClientBootstrapTests(unittest.TestCase):
     def test_candidate_std_servers_normalizes_and_dedupes(self):
         out = mp._candidate_std_servers(
+            preferred=[("9.9.9.9", 7709)],
             bestip={"HQ": ["1.1.1.1", 7709]},
             configured={
                 "HQ": [
@@ -252,7 +253,7 @@ class StdClientBootstrapTests(unittest.TestCase):
                 ("named-three", "3.3.3.3", 7720),
             ],
         )
-        self.assertEqual(out, [("1.1.1.1", 7709), ("2.2.2.2", 7710), ("3.3.3.3", 7720)])
+        self.assertEqual(out, [("9.9.9.9", 7709), ("1.1.1.1", 7709), ("2.2.2.2", 7710), ("3.3.3.3", 7720)])
 
     def test_make_std_client_falls_back_to_explicit_servers(self):
         client_a = object()
