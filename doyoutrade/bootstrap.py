@@ -17,7 +17,10 @@ from doyoutrade.config import AppConfig, ModelSettings, get_config
 from doyoutrade.core.worker import TradingWorker
 from doyoutrade.data.bars_cache_store import RepositoryBarsCacheStore
 from doyoutrade.data.cached_bars import CachedBarsDataProvider
-from doyoutrade.data.local_market_bars import LocalHistoricalBarsDataProvider
+from doyoutrade.data.local_market_bars import (
+    SUPPORTED_LOCAL_INTERVALS,
+    LocalHistoricalBarsDataProvider,
+)
 from doyoutrade.data.market_sync import MarketDataSyncService
 from doyoutrade.data.account_resolution import (
     ResolvedAccount,
@@ -783,7 +786,9 @@ async def _build_market_data_runtime(
         market_repository=market_repository,
         instrument_catalog_repository=instrument_catalog_repository,
         provider_factory=_provider_factory,
-        intervals=cfg.market_data.enabled_intervals,
+        # Sync every interval the local cache layer supports — there is no
+        # user-facing enabled_intervals knob; "有什么就支持什么".
+        intervals=tuple(sorted(SUPPORTED_LOCAL_INTERVALS)),
         lookback_years=cfg.market_data.lookback_years,
         provider=cfg.market_data.default_provider,
         adjust=bootstrap_provider.capabilities.default_adjust,

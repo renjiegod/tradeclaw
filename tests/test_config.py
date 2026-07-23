@@ -368,7 +368,6 @@ database:
                 """
 market_data:
   database_url: postgresql+asyncpg://user:pass@localhost:5432/doyoutrade_market
-  enabled_intervals: ["1d", "5m"]
   lookback_years: 10
   default_provider: auto
   sync_on_startup: true
@@ -383,7 +382,6 @@ market_data:
                 cfg.market_data.database_url,
                 "postgresql+asyncpg://user:pass@localhost:5432/doyoutrade_market",
             )
-            self.assertEqual(cfg.market_data.enabled_intervals, ("1d", "5m"))
             self.assertEqual(cfg.market_data.lookback_years, 10)
             self.assertEqual(cfg.market_data.default_provider, "auto")
             self.assertTrue(cfg.market_data.sync_on_startup)
@@ -568,24 +566,6 @@ market_data:
         finally:
             path.unlink(missing_ok=True)
 
-    def test_market_data_rejects_blank_interval(self):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
-        ) as handle:
-            handle.write(
-                """
-market_data:
-  database_url: postgresql+asyncpg://user:pass@localhost:5432/doyoutrade_market
-  enabled_intervals: ["1d", ""]
-""".strip()
-            )
-            path = Path(handle.name)
-        try:
-            with self.assertRaisesRegex(ValueError, "market_data.enabled_intervals"):
-                load_config(path)
-        finally:
-            path.unlink(missing_ok=True)
-
     def test_market_data_rejects_blank_default_provider(self):
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".yaml", delete=False, encoding="utf-8"
@@ -734,42 +714,6 @@ market_data:
         try:
             cfg = load_config(path)
             self.assertEqual(cfg.market_data.provider_rate_limit_per_second, 1.5)
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_market_data_rejects_unsupported_interval(self):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
-        ) as handle:
-            handle.write(
-                """
-market_data:
-  database_url: postgresql+asyncpg://user:pass@localhost:5432/doyoutrade_market
-  enabled_intervals: ["1d", "15m"]
-""".strip()
-            )
-            path = Path(handle.name)
-        try:
-            with self.assertRaisesRegex(ValueError, "market_data.enabled_intervals"):
-                load_config(path)
-        finally:
-            path.unlink(missing_ok=True)
-
-    def test_market_data_accepts_60m_interval(self):
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
-        ) as handle:
-            handle.write(
-                """
-market_data:
-  database_url: postgresql+asyncpg://user:pass@localhost:5432/doyoutrade_market
-  enabled_intervals: ["1d", "60m"]
-""".strip()
-            )
-            path = Path(handle.name)
-        try:
-            cfg = load_config(path)
-            self.assertEqual(cfg.market_data.enabled_intervals, ("1d", "60m"))
         finally:
             path.unlink(missing_ok=True)
 

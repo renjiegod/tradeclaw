@@ -254,10 +254,6 @@ const LOG_LEVEL_OPTIONS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"].map(
   label: v,
 }));
 const XTQUANT_MODE_OPTIONS = ["mock", "dev", "prod"].map((v) => ({ value: v, label: v }));
-const INTERVAL_OPTIONS = ["1m", "5m", "15m", "30m", "60m", "1d", "1w"].map((v) => ({
-  value: v,
-  label: v,
-}));
 const FEISHU_DOMAIN_OPTIONS = [
   { value: "feishu", label: "feishu（飞书）" },
   { value: "lark", label: "lark（国际版）" },
@@ -349,7 +345,6 @@ function toSystemFormValues(v: DoyoutradeConfigValues): Record<string, unknown> 
     },
     market_data: {
       database_url: v.market_data.database_url,
-      enabled_intervals: [...(v.market_data.enabled_intervals ?? [])],
       lookback_years: v.market_data.lookback_years,
       default_provider: v.market_data.default_provider,
       sync_on_startup: v.market_data.sync_on_startup,
@@ -699,18 +694,6 @@ function SystemConfigTab() {
             }
           >
             <Input placeholder="sqlite:///… / postgresql://…" />
-          </Form.Item>
-          <Form.Item
-            name={["market_data", "enabled_intervals"]}
-            label={
-              <FieldLabel
-                text="enabled_intervals"
-                restart={isRestart("market_data.enabled_intervals")}
-                help="需要同步与缓存的 K 线周期列表（如 1d、5m）；未启用的周期策略无法读取"
-              />
-            }
-          >
-            <Select mode="tags" options={INTERVAL_OPTIONS} placeholder="1d, 5m …" />
           </Form.Item>
           <Form.Item
             name={["market_data", "lookback_years"]}
