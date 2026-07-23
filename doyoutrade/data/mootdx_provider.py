@@ -629,6 +629,8 @@ def _quote_from_mootdx_rec(symbol: str, rec: dict) -> QuoteSnapshot:
 def _make_std_client() -> Any:
     """Build a mootdx std-market Quotes client, or raise a clear install hint."""
     try:
+        from mootdx import config
+        from mootdx.consts import HQ_HOSTS
         from mootdx.quotes import Quotes
     except Exception as exc:  # pragma: no cover - import guard
         raise RuntimeError(
@@ -639,7 +641,137 @@ def _make_std_client() -> Any:
             "on the project's httpx 0.28 + tenacity 9). Or use another data "
             "provider (baostock / akshare)."
         ) from exc
-    return Quotes.factory(market="std")
+    errors: list[str] = []
+
+    try:
+        client = _build_default_std_client(Quotes)
+        if _probe_std_client(client):
+            return client
+        errors.append("default discovery returned no bars for probe symbol")
+        logger.warning(
+            "mootdx std bootstrap: default discovery returned no bars; "
+            "falling back to explicit HQ hosts"
+        )
+    except Exception as exc:
+        msg = f"default discovery failed ({type(exc).__name__}: {exc})"
+        errors.append(msg)
+        logger.warning(
+            "mootdx std bootstrap: %s; falling back to explicit HQ hosts",
+            msg,
+        )
+
+    for server in _candidate_std_servers(
+        bestip=_safe_config_get(config, "BESTIP"),
+        configured=_safe_config_get(config, "SERVER"),
+        builtin=HQ_HOSTS,
+    ):
+        try:
+            client = _build_std_client_with_server(Quotes, server)
+        except Exception as exc:
+            errors.append(f"{server[0]}:{server[1]} build failed ({type(exc).__name__}: {exc})")
+            logger.warning(
+                "mootdx std bootstrap: server %s:%s build failed (%s: %s)",
+                server[0],
+                server[1],
+                type(exc).__name__,
+                exc,
+            )
+            continue
+        if _probe_std_client(client):
+            logger.info("mootdx std bootstrap: connected via explicit server %s:%s", server[0], server[1])
+            return client
+        errors.append(f"{server[0]}:{server[1]} probe returned no bars")
+        logger.warning(
+            "mootdx std bootstrap: server %s:%s probe returned no bars",
+            server[0],
+            server[1],
+        )
+
+    detail = "; ".join(errors[-6:]) if errors else "no candidates"
+    raise RuntimeError(
+        "mootdx std quotes bootstrap failed; all explicit HQ hosts were unusable. "
+        f"Recent errors: {detail}"
+    )
+
+
+def _build_default_std_client(Quotes: Any) -> Any:
+    return Quotes.factory(market="std", timeout=5)
+
+
+def _build_std_client_with_server(Quotes: Any, server: tuple[str, int]) -> Any:
+    return Quotes.factory(market="std", server=server, timeout=5, bestip=False)
+
+
+def _probe_std_client(client: Any) -> bool:
+    try:
+        df = client.bars(symbol="000001", frequency=9, offset=1)
+    except Exception as exc:
+        logger.warning(
+            "mootdx std bootstrap probe failed (%s: %s)",
+            type(exc).__name__,
+            exc,
+        )
+        return False
+    return df is not None and len(df) > 0
+
+
+def _safe_config_get(config_module: Any, key: str) -> Any:
+    try:
+        return config_module.get(key)
+    except Exception:
+        return None
+
+
+def _candidate_std_servers(
+    *,
+    bestip: Any,
+    configured: Any,
+    builtin: Sequence[Any],
+) -> list[tuple[str, int]]:
+    seen: set[tuple[str, int]] = set()
+    out: list[tuple[str, int]] = []
+
+    def add(raw: Any) -> None:
+        server = _normalize_server_candidate(raw)
+        if server is None or server in seen:
+            return
+        seen.add(server)
+        out.append(server)
+
+    if isinstance(bestip, dict):
+        add(bestip.get("HQ"))
+    elif bestip is not None:
+        add(bestip)
+
+    if isinstance(configured, dict):
+        hq = configured.get("HQ")
+        if isinstance(hq, Sequence):
+            for raw in hq:
+                add(raw)
+
+    for raw in builtin:
+        add(raw)
+    return out
+
+
+def _normalize_server_candidate(raw: Any) -> Optional[tuple[str, int]]:
+    if not isinstance(raw, (list, tuple)):
+        return None
+    host: Any = None
+    port: Any = None
+    if len(raw) >= 2 and isinstance(raw[0], str) and raw[0].count(".") >= 1:
+        host, port = raw[0], raw[1]
+    elif len(raw) >= 3:
+        host, port = raw[1], raw[2]
+    if not isinstance(host, str) or not host.strip():
+        return None
+    try:
+        port_int = int(port)
+    except (TypeError, ValueError):
+        return None
+    if port_int <= 0:
+        return None
+    return (host.strip(), port_int)
 
 
 def _is_weekday(day: str) -> bool:

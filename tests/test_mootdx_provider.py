@@ -8,6 +8,7 @@ expected qfq/hfq series so a future regression in the ratio formula is caught
 
 import asyncio
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -233,6 +234,47 @@ class FactoryWiringTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             factory.register_trading_data_provider("mootdx", lambda cfg, syms: (None, None, None))
+
+
+class StdClientBootstrapTests(unittest.TestCase):
+    def test_candidate_std_servers_normalizes_and_dedupes(self):
+        out = mp._candidate_std_servers(
+            bestip={"HQ": ["1.1.1.1", 7709]},
+            configured={
+                "HQ": [
+                    ("named-dup", "1.1.1.1", 7709),
+                    ("named-two", "2.2.2.2", "7710"),
+                    ("broken", "", 7709),
+                ]
+            },
+            builtin=[
+                ("named-two-dup", "2.2.2.2", 7710),
+                ("named-three", "3.3.3.3", 7720),
+            ],
+        )
+        self.assertEqual(out, [("1.1.1.1", 7709), ("2.2.2.2", 7710), ("3.3.3.3", 7720)])
+
+    def test_make_std_client_falls_back_to_explicit_servers(self):
+        client_a = object()
+        client_b = object()
+
+        with (
+            patch.object(mp, "_build_default_std_client", side_effect=ValueError("not enough values to unpack")),
+            patch.object(
+                mp,
+                "_candidate_std_servers",
+                return_value=[("1.1.1.1", 7709), ("2.2.2.2", 7709)],
+            ),
+            patch.object(mp, "_build_std_client_with_server", side_effect=[client_a, client_b]) as build_mock,
+            patch.object(mp, "_probe_std_client", side_effect=[False, True]),
+        ):
+            client = mp._make_std_client()
+
+        self.assertIs(client, client_b)
+        self.assertEqual(
+            [call.args[1] for call in build_mock.call_args_list],
+            [("1.1.1.1", 7709), ("2.2.2.2", 7709)],
+        )
 
 
 class _FakeQuotesClient:
