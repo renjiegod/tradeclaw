@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useCallback, useState } from "react";
-import { Badge, Collapse, Drawer, List, Space, Tag, Typography, Spin, Empty } from "antd";
-import { WarningOutlined, CheckCircleOutlined, ClockCircleOutlined } from "@ant-design/icons";
+import { Badge, Collapse, Grid, List, Space, Tag, Typography, Spin, Empty } from "antd";
+import { WarningOutlined, CheckCircleOutlined } from "@ant-design/icons";
 
 import { TraceViewer } from "./TraceViewer";
 import { listAssistantTraces, getAssistantTraceDetail } from "../api";
@@ -63,12 +63,13 @@ function TraceEntry({ trace, isSelected, onClick }: TraceEntryProps) {
 }
 
 export function TracesPanel({ sessionId, newTraceId, onNewTraceIdConsumed }: TracesPanelProps) {
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.lg;
   const [traces, setTraces] = useState<TraceSummary[]>([]);
   const [selectedTrace, setSelectedTrace] = useState<TraceSummary | null>(null);
   const [traceDetail, setTraceDetail] = useState<TraceDetail | null>(null);
   const [loadingTraces, setLoadingTraces] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const previousNewTraceIdRef = useRef<string | null>(null);
 
@@ -168,21 +169,19 @@ export function TracesPanel({ sessionId, newTraceId, onNewTraceIdConsumed }: Tra
 
   if (!sessionId) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-full items-center justify-center p-6">
         <Empty description="No session ID" />
       </div>
     );
   }
 
   return (
-    <div className="flex h-full gap-0">
-      {/* Left: TraceList (260px) */}
+    <div className={`flex h-full min-h-0 ${isMobile ? "flex-col gap-3 p-3" : "gap-4 p-4"}`}>
       <div
-        className="flex flex-col border-r border-shell-line"
-        style={{ width: 260, minWidth: 260, maxWidth: 260 }}
+        className={`${isMobile ? "min-h-[220px] w-full" : "lg:w-[280px] lg:min-w-[280px] lg:max-w-[280px]"} flex shrink-0 flex-col overflow-hidden rounded-2xl border border-shell-line bg-card-bg/70`}
       >
-        <div className="border-b border-shell-line bg-card-bg px-3 py-2">
-          <Typography.Text type="secondary" className="text-xs">
+        <div className="border-b border-shell-line bg-white/70 px-4 py-3">
+          <Typography.Text type="secondary" className="text-xs uppercase tracking-[0.18em]">
             Traces ({traces.length})
           </Typography.Text>
         </div>
@@ -200,54 +199,60 @@ export function TracesPanel({ sessionId, newTraceId, onNewTraceIdConsumed }: Tra
                 <TraceEntry
                   trace={trace}
                   isSelected={selectedTrace?.trace_id === trace.trace_id}
-                  onClick={() => {
-                    setSelectedTrace(trace);
-                    setDrawerOpen(true);
-                  }}
+                  onClick={() => setSelectedTrace(trace)}
                 />
               )}
             />
           )}
         </div>
       </div>
-
-      {/* Drawer: 完整 trace 详情 */}
-      <Drawer
-        title={
-          selectedTrace ? (
-            <Space>
-              <Badge status={selectedTrace.status === "ok" ? "success" : "error"} />
-              <Typography.Text strong style={{ fontSize: 13 }}>
-                {selectedTrace.span_name}
-              </Typography.Text>
-            </Space>
-          ) : null
-        }
-        placement="right"
-        width="min(88vw, 860px)"
-        onClose={() => setDrawerOpen(false)}
-        open={drawerOpen}
-        maskClosable={true}
-        destroyOnClose
-      >
-        {selectedTrace && (
-          <Space direction="vertical" size={12} className="w-full">
-            <Typography.Text type="secondary" className="text-xs">
-              {new Date(selectedTrace.created_at).toLocaleString()}
-              {selectedTrace.duration_ms != null && ` · ${(selectedTrace.duration_ms / 1000).toFixed(2)}s`}
-            </Typography.Text>
-            <TraceViewer spans={traceDetail?.spans ?? []} loading={loadingDetail} />
-            <Typography.Title level={5} style={{ margin: "8px 0 4px" }}>
-              模型调用
-            </Typography.Title>
-            {invocationItems.length > 0 ? (
-              <Collapse items={invocationItems} size="small" />
-            ) : (
-              <Typography.Text type="secondary">暂无模型调用</Typography.Text>
-            )}
-          </Space>
+      <div className="flex min-h-[360px] min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-shell-line bg-white">
+        {selectedTrace ? (
+          <>
+            <div className="border-b border-shell-line bg-card-bg/60 px-4 py-3 lg:px-5">
+              <Space direction="vertical" size={6} className="w-full">
+                <Space wrap>
+                  <Badge status={selectedTrace.status === "ok" ? "success" : "error"} />
+                  <Typography.Text strong className="text-sm lg:text-base">
+                    {selectedTrace.span_name}
+                  </Typography.Text>
+                  {selectedTrace.model ? <Tag className="mr-0">{selectedTrace.model}</Tag> : null}
+                </Space>
+                <Typography.Text type="secondary" className="text-xs">
+                  {new Date(selectedTrace.created_at).toLocaleString()}
+                  {selectedTrace.duration_ms != null && ` · ${(selectedTrace.duration_ms / 1000).toFixed(2)}s`}
+                  {selectedTrace.input_tokens != null && selectedTrace.output_tokens != null
+                    ? ` · tokens ${selectedTrace.input_tokens}/${selectedTrace.output_tokens}`
+                    : ""}
+                </Typography.Text>
+              </Space>
+            </div>
+            <div className="flex-1 overflow-auto px-4 py-4 lg:px-5">
+              <Space direction="vertical" size={16} className="w-full">
+                <TraceViewer spans={traceDetail?.spans ?? []} loading={loadingDetail} />
+                <div>
+                  <Typography.Title level={5} style={{ margin: "8px 0 12px" }}>
+                    模型调用
+                  </Typography.Title>
+                  {loadingDetail ? (
+                    <div className="flex h-24 items-center justify-center">
+                      <Spin size="small" />
+                    </div>
+                  ) : invocationItems.length > 0 ? (
+                    <Collapse items={invocationItems} size="small" />
+                  ) : (
+                    <Typography.Text type="secondary">暂无模型调用</Typography.Text>
+                  )}
+                </div>
+              </Space>
+            </div>
+          </>
+        ) : (
+          <div className="flex h-full items-center justify-center p-6">
+            <Empty description={traces.length === 0 ? "暂无 trace" : "选择一条 trace 查看详情"} />
+          </div>
         )}
-      </Drawer>
+      </div>
     </div>
   );
 }

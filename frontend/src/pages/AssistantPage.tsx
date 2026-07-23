@@ -3,7 +3,6 @@ import {
   CopyOutlined,
   DownOutlined,
   FormOutlined,
-  MenuUnfoldOutlined,
   PaperClipOutlined,
   PlusOutlined,
   RobotOutlined,
@@ -12,7 +11,7 @@ import {
   ToolOutlined,
   UpOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Card, Drawer, Empty, Input, List, Modal, Select, Space, Spin, Switch, Tabs, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Card, Drawer, Empty, Grid, Input, List, Modal, Select, Space, Spin, Switch, Tabs, Tag, Tooltip, Typography, message } from "antd";
 import type { TextAreaRef } from "antd/es/input/TextArea";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -312,6 +311,8 @@ function EventTimeline({ events }: { events: AssistantEvent[] }) {
 }
 
 export function AssistantPage() {
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.lg;
   const pageRefreshToken = usePageRefreshToken();
   const [searchParams, setSearchParams] = useSearchParams();
   const [sessions, setSessions] = useState<AssistantSession[]>([]);
@@ -348,9 +349,8 @@ export function AssistantPage() {
   sendingRef.current = sending;
   const [isStopping, setIsStopping] = useState(false);
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
-  const [activeRightTab, setActiveRightTab] = useState<"traces" | "skills-tools">("traces");
-  // <lg 视口下右栏（会话 / Traces）收进抽屉，聊天区独占一列
-  const [mobileRailOpen, setMobileRailOpen] = useState(false);
+  const [activeDetailTab, setActiveDetailTab] = useState<"traces" | "skills-tools">("traces");
+  const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false);
   // 对话渲染模式。默认简洁模式（false）：执行中只显示一个随进度更新的
   // 占位卡片，完成后工具调用折叠进"思考过程"卡片。打开调试模式（true）
   // 恢复旧行为：逐条铺开每个工具调用与思考卡片。仅前端展示层开关，
@@ -549,6 +549,15 @@ export function AssistantPage() {
   const activeSession = useMemo(
     () => sessions.find((session) => session.session_id === sessionId) ?? null,
     [sessionId, sessions],
+  );
+  const activeSessionAgent = useMemo(
+    () =>
+      activeSession?.agent_id ? agents.find((agent) => agent.id === activeSession.agent_id) ?? null : null,
+    [activeSession?.agent_id, agents],
+  );
+  const activeSessionSourceChannelLabel = useMemo(
+    () => (activeSession ? formatSessionSourceChannelLabel(activeSession, channelsById) : null),
+    [activeSession, channelsById],
   );
   // The session's currently pending `ask_user_question` id, if any — read
   // from `config.pending_user_question` (set by the tool, cleared as soon as
@@ -1514,153 +1523,12 @@ export function AssistantPage() {
       }
     });
   }, []);
-
-  const rightRail = (
-    <>
-        <Card title="会话" className="rounded-3xl border-shell-line bg-card-bg/95">
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Typography.Text type="secondary" className="text-xs">Channel 筛选</Typography.Text>
-              <Select
-                className="w-full"
-                value={sessionChannelFilter}
-                options={[
-                  { value: "all", label: "全部会话" },
-                  { value: "web", label: "Web 会话" },
-                  ...assistantChannels.map((channel) => ({
-                    value: channel.id,
-                    label: channel.name?.trim() ? `${channel.name} (${channel.type})` : `${channel.id} (${channel.type})`,
-                  })),
-                ]}
-                onChange={(value) => setSessionChannelFilter(value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Typography.Text type="secondary" className="text-xs">当前会话</Typography.Text>
-              <Select
-                className="w-full [&_.ant-select-selection-item]:truncate"
-                value={sessionId ?? undefined}
-                optionLabelProp="label"
-                options={sessions.map((session) => ({
-                  value: session.session_id,
-                  label: session.title || "新会话",
-                }))}
-                optionRender={(option) => {
-                  const session = sessions.find((row) => row.session_id === option.value);
-                  if (!session) {
-                    return <span>{option.label}</span>;
-                  }
-                  const agent = session.agent_id ? agents.find((a) => a.id === session.agent_id) : null;
-                  const sourceChannelLabel = formatSessionSourceChannelLabel(session, channelsById);
-                  return (
-                    <div className="flex min-w-0 flex-col gap-1 py-0.5">
-                      <span className="truncate">{formatSessionOptionTitle(session, agent?.name)}</span>
-                      <Typography.Text type="secondary" className="text-xs">
-                        创建于 {formatMessageTime(session.created_at)}
-                      </Typography.Text>
-                      {sourceChannelLabel ? (
-                        <Tag color="geekblue" className="mr-0 w-fit max-w-full truncate">
-                          来自 channel: {sourceChannelLabel}
-                        </Tag>
-                      ) : null}
-                    </div>
-                  );
-                }}
-                onChange={(value) => void switchSession(value)}
-              />
-            </div>
-            {/* 当前会话元信息：紧凑信息块 */}
-            {sessionId ? (
-              <div className="flex flex-col gap-2 rounded-2xl border border-shell-line bg-white/60 px-3 py-2.5">
-                <div className="flex flex-col gap-0.5">
-                  <Typography.Text type="secondary" className="text-xs">
-                    当前会话 ID
-                  </Typography.Text>
-                  <Typography.Text
-                    className="font-mono text-xs"
-                    copyable={{ text: sessionId }}
-                    ellipsis={{ tooltip: sessionId }}
-                  >
-                    {sessionId}
-                  </Typography.Text>
-                </div>
-                {activeSession ? (
-                  <Typography.Text type="secondary" className="text-xs">
-                    创建于 {formatMessageTime(activeSession.created_at)}
-                  </Typography.Text>
-                ) : null}
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {(() => {
-                    const agent = agents.find((a) => a.id === activeSession?.agent_id);
-                    return agent ? (
-                      <Tag icon={<RobotOutlined />} color="blue" className="mr-0">
-                        Agent: {agent.name}
-                      </Tag>
-                    ) : (
-                      <Tag icon={<RobotOutlined />} className="mr-0">
-                        —
-                      </Tag>
-                    );
-                  })()}
-                  {activeSession && formatSessionSourceChannelLabel(activeSession, channelsById) ? (
-                    <Tag color="geekblue" className="mr-0 max-w-full truncate">
-                      来自 channel: {formatSessionSourceChannelLabel(activeSession, channelsById)}
-                    </Tag>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-            <div className="flex flex-col gap-1.5">
-              <Typography.Text type="secondary" className="text-xs">选择 Agent</Typography.Text>
-              <Select
-                className="w-full"
-                placeholder="选择一个 Agent"
-                value={selectedAgentId ?? undefined}
-                options={agents.map((agent) => ({
-                  value: agent.id,
-                  label: (
-                    <Space>
-                      <span>{agent.name}</span>
-                      {agent.status === "inactive" && <Tag color="default">inactive</Tag>}
-                    </Space>
-                  ),
-                }))}
-                onChange={(value) => setSelectedAgentId(value)}
-                notFoundContent="暂无 Agent，请先在「Agent 管理」中创建"
-              />
-            </div>
-          </div>
-        </Card>
-        <Card
-          className="flex min-h-0 flex-1 flex-col rounded-3xl border-shell-line bg-card-bg/95 [&>.ant-card-body]:flex [&>.ant-card-body]:min-h-0 [&>.ant-card-body]:flex-1 [&>.ant-card-body]:flex-col [&_.ant-tabs-nav]:!mb-0 [&_.ant-tabs-nav]:!px-4"
-          bodyStyle={{ padding: 0 }}
-        >
-          <Tabs
-            activeKey={activeRightTab}
-            onChange={(key) => setActiveRightTab(key as "traces" | "skills-tools")}
-            items={[
-              { key: "traces", label: "Traces" },
-              { key: "skills-tools", label: "Skills & Tools" },
-            ]}
-            size="small"
-          />
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {activeRightTab === "traces" ? (
-              sessionId ? (
-                <TracesPanel
-                  sessionId={sessionId}
-                  newTraceId={pendingTraceId}
-                  onNewTraceIdConsumed={() => setPendingTraceId(null)}
-                />
-              ) : (
-                <Empty description="选择一个会话" />
-              )
-            ) : (
-              <SkillsToolsTab />
-            )}
-          </div>
-        </Card>
-    </>
+  const openDetailsDrawer = useCallback(
+    (tab: "traces" | "skills-tools" = "traces") => {
+      setActiveDetailTab(tab === "traces" && !sessionId ? "skills-tools" : tab);
+      setDetailsDrawerOpen(true);
+    },
+    [sessionId],
   );
 
   return (
@@ -1698,61 +1566,197 @@ export function AssistantPage() {
           }
         }}
       />
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="flex min-h-0 flex-1 flex-col">
         <Card
           className="flex min-h-0 flex-col rounded-3xl border-shell-line bg-card-bg/95 [&>.ant-card-body]:flex [&>.ant-card-body]:min-h-0 [&>.ant-card-body]:flex-1 [&>.ant-card-body]:flex-col"
-          title={
-          <Space>
-            <RobotOutlined />
-            <span>DoYouTrade Agent</span>
-            {activeSession ? <Tag>{activeSession.status}</Tag> : null}
-          </Space>
-        }
-        extra={
-          <Space wrap size={4}>
-            <Button
-              className="lg:!hidden"
-              icon={<MenuUnfoldOutlined />}
-              onClick={() => setMobileRailOpen(true)}
-              title="会话"
-              aria-label="会话"
-            />
-            {activeModelRoute ? (
-              <Tag color="blue" className="!hidden md:!inline-block">
-                使用的模型: {activeModelRoute}
-              </Tag>
-            ) : null}
-            <Tooltip title="调试模式：逐条展示每个工具调用与思考卡片；关闭后执行过程折叠为单个进度卡片">
-              <Space size={4} data-testid="assistant-debug-mode-toggle">
-                <BulbOutlined className="text-gray-500 lg:hidden" />
-                <span className="hidden text-xs text-gray-500 lg:inline">调试模式</span>
-                <Switch
-                  size="small"
-                  checked={debugRenderMode}
-                  onChange={handleDebugRenderModeChange}
-                />
-              </Space>
-            </Tooltip>
-            <ToolbarButton
-              icon={<CopyOutlined />}
-              loading={isCopying}
-              disabled={!sessionId}
-              onClick={() => void handleCopyConversation()}
-              title="复制完整会话（含工具调用、思维链、系统提示词等），用于交给 AI 编程工具分析"
-              label="复制会话"
-            />
-            <ToolbarButton
-              icon={<FormOutlined />}
-              onClick={() => void createNewSession()}
-              label="新会话"
-            />
-          </Space>
-        }
-      >
+        >
         <Spin
           spinning={loading}
           wrapperClassName="flex min-h-0 flex-1 flex-col [&_.ant-spin-container]:flex [&_.ant-spin-container]:min-h-0 [&_.ant-spin-container]:flex-1 [&_.ant-spin-container]:flex-col"
         >
+          <div className="mb-2 border-b border-shell-line/80 pb-2">
+            <div className="flex flex-col gap-2 lg:flex-row lg:flex-nowrap lg:items-center">
+              <div className="flex min-w-0 shrink-0 items-center gap-2.5 lg:max-w-[240px]">
+                <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-shell-line bg-white/90 text-sm text-shell-ink shadow-[0_6px_16px_rgba(15,23,42,0.04)]">
+                  <RobotOutlined />
+                </div>
+                <div className="flex min-w-0 items-center gap-2">
+                  <Typography.Text strong className="truncate text-[18px] leading-none text-shell-ink lg:text-[19px]">
+                    DoYouTrade Agent
+                  </Typography.Text>
+                  {activeSession ? <Tag className="mr-0">{activeSession.status}</Tag> : null}
+                </div>
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col gap-2 lg:flex-row lg:flex-nowrap lg:items-center">
+                <div
+                  data-testid="assistant-channel-field"
+                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[150px]"
+                >
+                  <Typography.Text type="secondary" className="shrink-0 text-[11px] uppercase tracking-[0.12em]">
+                    来源
+                  </Typography.Text>
+                  <Select
+                    variant="borderless"
+                    className="min-w-0 flex-1 [&_.ant-select-selection-item]:truncate"
+                    value={sessionChannelFilter}
+                    options={[
+                      { value: "all", label: "全部会话" },
+                      { value: "web", label: "Web 会话" },
+                      ...assistantChannels.map((channel) => ({
+                        value: channel.id,
+                        label: channel.name?.trim() ? `${channel.name} (${channel.type})` : `${channel.id} (${channel.type})`,
+                      })),
+                    ]}
+                    onChange={(value) => setSessionChannelFilter(value)}
+                  />
+                </div>
+                <div
+                  data-testid="assistant-session-field"
+                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[190px]"
+                >
+                  <Typography.Text type="secondary" className="shrink-0 text-[11px] uppercase tracking-[0.12em]">
+                    会话
+                  </Typography.Text>
+                  <Select
+                    variant="borderless"
+                    className="min-w-0 flex-1 [&_.ant-select-selection-item]:truncate"
+                    value={sessionId ?? undefined}
+                    optionLabelProp="label"
+                    options={sessions.map((session) => ({
+                      value: session.session_id,
+                      label: session.title || "新会话",
+                    }))}
+                    optionRender={(option) => {
+                      const session = sessions.find((row) => row.session_id === option.value);
+                      if (!session) {
+                        return <span>{option.label}</span>;
+                      }
+                      const agent = session.agent_id ? agents.find((row) => row.id === session.agent_id) : null;
+                      const sourceChannelLabel = formatSessionSourceChannelLabel(session, channelsById);
+                      return (
+                        <div className="flex min-w-0 flex-col gap-1 py-0.5">
+                          <span className="truncate">{formatSessionOptionTitle(session, agent?.name)}</span>
+                          <Typography.Text type="secondary" className="text-xs">
+                            创建于 {formatMessageTime(session.created_at)}
+                          </Typography.Text>
+                          {sourceChannelLabel ? (
+                            <Tag color="geekblue" className="mr-0 w-fit max-w-full truncate">
+                              来自 channel: {sourceChannelLabel}
+                            </Tag>
+                          ) : null}
+                        </div>
+                      );
+                    }}
+                    onChange={(value) => void switchSession(value)}
+                  />
+                </div>
+                <div
+                  data-testid="assistant-agent-field"
+                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[180px]"
+                >
+                  <Typography.Text type="secondary" className="shrink-0 text-[11px] uppercase tracking-[0.12em]">
+                    Agent
+                  </Typography.Text>
+                  <Select
+                    variant="borderless"
+                    className="min-w-0 flex-1"
+                    placeholder="选择一个 Agent"
+                    value={selectedAgentId ?? undefined}
+                    options={agents.map((agent) => ({
+                      value: agent.id,
+                      label: (
+                        <Space>
+                          <span>{agent.name}</span>
+                          {agent.status === "inactive" && <Tag color="default">inactive</Tag>}
+                        </Space>
+                      ),
+                    }))}
+                    onChange={(value) => setSelectedAgentId(value)}
+                    notFoundContent="暂无 Agent，请先在「Agent 管理」中创建"
+                  />
+                </div>
+                {(activeSession || selectedAgentId) ? (
+                  <div
+                    data-testid="assistant-session-summary"
+                    className="flex min-w-0 flex-wrap items-center gap-2 rounded-full border border-dashed border-shell-line bg-shell-bg/45 px-3 py-1.5 text-xs lg:flex-1"
+                  >
+                    {activeSession ? (
+                      <>
+                        <Typography.Text strong className="min-w-0 max-w-full truncate text-sm">
+                          {activeSession.title || "新会话"}
+                        </Typography.Text>
+                        {sessionId ? (
+                          <Typography.Text
+                            className="font-mono text-xs"
+                            copyable={{ text: sessionId }}
+                            ellipsis={{ tooltip: sessionId }}
+                          >
+                            session_id: {sessionId}
+                          </Typography.Text>
+                        ) : null}
+                        <Typography.Text type="secondary" className="text-xs">
+                          {formatMessageTime(activeSession.created_at)}
+                        </Typography.Text>
+                        {activeSessionAgent ? (
+                          <Tag icon={<RobotOutlined />} color="blue" className="mr-0">
+                            {activeSessionAgent.name}
+                          </Tag>
+                        ) : null}
+                        {activeSessionSourceChannelLabel ? (
+                          <Tag color="geekblue" className="mr-0 max-w-full truncate">
+                            {activeSessionSourceChannelLabel}
+                          </Tag>
+                        ) : null}
+                      </>
+                    ) : selectedAgentId ? (
+                      <Tag icon={<RobotOutlined />} color="blue" className="mr-0">
+                        {agents.find((row) => row.id === selectedAgentId)?.name || selectedAgentId}
+                      </Tag>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              <Space wrap size={4} className="shrink-0 justify-end">
+                {activeModelRoute ? (
+                  <Tag color="blue" className="!hidden md:!inline-block">
+                    使用的模型: {activeModelRoute}
+                  </Tag>
+                ) : null}
+                <ToolbarButton
+                  icon={<ToolOutlined />}
+                  onClick={() => openDetailsDrawer("traces")}
+                  title="查看 Traces / Skills & Tools"
+                  label="查看详情"
+                  labelText="查看详情"
+                  data-testid="assistant-details-button"
+                />
+                <Tooltip title="调试模式：逐条展示每个工具调用与思考卡片；关闭后执行过程折叠为单个进度卡片">
+                  <Space size={4} data-testid="assistant-debug-mode-toggle">
+                    <BulbOutlined className="text-gray-500 lg:hidden" />
+                    <span className="hidden text-xs text-gray-500 lg:inline">调试模式</span>
+                    <Switch
+                      size="small"
+                      checked={debugRenderMode}
+                      onChange={handleDebugRenderModeChange}
+                    />
+                  </Space>
+                </Tooltip>
+                <ToolbarButton
+                  icon={<CopyOutlined />}
+                  loading={isCopying}
+                  disabled={!sessionId}
+                  onClick={() => void handleCopyConversation()}
+                  title="复制完整会话（含工具调用、思维链、系统提示词等），用于交给 AI 编程工具分析"
+                  label="复制会话"
+                />
+                <ToolbarButton
+                  icon={<FormOutlined />}
+                  onClick={() => void createNewSession()}
+                  label="新会话"
+                />
+              </Space>
+            </div>
+          </div>
           <div className="relative flex min-h-0 flex-1 flex-col">
             <div
               ref={conversationScrollRef}
@@ -1978,16 +1982,100 @@ export function AssistantPage() {
           </Button>
         </div>
       </Card>
-      <div className="hidden min-h-0 min-w-0 flex-col gap-4 lg:flex">{rightRail}</div>
       <Drawer
-        title="会话 / Traces"
-        placement="right"
-        open={mobileRailOpen}
-        onClose={() => setMobileRailOpen(false)}
-        width="min(380px, 92vw)"
-        rootClassName="lg:hidden"
+        title="会话详情"
+        placement={isMobile ? "bottom" : "right"}
+        open={detailsDrawerOpen}
+        onClose={() => setDetailsDrawerOpen(false)}
+        width={isMobile ? undefined : "min(980px, 92vw)"}
+        height={isMobile ? "min(88dvh, 820px)" : undefined}
+        rootClassName="assistant-details-drawer"
+        styles={{
+          header: {
+            padding: isMobile ? "18px 18px 10px" : "20px 24px 12px",
+            borderBottom: "none",
+            background: "#f7f1e7",
+          },
+          body: { padding: 0, background: "#f7f1e7" },
+          content: { background: "#f7f1e7" },
+        }}
       >
-        <div className="flex flex-col gap-4">{rightRail}</div>
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="px-4 pb-3 lg:px-5">
+            <div className="rounded-2xl border border-shell-line bg-white/88 px-4 py-3 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
+              {activeSession ? (
+                <div className="flex flex-wrap items-center gap-2 text-sm text-shell-ink">
+                  <Typography.Text strong>{activeSession.title || "新会话"}</Typography.Text>
+                  <Tag className="mr-0">{activeSession.status}</Tag>
+                  <Typography.Text type="secondary" className="text-xs">
+                    {formatMessageTime(activeSession.created_at)}
+                  </Typography.Text>
+                  {activeSessionAgent ? (
+                    <Tag icon={<RobotOutlined />} color="blue" className="mr-0">
+                      {activeSessionAgent.name}
+                    </Tag>
+                  ) : null}
+                  {activeSessionSourceChannelLabel ? (
+                    <Tag color="geekblue" className="mr-0 max-w-full truncate">
+                      来自 channel: {activeSessionSourceChannelLabel}
+                    </Tag>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <Typography.Text strong>先开始一轮对话，再看 Traces</Typography.Text>
+                  <Typography.Text type="secondary" className="text-sm">
+                    现在可以先查看 Skills & Tools；等会话落地后，这里会显示 trace 详情。
+                  </Typography.Text>
+                </div>
+              )}
+            </div>
+          </div>
+          <Tabs
+            className="assistant-details-tabs flex min-h-0 flex-1 flex-col px-2 lg:px-3 [&_.ant-tabs-content-holder]:min-h-0 [&_.ant-tabs-content-holder]:flex-1 [&_.ant-tabs-content]:h-full [&_.ant-tabs-tabpane]:h-full"
+            activeKey={activeDetailTab}
+            onChange={(key) => setActiveDetailTab(key as "traces" | "skills-tools")}
+            items={[
+              {
+                key: "traces",
+                label: "Traces",
+                children: (
+                  <div className="h-full min-h-0 p-2 lg:p-3">
+                    <div className="h-full min-h-[52dvh] overflow-hidden rounded-[28px] border border-shell-line bg-white shadow-[0_18px_40px_rgba(15,23,42,0.06)]">
+                      {sessionId ? (
+                        <TracesPanel
+                          sessionId={sessionId}
+                          newTraceId={pendingTraceId}
+                          onNewTraceIdConsumed={() => setPendingTraceId(null)}
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center px-6">
+                          <div className="flex max-w-sm flex-col items-center gap-3 text-center">
+                            <Empty description="还没有可查看的会话 trace" />
+                            <Button type="primary" onClick={() => setActiveDetailTab("skills-tools")}>
+                              先看 Skills & Tools
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                key: "skills-tools",
+                label: "Skills & Tools",
+                children: (
+                  <div className="h-full min-h-0 p-2 lg:p-3">
+                    <div className="h-full min-h-[52dvh] overflow-y-auto rounded-[28px] border border-shell-line bg-white p-4 shadow-[0_18px_40px_rgba(15,23,42,0.06)] lg:p-5">
+                      <SkillsToolsTab />
+                    </div>
+                  </div>
+                ),
+              },
+            ]}
+          />
+        </div>
       </Drawer>
     </div>
     </div>

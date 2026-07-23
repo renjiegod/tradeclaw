@@ -78,6 +78,29 @@
   .ant-card .ant-card-head-wrapper .ant-card-extra {
     margin-left: 0;
   }
+
+  .assistant-details-drawer .ant-drawer-content-wrapper {
+    height: min(88dvh, 820px) !important;
+    border-radius: 28px 28px 0 0;
+    overflow: hidden;
+  }
+
+  .assistant-details-drawer .ant-drawer-content {
+    border-radius: 28px 28px 0 0;
+  }
+}
+
+.assistant-details-drawer .ant-drawer-header-title {
+  align-items: center;
+}
+
+.assistant-details-tabs .ant-tabs-nav {
+  margin: 0;
+  padding: 0 12px;
+}
+
+.assistant-details-tabs .ant-tabs-content-holder {
+  min-height: 0;
 }
 
 /* "Agent thinking" waiting cue — a pulsing asterisk glyph next to a label
