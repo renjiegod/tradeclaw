@@ -10,8 +10,6 @@ import { TradeImportCard } from "../components/TradeImportCard";
 
 const INTRO = {
   title: "知识库",
-  description:
-    "私有复盘工作台 · 🔒 数据仅存本机 ~/.doyoutrade/knowledge，不进 git、不外传；对话里说「记到 knowledge 里」即可写入。",
 };
 
 /**
@@ -35,7 +33,7 @@ export function KnowledgePage() {
 
   return (
     <div className="w-full">
-      <PageIntro title={INTRO.title} description={INTRO.description} />
+      <PageIntro title={INTRO.title} />
       <Tabs
         defaultActiveKey="trades"
         data-testid="knowledge-tabs"

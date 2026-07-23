@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 type Props = {
   title: string;
-  description: string;
+  description?: string;
   extra?: ReactNode;
 };
 
@@ -14,7 +14,9 @@ export function PageIntro({ title, description, extra }: Props) {
         <Typography.Title level={3} className="!m-0 !font-display !text-shell-ink">
           {title}
         </Typography.Title>
-        <Typography.Text className="text-sm text-shell-muted">{description}</Typography.Text>
+        {description ? (
+          <Typography.Text className="text-sm text-shell-muted">{description}</Typography.Text>
+        ) : null}
       </Space>
       {extra ? <div className="shrink-0">{extra}</div> : null}
     </div>
