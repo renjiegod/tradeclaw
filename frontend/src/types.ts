@@ -1291,14 +1291,14 @@ export type CycleRunRow = {
 
 /** Backfill data source ids accepted by ``settings.data_cache.source_priority``
  * (mirror of the backend ``_DATA_CACHE_SUBSCHEMA`` enum). */
-export type DataCacheSource = "qmt" | "baostock" | "akshare" | "tushare" | "mock";
+export type DataCacheSource = "qmt" | "baostock" | "mootdx" | "akshare" | "tushare" | "mock";
 
 /** Optional ``settings.data_cache`` block governing the local-DB cache, upstream
  * backfill and gap-continuity policy. Every field is optional; omitting the
  * whole block (or any key) lets the backend apply its defaults. Mirrors the
  * backend ``_DATA_CACHE_SUBSCHEMA`` in ``doyoutrade/api/operations/task_tools.py``. */
 export type TaskDataCacheSettings = {
-  /** Backfill source priority; default ``["qmt", "baostock", "akshare", "tushare"]``. */
+  /** Backfill source priority; default ``["qmt", "baostock", "mootdx", "akshare", "tushare"]``. */
   source_priority?: DataCacheSource[];
   /** Default true: read the local DB before hitting upstream. */
   local_first?: boolean;

@@ -109,6 +109,7 @@ const FALLBACK_DATA_PROVIDER_IDS = [
   "akshare",
   "tushare",
   "baostock",
+  "mootdx",
 ] as const;
 
 const DATA_PROVIDER_LABELS: Record<string, string> = {
@@ -117,6 +118,7 @@ const DATA_PROVIDER_LABELS: Record<string, string> = {
   qmt: "QMT（需配置 data.qmt）",
   akshare: "Akshare（公开行情）",
   baostock: "Baostock（公开行情 + 交易所日历）",
+  mootdx: "Mootdx（通达信公开行情）",
 };
 
 const RUN_MODE_OPTIONS = [
@@ -130,6 +132,7 @@ const RUN_MODE_OPTIONS = [
 const DATA_CACHE_SOURCE_OPTIONS: { label: string; value: DataCacheSource }[] = [
   { label: "QMT", value: "qmt" },
   { label: "Baostock", value: "baostock" },
+  { label: "Mootdx", value: "mootdx" },
   { label: "Akshare", value: "akshare" },
   { label: "Tushare", value: "tushare" },
   { label: "Mock", value: "mock" },
@@ -1118,11 +1121,11 @@ export const CreateAgentCard = forwardRef<CreateAgentCardHandle, Props>(function
                           <Form.Item
                             name="data_cache_source_priority"
                             label={
-                              <Tooltip title="本地缺失时回填的数据源优先级；选择顺序即为尝试顺序。留空走后端默认（qmt, baostock, akshare, tushare）。">
+                              <Tooltip title="本地缺失时回填的数据源优先级；选择顺序即为尝试顺序。留空走后端默认（qmt, baostock, mootdx, akshare, tushare）。">
                                 <span>回填数据源优先级</span>
                               </Tooltip>
                             }
-                            extra="按选择顺序作为回填优先级；留空 = 后端默认 qmt, baostock, akshare, tushare。"
+                            extra="按选择顺序作为回填优先级；留空 = 后端默认 qmt, baostock, mootdx, akshare, tushare。"
                           >
                             <Select
                               mode="multiple"

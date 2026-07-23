@@ -102,7 +102,7 @@ _DATA_CACHE_SUBSCHEMA: dict[str, Any] = {
             "items": {"type": "string", "enum": sorted(KNOWN_PROVIDER_NAMES)},
             "description": (
                 "Ordered backfill provider ids to try on a local miss. "
-                "Default mirrors the auto chain: qmt, baostock, akshare, tushare."
+                "Default mirrors the auto chain: qmt, baostock, mootdx, akshare, tushare."
             ),
         },
         "local_first": {
@@ -147,7 +147,7 @@ _COMMON_FLAT_PROPERTIES: dict[str, Any] = {
     },
     "data_provider": {
         "type": "string",
-        "description": "Data provider (auto / qmt / mock / akshare). Default 'auto'.",
+        "description": "Data provider (auto / qmt / mock / akshare / baostock / tushare / mootdx). Default 'auto'.",
         "default": "auto",
     },
     "account_id": {

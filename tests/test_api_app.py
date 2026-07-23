@@ -1356,10 +1356,14 @@ class ApiAppTests(unittest.TestCase):
         body = response.json()
         self.assertIn("mock", body["providers"])
         self.assertIn("qmt", body["providers"])
+        self.assertIn("mootdx", body["providers"])
         self.assertIn("items", body)
         mock = next(item for item in body["items"] if item["provider_id"] == "mock")
+        mootdx = next(item for item in body["items"] if item["provider_id"] == "mootdx")
         self.assertEqual(mock["capability_id"], "data.mock")
         self.assertEqual(mock["kind"], "data_provider")
+        self.assertEqual(mootdx["capability_id"], "data.mootdx")
+        self.assertEqual(mootdx["kind"], "data_provider")
 
     def test_model_route_kind_validation_uses_capability_registry(self):
         service = _FakeService()
@@ -2647,8 +2651,8 @@ class ApiAppTests(unittest.TestCase):
         body = response.json()
         self.assertIn("providers", body)
         self.assertEqual(
-            body["providers"][:6],
-            ["auto", "mock", "qmt", "akshare", "tushare", "baostock"],
+            body["providers"][:7],
+            ["auto", "mock", "qmt", "akshare", "tushare", "baostock", "mootdx"],
         )
 
     def test_debug_session_endpoints_proxy_service(self):

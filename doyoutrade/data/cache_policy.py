@@ -24,6 +24,7 @@ from doyoutrade.data.protocols import (
     PROVIDER_NAME_AKSHARE,
     PROVIDER_NAME_BAOSTOCK,
     PROVIDER_NAME_MOCK,
+    PROVIDER_NAME_MOOTDX,
     PROVIDER_NAME_QMT,
     PROVIDER_NAME_TUSHARE,
 )
@@ -34,6 +35,7 @@ from doyoutrade.data.protocols import (
 DEFAULT_SOURCE_PRIORITY: tuple[str, ...] = (
     PROVIDER_NAME_QMT,
     PROVIDER_NAME_BAOSTOCK,
+    PROVIDER_NAME_MOOTDX,
     PROVIDER_NAME_AKSHARE,
     PROVIDER_NAME_TUSHARE,
 )
@@ -42,6 +44,7 @@ KNOWN_PROVIDER_NAMES: frozenset[str] = frozenset(
     {
         PROVIDER_NAME_QMT,
         PROVIDER_NAME_BAOSTOCK,
+        PROVIDER_NAME_MOOTDX,
         PROVIDER_NAME_AKSHARE,
         PROVIDER_NAME_TUSHARE,
         PROVIDER_NAME_MOCK,

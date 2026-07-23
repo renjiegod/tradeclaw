@@ -11,7 +11,7 @@ server:
   tick_seconds: 5.0
 
 data:
-  # auto: use qmt when a default account with base_url exists, else akshare/baostock.
+  # auto: use qmt when a default account with base_url exists, else baostock/mootdx/akshare.
   # mock | qmt: force that channel (qmt requires a default account with base_url).
   # QMT connection / account config now lives in the ``accounts`` DB table —
   # manage it via the /accounts API, the Accounts page, or `doyoutrade-cli account`.

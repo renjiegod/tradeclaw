@@ -100,7 +100,7 @@ class DataFactoryTests(unittest.TestCase):
     def test_list_data_provider_ids_core_order(self):
         ids = list_data_provider_ids()
         self.assertEqual(
-            ids[:6], ["auto", "mock", "qmt", "akshare", "tushare", "baostock"]
+            ids[:7], ["auto", "mock", "qmt", "akshare", "tushare", "baostock", "mootdx"]
         )
         self.assertTrue(all(isinstance(x, str) and x for x in ids))
 

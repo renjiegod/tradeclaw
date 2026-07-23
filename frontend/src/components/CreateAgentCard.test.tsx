@@ -394,10 +394,10 @@ describe("CreateAgentCard deprecated task fields removal", () => {
     fireEvent.mouseDown(screen.getByLabelText("不可验证缺口（on_unverifiable_gap）"));
     fireEvent.click(await screen.findByText("degrade（无法证明时降级放行）"));
 
-    // source_priority: pick QMT then Mock (selection order = priority order).
+    // source_priority: pick QMT then Mootdx (selection order = priority order).
     fireEvent.mouseDown(screen.getByLabelText("回填数据源优先级"));
     fireEvent.click(await screen.findByText("QMT"));
-    fireEvent.click(await screen.findByText("Mock"));
+    fireEvent.click(await screen.findByText("Mootdx"));
 
     // Toggle local_first on (an explicit boolean, distinct from the "unset"
     // state of the switches we never touch). A switch renders OFF by default,
@@ -418,7 +418,7 @@ describe("CreateAgentCard deprecated task fields removal", () => {
     const settings = payload.settings as Record<string, unknown>;
     const dataCache = settings.data_cache as Record<string, unknown>;
     expect(dataCache).toBeDefined();
-    expect(dataCache.source_priority).toEqual(["qmt", "mock"]);
+    expect(dataCache.source_priority).toEqual(["qmt", "mootdx"]);
     expect(dataCache.local_first).toBe(true);
     // Untouched switches stay unset (omitted), preserving backend defaults.
     expect(dataCache).not.toHaveProperty("auto_backfill");

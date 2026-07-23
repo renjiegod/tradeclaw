@@ -11,6 +11,7 @@ class CapabilityRegistryTests(unittest.TestCase):
 
         self.assertIn("data.mock", registry.ids(kind="data_provider"))
         self.assertIn("data.qmt", registry.ids(kind="data_provider"))
+        self.assertIn("data.mootdx", registry.ids(kind="data_provider"))
         self.assertIn("model.anthropic", registry.ids(kind="model_provider"))
         self.assertIn("model.openai_compatible", registry.ids(kind="model_provider"))
         self.assertIn("channel.feishu", registry.ids(kind="channel"))
@@ -38,6 +39,15 @@ class CapabilityRegistryTests(unittest.TestCase):
         self.assertEqual(anthropic["provider_kind"], "anthropic")
         self.assertIn("config_schema", anthropic)
         self.assertNotIn("runtime", anthropic)
+
+    def test_builtin_registry_exposes_mootdx_public_summary(self):
+        registry = load_builtin_capabilities()
+        summary = registry.summary(kind="data_provider")
+        mootdx = next(item for item in summary if item["id"] == "data.mootdx")
+
+        self.assertEqual(mootdx["provider_id"], "mootdx")
+        self.assertEqual(mootdx["label"], "Mootdx")
+        self.assertNotIn("runtime", mootdx)
 
     def test_builtin_loader_accepts_extra_manifest_directories(self):
         with TemporaryDirectory() as tmp:

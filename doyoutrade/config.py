@@ -87,7 +87,7 @@ class NewsSettings:
 
 @dataclass(frozen=True)
 class DataSettings:
-    # auto | mock | qmt | akshare | tushare | baostock — per-instance can override via CycleTaskConfig.data_provider.
+    # auto | mock | qmt | akshare | tushare | baostock | mootdx — per-instance can override via CycleTaskConfig.data_provider.
     # QMT connection / account config now lives in the ``accounts`` DB table
     # (see doyoutrade.persistence.models.AccountRecord), not here.
     default_provider: str

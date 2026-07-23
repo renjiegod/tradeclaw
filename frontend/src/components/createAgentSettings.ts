@@ -217,7 +217,7 @@ export type DataCacheFormValues = {
   data_cache_on_unverifiable_gap?: "fail" | "degrade";
 };
 
-const DATA_CACHE_SOURCE_IDS: DataCacheSource[] = ["qmt", "baostock", "akshare", "tushare", "mock"];
+const DATA_CACHE_SOURCE_IDS: DataCacheSource[] = ["qmt", "baostock", "mootdx", "akshare", "tushare", "mock"];
 
 /** Read ``settings.data_cache`` into the flat form fields. Unknown / malformed
  * values are dropped (left ``undefined``) rather than coerced, so a hand-edited

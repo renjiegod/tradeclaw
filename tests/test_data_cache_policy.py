@@ -20,18 +20,18 @@ class DataCachePolicyParseTests(unittest.TestCase):
     def test_full_round_trip(self) -> None:
         p = parse_data_cache_policy(
             {
-                "source_priority": ["baostock", "qmt", "baostock"],  # de-duped, order kept
+                "source_priority": ["baostock", "mootdx", "qmt", "baostock"],  # de-duped, order kept
                 "local_first": False,
                 "auto_backfill": False,
                 "continuity": {"on_unverifiable_gap": "degrade"},
             }
         )
-        self.assertEqual(p.source_priority, ("baostock", "qmt"))
+        self.assertEqual(p.source_priority, ("baostock", "mootdx", "qmt"))
         self.assertFalse(p.local_first)
         self.assertFalse(p.auto_backfill)
         self.assertEqual(p.on_unverifiable_gap, "degrade")
         # as_payload round-trips to plain JSON-able types.
-        self.assertEqual(p.as_payload()["source_priority"], ["baostock", "qmt"])
+        self.assertEqual(p.as_payload()["source_priority"], ["baostock", "mootdx", "qmt"])
 
     def test_non_dict_raises(self) -> None:
         with self.assertRaisesRegex(ValueError, "data_cache must be an object"):

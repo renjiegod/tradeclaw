@@ -1,0 +1,17 @@
+{
+  "id": "data.mootdx",
+  "kind": "data_provider",
+  "label": "Mootdx",
+  "description": "Mootdx market data provider.",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  },
+  "metadata": {
+    "provider_id": "mootdx"
+  },
+  "runtime": {
+    "factory": "doyoutrade.data.factory:_build_mootdx_stack"
+  }
+}
