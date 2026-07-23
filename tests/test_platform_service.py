@@ -922,6 +922,72 @@ class PlatformServiceTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_get_local_market_bars_60m_uses_hourly_step_for_coverage(self):
+        # Regression guard for the interval-derived bar step. Two adjacent hourly
+        # bars are 60min apart; with the correct 60m step they merge into ONE
+        # covered range. A stale 5min step would split them and invent a spurious
+        # 09:35→10:25 missing gap between two normal bars.
+        service = self._build_service()
+        service.market_bars_repository = _FakeMarketBarsRepository(
+            bars=[
+                {
+                    "timestamp": "2026-01-02T09:30:00+00:00",
+                    "open": 10.0,
+                    "high": 10.1,
+                    "low": 9.9,
+                    "close": 10.0,
+                    "volume": 100.0,
+                    "amount": 1000.0,
+                },
+                {
+                    "timestamp": "2026-01-02T10:30:00+00:00",
+                    "open": 10.0,
+                    "high": 10.2,
+                    "low": 10.0,
+                    "close": 10.1,
+                    "volume": 120.0,
+                    "amount": 1212.0,
+                },
+            ],
+            sync_state={
+                "symbol": "600000.SH",
+                "interval": "60m",
+                "provider": "auto",
+                "adjust": "qfq",
+                "covered_start": "2026-01-02T09:30:00+00:00",
+                "covered_end": "2026-01-02T10:30:00+00:00",
+                "status": "ok",
+            },
+        )
+
+        payload = await service.get_local_market_bars(
+            symbol="600000.SH",
+            interval="60m",
+            start="2026-01-02T09:30:00+00:00",
+            end="2026-01-02T12:30:00+00:00",
+        )
+
+        self.assertEqual(
+            payload["coverage"]["covered_segments"],
+            [
+                {
+                    "start": "2026-01-02T09:30:00+00:00",
+                    "end": "2026-01-02T10:30:00+00:00",
+                    "status": "covered",
+                }
+            ],
+        )
+        self.assertEqual(
+            payload["coverage"]["missing_segments"],
+            [
+                {
+                    "start": "2026-01-02T11:30:00+00:00",
+                    "end": "2026-01-02T12:30:00+00:00",
+                    "status": "missing",
+                }
+            ],
+        )
+
     async def test_get_local_market_bars_rejects_reversed_intraday_bounds(self):
         service = self._build_service()
         service.market_bars_repository = _FakeMarketBarsRepository(bars=[], sync_state=None)

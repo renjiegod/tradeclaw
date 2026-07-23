@@ -26,15 +26,27 @@ type LocalMarketKlinePanelProps = {
 type OverlayKind = "backtest_trades" | "task_fills" | "signals";
 const KLINE_DISPLAY_ADJUST = "qfq";
 
+// Intraday intervals (denser bars, ISO tz-aware range bounds). Keep in sync with
+// the backend's SUPPORTED_LOCAL_INTERVALS / is_intraday_interval.
+const INTRADAY_INTERVALS = new Set(["5m", "60m"]);
+function isIntradayInterval(interval: string): boolean {
+  return INTRADAY_INTERVALS.has(interval);
+}
+
 // Initial window anchored to today, sized so a multi-month data lag still shows
 // the latest bars on first paint. Older history is pulled lazily on scroll.
+// Denser intervals load a shorter window to avoid pulling too many bars at once.
 function initialLookbackDays(interval: string): number {
-  return interval === "5m" ? 30 : 730;
+  if (interval === "5m") return 30;
+  if (interval === "60m") return 180;
+  return 730;
 }
 
 // Chunk pulled per lazy-load step when the user scrolls past the left edge.
 function lazyChunkDays(interval: string): number {
-  return interval === "5m" ? 60 : 730;
+  if (interval === "5m") return 60;
+  if (interval === "60m") return 120;
+  return 730;
 }
 
 function initialStart(interval: string): Dayjs {
@@ -42,7 +54,7 @@ function initialStart(interval: string): Dayjs {
 }
 
 function formatRangeBound(value: Dayjs, interval: string, isEnd: boolean): string {
-  if (interval === "5m") {
+  if (isIntradayInterval(interval)) {
     return (isEnd ? value.endOf("day") : value.startOf("day")).toISOString();
   }
   return value.format("YYYY-MM-DD");

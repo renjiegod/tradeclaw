@@ -538,7 +538,7 @@ def _parse_optional_model_max_tokens(value: Any) -> Optional[int]:
     raise ValueError("model.max_tokens must be an integer or null")
 
 
-_SUPPORTED_MARKET_INTERVALS = {"1d", "5m"}
+_SUPPORTED_MARKET_INTERVALS = {"1d", "5m", "60m"}
 _SUPPORTED_MARKET_DATA_DRIVERS = ("sqlite+aiosqlite", "postgresql+asyncpg")
 
 
@@ -577,8 +577,8 @@ def _parse_market_data_settings(block: Any) -> MarketDataSettings:
     unsupported = [item for item in intervals if item not in _SUPPORTED_MARKET_INTERVALS]
     if unsupported:
         raise ValueError(
-            "market_data.enabled_intervals only supports ['1d', '5m'] in this release; "
-            f"got {unsupported!r}"
+            f"market_data.enabled_intervals only supports {sorted(_SUPPORTED_MARKET_INTERVALS)} "
+            f"in this release; got {unsupported!r}"
         )
     lookback_years = _parse_positive_int(
         block.get("lookback_years", 10), field_name="market_data.lookback_years"

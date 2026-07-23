@@ -755,6 +755,24 @@ market_data:
         finally:
             path.unlink(missing_ok=True)
 
+    def test_market_data_accepts_60m_interval(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write(
+                """
+market_data:
+  database_url: postgresql+asyncpg://user:pass@localhost:5432/doyoutrade_market
+  enabled_intervals: ["1d", "60m"]
+""".strip()
+            )
+            path = Path(handle.name)
+        try:
+            cfg = load_config(path)
+            self.assertEqual(cfg.market_data.enabled_intervals, ("1d", "60m"))
+        finally:
+            path.unlink(missing_ok=True)
+
     def _write_cfg(self, body: str) -> Path:
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".yaml", delete=False, encoding="utf-8"
