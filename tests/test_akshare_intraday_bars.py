@@ -115,6 +115,74 @@ class AkshareIntradayRoutingTests(unittest.TestCase):
         self.assertEqual(min_api.call_args.kwargs["period"], "5")
         self.assertEqual(min_api.call_args.kwargs["adjust"], "qfq")
 
+    def test_60m_index_uses_index_min_em_endpoint(self) -> None:
+        # 000001.SH is the SSE Composite Index; it must route to the index
+        # minute endpoint (no adjust arg), not stock_zh_a_hist_min_em.
+        provider = AkshareHistoricalProvider()
+        with patch(
+            "doyoutrade.data.akshare_provider.ak.index_zh_a_hist_min_em",
+            return_value=_min_df(),
+        ) as index_api, patch(
+            "doyoutrade.data.akshare_provider.ak.stock_zh_a_hist_min_em",
+        ) as stock_api:
+            bars = asyncio.run(
+                provider.get_bars("000001.SH", "2026-07-22", "2026-07-23", interval="60m")
+            )
+        index_api.assert_called_once()
+        stock_api.assert_not_called()
+        kwargs = index_api.call_args.kwargs
+        self.assertEqual(kwargs["symbol"], "000001")
+        self.assertEqual(kwargs["period"], "60")
+        self.assertNotIn("adjust", kwargs)  # indices are unadjusted
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(bars[0].timestamp, "2026-07-23T10:30:00")
+
+    def test_daily_index_uses_index_zh_a_hist(self) -> None:
+        provider = AkshareHistoricalProvider()
+        daily_df = pd.DataFrame(
+            [
+                {
+                    "日期": "2026-07-23",
+                    "开盘": 3000.0,
+                    "最高": 3050.0,
+                    "最低": 2990.0,
+                    "收盘": 3040.0,
+                    "成交量": 12345,
+                    "成交额": 67890.0,
+                }
+            ]
+        )
+        with patch(
+            "doyoutrade.data.akshare_provider.ak.index_zh_a_hist",
+            return_value=daily_df,
+        ) as index_api, patch(
+            "doyoutrade.data.akshare_provider.ak.stock_zh_a_hist",
+        ) as stock_api:
+            bars = asyncio.run(
+                provider.get_bars("000001.SH", "2026-07-01", "2026-07-23", interval="1d")
+            )
+        index_api.assert_called_once()
+        stock_api.assert_not_called()
+        self.assertEqual(index_api.call_args.kwargs["symbol"], "000001")
+        self.assertNotIn("adjust", index_api.call_args.kwargs)
+        self.assertEqual(bars[0].close, 3040.0)
+
+    def test_60m_szse_stock_not_treated_as_index(self) -> None:
+        # 000001.SZ is 平安银行 (a stock), NOT an index — must use the stock
+        # minute endpoint even though the digits match the SSE index.
+        provider = AkshareHistoricalProvider()
+        with patch(
+            "doyoutrade.data.akshare_provider.ak.stock_zh_a_hist_min_em",
+            return_value=_min_df(),
+        ) as stock_api, patch(
+            "doyoutrade.data.akshare_provider.ak.index_zh_a_hist_min_em",
+        ) as index_api:
+            asyncio.run(
+                provider.get_bars("000001.SZ", "2026-07-22", "2026-07-23", interval="60m")
+            )
+        stock_api.assert_called_once()
+        index_api.assert_not_called()
+
     def test_daily_still_uses_stock_zh_a_hist(self) -> None:
         # Regression: daily must NOT be diverted to the minute endpoint.
         provider = AkshareHistoricalProvider()

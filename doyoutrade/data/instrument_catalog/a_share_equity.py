@@ -50,6 +50,32 @@ def is_cn_a_share_etf_symbol(symbol: str) -> bool:
     return False
 
 
+def is_cn_a_share_index_symbol(symbol: str) -> bool:
+    """Return True if ``symbol`` looks like a mainland A-share **index** (指数).
+
+    Prefix allowlist aligned with the standard index numbering — deliberately
+    narrow, mirroring :func:`is_cn_a_share_etf_symbol`:
+
+    * 上交所 (.SH): ``000xxx`` 系（``000001`` 上证综指、``000300`` 沪深300、
+      ``000905`` 中证500、``000016`` 上证50 等）。上证个股是 ``60x``/``68x``/``90x``，
+      不占 ``000`` 段，故 ``.SH`` + ``000`` 前缀即指数。
+    * 深交所 (.SZ): ``399xxx`` 系（``399001`` 深证成指、``399006`` 创业板指 等）。
+      深证个股从不以 ``399`` 开头。
+
+    注意 ``000001.SZ`` 是平安银行（个股），``000001.SH`` 才是上证综指——分类必须
+    同时看交易所后缀，不能只看数字。指数不复权，取数走 akshare 的 index_* 端点。
+    """
+    parsed = _split_base_suffix(symbol)
+    if parsed is None:
+        return False
+    base, suf = parsed
+    if suf == "SH":
+        return base.startswith("000")
+    if suf == "SZ":
+        return base.startswith("399")
+    return False
+
+
 def is_cn_a_share_equity_symbol(symbol: str) -> bool:
     """Return True if ``symbol`` looks like a mainland A-share **stock** (not fund/bond/ETF).
 
