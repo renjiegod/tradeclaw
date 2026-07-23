@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from opentelemetry import trace
@@ -17,7 +17,41 @@ from doyoutrade.debug import emit_debug_event
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_LOCAL_INTERVALS = frozenset({"1d", "5m"})
+# Single source of truth for local market bars intervals. The cache layer only
+# distinguishes two *shapes*: daily (``1d``) and intraday (a set). Adding a new
+# intraday interval means adding it to both ``SUPPORTED_LOCAL_INTERVALS`` and
+# ``_INTRADAY_LOCAL_INTERVALS`` plus its bar step in ``_INTERVAL_STEP`` — keeping
+# the three in lockstep avoids the "allowed but step/branch not updated" drift
+# bug (§错误可见性: 字面量与属性脱钩必须收敛). config / workspace / service all
+# import from here rather than re-hardcoding ``{"1d", "5m"}``.
+_INTRADAY_LOCAL_INTERVALS = frozenset({"5m", "60m"})
+SUPPORTED_LOCAL_INTERVALS = frozenset({"1d"}) | _INTRADAY_LOCAL_INTERVALS
+_INTERVAL_STEP: dict[str, timedelta] = {
+    "5m": timedelta(minutes=5),
+    "60m": timedelta(minutes=60),
+}
+
+
+def is_intraday_interval(interval: str) -> bool:
+    """True for intraday local intervals (``5m`` / ``60m``); False for ``1d``."""
+    return interval in _INTRADAY_LOCAL_INTERVALS
+
+
+def interval_step(interval: str) -> timedelta:
+    """Bar-to-bar spacing for an intraday interval.
+
+    Used by the coverage / fetch-segment builders to decide whether two adjacent
+    bars are contiguous. Raising on a non-intraday interval keeps a daily
+    interval from silently borrowing a wrong step (§错误可见性: schema 违反必须
+    raise 带类型 + 值).
+    """
+    try:
+        return _INTERVAL_STEP[interval]
+    except KeyError as exc:
+        raise ValueError(
+            "interval_step is only defined for intraday intervals "
+            f"{sorted(_INTRADAY_LOCAL_INTERVALS)}, got {interval!r}"
+        ) from exc
 
 
 class LocalHistoricalBarsDataProvider:
@@ -80,7 +114,10 @@ class LocalHistoricalBarsDataProvider:
                     error_code="market_data_interval_unsupported",
                     error_type="ValueError",
                     error=f"unsupported interval: {interval}",
-                    hint="Use one of the supported local intervals: 1d, 5m.",
+                    hint=(
+                        "Use one of the supported local intervals: "
+                        f"{', '.join(sorted(SUPPORTED_LOCAL_INTERVALS))}."
+                    ),
                 )
                 raise ValueError(
                     "market_data_interval_unsupported: "
@@ -108,7 +145,7 @@ class LocalHistoricalBarsDataProvider:
                     error_code="market_data_bound_invalid",
                     error_type=type(exc).__name__,
                     error=str(exc),
-                    hint="Use YYYY-MM-DD for daily bars; use YYYY-MM-DD or timezone-aware ISO bounds for 5m bars.",
+                    hint="Use YYYY-MM-DD for daily bars; use YYYY-MM-DD or timezone-aware ISO bounds for intraday bars.",
                 )
                 raise
 
@@ -551,7 +588,7 @@ def _query_bound(value: str, *, interval: str, is_end: bool) -> datetime:
         day = _source_date_part(value)
         bound_time = time.max if is_end else time.min
         return datetime.combine(datetime.fromisoformat(day).date(), bound_time, timezone.utc)
-    if interval == "5m":
+    if is_intraday_interval(interval):
         if _is_date_only(value):
             day = _source_date_part(value)
             bound_time = time.max if is_end else time.min
@@ -564,7 +601,7 @@ def _query_bound(value: str, *, interval: str, is_end: bool) -> datetime:
         dt = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
         if dt.tzinfo is None:
             raise ValueError(
-                "market_data_bound_invalid: timezone-aware ISO bounds are required for 5m bars"
+                "market_data_bound_invalid: timezone-aware ISO bounds are required for intraday bars"
             )
         normalized_dt = datetime.fromisoformat(normalized)
         return normalized_dt.replace(tzinfo=timezone.utc)

@@ -362,7 +362,6 @@ class DatabaseSettings:
 @dataclass(frozen=True)
 class MarketDataSettings:
     database_url: str
-    enabled_intervals: tuple[str, ...]
     lookback_years: int
     default_provider: str
     sync_on_startup: bool
@@ -538,7 +537,6 @@ def _parse_optional_model_max_tokens(value: Any) -> Optional[int]:
     raise ValueError("model.max_tokens must be an integer or null")
 
 
-_SUPPORTED_MARKET_INTERVALS = {"1d", "5m"}
 _SUPPORTED_MARKET_DATA_DRIVERS = ("sqlite+aiosqlite", "postgresql+asyncpg")
 
 
@@ -568,18 +566,6 @@ def _parse_market_data_settings(block: Any) -> MarketDataSettings:
             )
     elif not parsed.database:
         raise ValueError("market_data.database_url must include a database name")
-    raw_intervals = block.get("enabled_intervals", ["1d", "5m"])
-    if not isinstance(raw_intervals, list) or not raw_intervals:
-        raise ValueError("market_data.enabled_intervals must be a non-empty list")
-    intervals = tuple(str(item).strip() for item in raw_intervals)
-    if not intervals or any(not item for item in intervals):
-        raise ValueError("market_data.enabled_intervals must contain non-empty interval strings")
-    unsupported = [item for item in intervals if item not in _SUPPORTED_MARKET_INTERVALS]
-    if unsupported:
-        raise ValueError(
-            "market_data.enabled_intervals only supports ['1d', '5m'] in this release; "
-            f"got {unsupported!r}"
-        )
     lookback_years = _parse_positive_int(
         block.get("lookback_years", 10), field_name="market_data.lookback_years"
     )
@@ -595,7 +581,6 @@ def _parse_market_data_settings(block: Any) -> MarketDataSettings:
     )
     return MarketDataSettings(
         database_url=database_url,
-        enabled_intervals=intervals,
         lookback_years=lookback_years,
         default_provider=default_provider,
         sync_on_startup=_parse_bool(

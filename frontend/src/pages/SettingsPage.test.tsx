@@ -43,7 +43,6 @@ const baseConfig: DoyoutradeConfigResponse = {
     },
     market_data: {
       database_url: "sqlite:///md.db",
-      enabled_intervals: ["1d", "5m"],
       lookback_years: 10,
       default_provider: "auto",
       sync_on_startup: true,

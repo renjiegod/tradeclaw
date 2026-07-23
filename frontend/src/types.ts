@@ -3007,7 +3007,6 @@ export type DoyoutradeConfigValues = {
   };
   market_data: {
     database_url: string;
-    enabled_intervals: string[];
     lookback_years: number;
     default_provider: string;
     sync_on_startup: boolean;

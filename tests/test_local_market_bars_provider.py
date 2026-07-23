@@ -233,6 +233,55 @@ class LocalHistoricalBarsDataProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(upsert["interval"], "5m")
         self.assertEqual(upsert["bars"][0]["timestamp"], "2026-01-02T09:35:00+00:00")
 
+    async def test_sixty_minute_gap_fetch_upserts_hourly_timestamp(self) -> None:
+        bar = _bar("600000.SH", "2026-01-02T10:00:00", 11.0)
+        repo = FakeRepository()
+        upstream = FakeUpstream([bar])
+        provider = LocalHistoricalBarsDataProvider(repo, upstream, provider="qmt")
+
+        got = await provider.get_bars(
+            "600000.SH",
+            "2026-01-02",
+            "2026-01-03",
+            interval="60m",
+        )
+
+        self.assertEqual(got, [bar])
+        self.assertEqual(
+            upstream.calls,
+            [("600000.SH", "2026-01-02", "2026-01-03", "60m", "qfq")],
+        )
+        upsert = repo.upsert_calls[0]
+        self.assertEqual(upsert["interval"], "60m")
+        self.assertEqual(upsert["bars"][0]["timestamp"], "2026-01-02T10:00:00+00:00")
+
+    async def test_sixty_minute_date_bounds_read_local_store(self) -> None:
+        repo = FakeRepository(rows=[_row("600000.SH", "2026-01-02T10:00:00", 11.0)])
+        upstream = FakeUpstream()
+        provider = LocalHistoricalBarsDataProvider(
+            repo,
+            upstream,
+            provider="qmt",
+            adjust="qfq",
+        )
+
+        got = await provider.get_bars(
+            "600000.SH",
+            "2026-01-02",
+            "2026-01-03",
+            interval="60m",
+        )
+
+        self.assertEqual([bar.timestamp for bar in got], ["2026-01-02T10:00:00"])
+        self.assertEqual(upstream.calls, [])
+        read_call = repo.read_calls[0]
+        self.assertEqual(read_call["interval"], "60m")
+        self.assertEqual(read_call["start"], datetime(2026, 1, 2, tzinfo=timezone.utc))
+        self.assertEqual(
+            read_call["end"],
+            datetime(2026, 1, 3, 23, 59, 59, 999999, timezone.utc),
+        )
+
     async def test_five_minute_gap_fetch_rejects_date_only_bar_timestamp(self) -> None:
         repo = FakeRepository()
         upstream = FakeUpstream([_bar("600000.SH", "2026-01-02", 11.0)])

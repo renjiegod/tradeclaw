@@ -77,7 +77,6 @@ market_data:
   # sync or heavy 5m history, point this at PostgreSQL with the TimescaleDB
   # extension instead: postgresql+asyncpg://user:pass@host:5432/dbname
   database_url: "sqlite+aiosqlite:///./data/market_bars.db"
-  enabled_intervals: ["1d", "5m"]
   lookback_years: 10
   default_provider: auto
   sync_on_startup: true

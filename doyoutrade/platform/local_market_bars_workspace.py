@@ -6,7 +6,11 @@ from typing import Any
 
 from doyoutrade.data.bar_timestamp import normalize_bar_timestamp
 from doyoutrade.data.coverage_ranges import consecutive_trading_day_ranges, merge_date_ranges
-from doyoutrade.data.local_market_bars import _query_bound
+from doyoutrade.data.local_market_bars import (
+    _query_bound,
+    interval_step,
+    is_intraday_interval,
+)
 
 
 @dataclass(frozen=True)
@@ -39,11 +43,22 @@ class LocalMarketSyncJob:
     hint: str | None = None
 
 
+# Max requested span (calendar days) still eligible for inline (sync) fetch per
+# interval. Intraday bars are denser, so their thresholds are smaller and scale
+# roughly with bar density (5m ≈ 48 bars/day, 60m ≈ 4 bars/day). Keyed per
+# interval so a new intraday interval must declare its threshold here rather
+# than silently borrowing another's.
+_SYNC_MAX_SPAN_DAYS: dict[str, int] = {
+    "1d": 400,
+    "5m": 10,
+    "60m": 60,
+}
+
+
 def choose_sync_execution_mode(*, interval: str, start: str, end: str) -> str:
     span_days = _calendar_day_span(start, end)
-    if interval == "1d" and span_days <= 400:
-        return "sync"
-    if interval == "5m" and span_days <= 10:
+    max_span = _SYNC_MAX_SPAN_DAYS.get(interval)
+    if max_span is not None and span_days <= max_span:
         return "sync"
     return "async"
 
@@ -61,14 +76,15 @@ def build_sync_fetch_segments(
         return [CoverageSegment(start=requested_start, end=requested_end, status="requested")]
     if normalized_mode != "fill_gap":
         raise ValueError(f"unsupported local market sync mode: {mode!r}")
-    if interval == "1d":
-        return _build_daily_fetch_segments(
+    if is_intraday_interval(interval):
+        return _build_intraday_fetch_segments(
+            interval=interval,
             requested_start=requested_start,
             requested_end=requested_end,
             bars=bars,
         )
-    if interval == "5m":
-        return _build_intraday_fetch_segments(
+    if interval == "1d":
+        return _build_daily_fetch_segments(
             requested_start=requested_start,
             requested_end=requested_end,
             bars=bars,
@@ -155,15 +171,16 @@ def build_requested_window_coverage(
     bars: list[dict[str, Any]],
     sync_state: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    if interval == "1d":
-        covered_segments, missing_segments = _build_daily_coverage(
+    if is_intraday_interval(interval):
+        covered_segments, missing_segments = _build_intraday_coverage(
+            interval=interval,
             requested_start=requested_start,
             requested_end=requested_end,
             bars=bars,
             sync_state=sync_state,
         )
-    elif interval == "5m":
-        covered_segments, missing_segments = _build_intraday_coverage(
+    elif interval == "1d":
+        covered_segments, missing_segments = _build_daily_coverage(
             requested_start=requested_start,
             requested_end=requested_end,
             bars=bars,
@@ -234,6 +251,7 @@ def _build_daily_coverage(
 
 def _build_intraday_coverage(
     *,
+    interval: str,
     requested_start: str,
     requested_end: str,
     bars: list[dict[str, Any]],
@@ -248,7 +266,10 @@ def _build_intraday_coverage(
         end_value=window_end,
     )
 
-    step = timedelta(minutes=5)
+    # step must match the interval's bar spacing: adjacent bars closer than step
+    # merge into one covered range; a wrong (too-small) step would flag every
+    # normal inter-bar gap (e.g. 60min for 60m) as a spurious missing segment.
+    step = interval_step(interval)
     ranges: list[tuple[datetime, datetime]] = []
     bar_points = sorted(
         {
@@ -329,6 +350,7 @@ def _build_daily_fetch_segments(
 
 def _build_intraday_fetch_segments(
     *,
+    interval: str,
     requested_start: str,
     requested_end: str,
     bars: list[dict[str, Any]],
@@ -341,7 +363,7 @@ def _build_intraday_fetch_segments(
         start_value=window_start,
         end_value=window_end,
     )
-    step = timedelta(minutes=5)
+    step = interval_step(interval)
     points_by_day: dict[date, list[datetime]] = {}
     for bar in bars:
         point = _coerce_intradayish(bar.get("timestamp"), field_name="timestamp", is_end=False)
@@ -438,6 +460,8 @@ def _coerce_intradayish(value: Any, *, field_name: str, is_end: bool) -> datetim
     elif isinstance(value, str) and value.strip():
         text = value.strip()
         try:
+            # Any intraday interval shares the same timestamp-bound parsing in
+            # _query_bound; "5m" here only selects the intraday parse path.
             return _query_bound(text, interval="5m", is_end=is_end)
         except ValueError as exc:
             normalized = normalize_bar_timestamp(text)
@@ -446,7 +470,7 @@ def _coerce_intradayish(value: Any, *, field_name: str, is_end: bool) -> datetim
                     return datetime.fromisoformat(normalized).replace(tzinfo=timezone.utc)
                 except ValueError:
                     pass
-            raise ValueError(f"{field_name} invalid for 5m coverage: {exc}") from exc
+            raise ValueError(f"{field_name} invalid for intraday coverage: {exc}") from exc
     else:
         raise ValueError(
             f"{field_name} must be a datetime/date string or object, got {type(value).__name__}: {value!r}"

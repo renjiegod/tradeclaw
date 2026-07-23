@@ -20,6 +20,7 @@ type LocalMarketKlineToolbarProps = {
 const INTERVAL_OPTIONS = [
   { value: "1d", label: "日线" },
   { value: "5m", label: "5 分钟" },
+  { value: "60m", label: "60 分钟" },
 ];
 
 const PROVIDER_OPTIONS = [{ value: "auto", label: "自动源" }];

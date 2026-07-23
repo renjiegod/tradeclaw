@@ -73,7 +73,6 @@ RESTART_REQUIRED_FIELDS: tuple[str, ...] = (
     "database.echo",
     "database.pool_pre_ping",
     "market_data.database_url",
-    "market_data.enabled_intervals",
     "market_data.lookback_years",
     "market_data.default_provider",
     "market_data.sync_on_startup",
@@ -190,7 +189,6 @@ def _masked_values(cfg: config.AppConfig) -> dict[str, Any]:
         },
         "market_data": {
             "database_url": cfg.market_data.database_url,
-            "enabled_intervals": list(cfg.market_data.enabled_intervals),
             "lookback_years": cfg.market_data.lookback_years,
             "default_provider": cfg.market_data.default_provider,
             "sync_on_startup": cfg.market_data.sync_on_startup,
