@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from doyoutrade.data.instrument_catalog.a_share_equity import (
     is_cn_a_share_equity_symbol,
     is_cn_a_share_etf_symbol,
+    is_cn_a_share_index_symbol,
 )
 from doyoutrade.data.instrument_catalog.normalize import (
     canonical_symbol_from_qmt_stock_code,
@@ -76,6 +77,27 @@ class EtfFilterTests(unittest.TestCase):
                 is_cn_a_share_equity_symbol(sym) and is_cn_a_share_etf_symbol(sym),
                 sym,
             )
+
+
+class IndexFilterTests(unittest.TestCase):
+    def test_recognises_sh_and_sz_index(self):
+        self.assertTrue(is_cn_a_share_index_symbol("000001.SH"))  # 上证综指
+        self.assertTrue(is_cn_a_share_index_symbol("000300.SH"))  # 沪深300
+        self.assertTrue(is_cn_a_share_index_symbol("000905.SH"))  # 中证500
+        self.assertTrue(is_cn_a_share_index_symbol("399001.SZ"))  # 深证成指
+        self.assertTrue(is_cn_a_share_index_symbol("399006.SZ"))  # 创业板指
+
+    def test_rejects_stocks_etf_and_malformed(self):
+        # 同数字不同市场：000001.SZ 是平安银行（个股），不是指数
+        self.assertFalse(is_cn_a_share_index_symbol("000001.SZ"))
+        self.assertFalse(is_cn_a_share_index_symbol("600000.SH"))
+        self.assertFalse(is_cn_a_share_index_symbol("300750.SZ"))
+        self.assertFalse(is_cn_a_share_index_symbol("510300.SH"))  # ETF
+        # 指数与 ETF 分类互斥
+        self.assertFalse(is_cn_a_share_etf_symbol("000001.SH"))
+        # 非规范形式
+        self.assertFalse(is_cn_a_share_index_symbol("000001"))
+        self.assertFalse(is_cn_a_share_index_symbol("00700.HK"))
 
 
 class ASshareFilterTests(unittest.TestCase):

@@ -27,7 +27,10 @@ import httpx
 
 from doyoutrade.data.bar_timestamp import normalize_bar_timestamp
 from doyoutrade.data.constants import DEFAULT_BAR_ADJUST
-from doyoutrade.data.instrument_catalog.a_share_equity import is_cn_a_share_etf_symbol
+from doyoutrade.data.instrument_catalog.a_share_equity import (
+    is_cn_a_share_etf_symbol,
+    is_cn_a_share_index_symbol,
+)
 
 logger = logging.getLogger(__name__)
 from doyoutrade.data.instrumentation import data_span
@@ -116,53 +119,88 @@ class AkshareHistoricalProvider:
         # normalize adjust to what akshare accepts
         adjust_param = _ADJUST_MAP.get(adjust, "")
 
-        # ETFs (场内基金) live on a different akshare endpoint: the stock hist
-        # endpoints return nothing for them, so route them to the fund_etf_*
-        # twin. Daily and minute endpoints share the same 开盘/收盘/最高/最低/
-        # 成交量/成交额 columns (daily keys the timestamp as 日期, minute as 时间),
-        # so the row-parsing loop below is shared.
+        # Three instrument classes ride three different eastmoney endpoint
+        # families — the wrong one silently returns zero rows:
+        #   * 指数 (index):  index_zh_a_hist / index_zh_a_hist_min_em (NO adjust)
+        #   * ETF (场内基金): fund_etf_hist_em / fund_etf_hist_min_em
+        #   * 个股 (stock):   stock_zh_a_hist / stock_zh_a_hist_min_em
+        # Daily and minute endpoints share the same 开盘/收盘/最高/最低/成交量/
+        # 成交额 columns (daily keys the timestamp as 日期, minute as 时间), so the
+        # row-parsing loop below is shared. is_etf / is_index are mutually
+        # exclusive by prefix construction.
+        is_index = is_cn_a_share_index_symbol(symbol)
         is_etf = is_cn_a_share_etf_symbol(symbol)
         intraday_period = _INTRADAY_PERIOD_MAP.get(interval)
 
         if intraday_period is not None:
             # Intraday → minute endpoints (period ∈ {1,5,15,30,60}). The daily
             # endpoints raise KeyError on these period values.
-            # akshare's 1-minute feed rejects a non-empty adjust; force raw.
-            min_adjust = "" if intraday_period == "1" else adjust_param
             start_arg = _min_em_bound(start_time, is_end=False)
             end_arg = _min_em_bound(end_time, is_end=True)
-            api_name = "fund_etf_hist_min_em" if is_etf else "stock_zh_a_hist_min_em"
 
-            def _call() -> Any:
-                min_api = ak.fund_etf_hist_min_em if is_etf else ak.stock_zh_a_hist_min_em
-                return min_api(
-                    symbol=ak_symbol,
-                    start_date=start_arg,
-                    end_date=end_arg,
-                    period=intraday_period,
-                    adjust=min_adjust,
-                )
+            if is_index:
+                # Index minute endpoint takes no adjust (indices aren't adjusted).
+                api_name = "index_zh_a_hist_min_em"
+
+                def _call() -> Any:
+                    return ak.index_zh_a_hist_min_em(
+                        symbol=ak_symbol,
+                        start_date=start_arg,
+                        end_date=end_arg,
+                        period=intraday_period,
+                    )
+
+            else:
+                # akshare's 1-minute feed rejects a non-empty adjust; force raw.
+                min_adjust = "" if intraday_period == "1" else adjust_param
+                api_name = "fund_etf_hist_min_em" if is_etf else "stock_zh_a_hist_min_em"
+
+                def _call() -> Any:
+                    min_api = ak.fund_etf_hist_min_em if is_etf else ak.stock_zh_a_hist_min_em
+                    return min_api(
+                        symbol=ak_symbol,
+                        start_date=start_arg,
+                        end_date=end_arg,
+                        period=intraday_period,
+                        adjust=min_adjust,
+                    )
 
         else:
             period = _INTERVAL_PERIOD_MAP.get(interval, "daily")
-            api_name = "fund_etf_hist_em" if is_etf else "stock_zh_a_hist"
+            start_arg = start_time.replace("-", "")
+            end_arg = end_time.replace("-", "")
 
-            def _call() -> Any:
-                if is_etf:
-                    return ak.fund_etf_hist_em(
+            if is_index:
+                # Index daily endpoint takes no adjust either.
+                api_name = "index_zh_a_hist"
+
+                def _call() -> Any:
+                    return ak.index_zh_a_hist(
                         symbol=ak_symbol,
                         period=period,
-                        start_date=start_time.replace("-", ""),
-                        end_date=end_time.replace("-", ""),
+                        start_date=start_arg,
+                        end_date=end_arg,
+                    )
+
+            else:
+                api_name = "fund_etf_hist_em" if is_etf else "stock_zh_a_hist"
+
+                def _call() -> Any:
+                    if is_etf:
+                        return ak.fund_etf_hist_em(
+                            symbol=ak_symbol,
+                            period=period,
+                            start_date=start_arg,
+                            end_date=end_arg,
+                            adjust=adjust_param,
+                        )
+                    return ak.stock_zh_a_hist(
+                        symbol=ak_symbol,
+                        start_date=start_arg,
+                        end_date=end_arg,
+                        period=period,
                         adjust=adjust_param,
                     )
-                return ak.stock_zh_a_hist(
-                    symbol=ak_symbol,
-                    start_date=start_time.replace("-", ""),
-                    end_date=end_time.replace("-", ""),
-                    period=period,
-                    adjust=adjust_param,
-                )
 
         df = None
         for attempt in range(3):
