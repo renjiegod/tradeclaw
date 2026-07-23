@@ -1587,10 +1587,13 @@ export function AssistantPage() {
                   {activeSession ? <Tag className="mr-0">{activeSession.status}</Tag> : null}
                 </div>
               </div>
-              <div className="flex min-w-0 flex-1 flex-col gap-2 lg:flex-row lg:flex-nowrap lg:items-center">
+              <div
+                data-testid="assistant-toolbar-controls"
+                className="flex min-w-0 flex-1 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center xl:flex-nowrap"
+              >
                 <div
                   data-testid="assistant-channel-field"
-                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[150px]"
+                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[150px] lg:shrink-0"
                 >
                   <Typography.Text type="secondary" className="shrink-0 text-[11px] uppercase tracking-[0.12em]">
                     来源
@@ -1612,7 +1615,7 @@ export function AssistantPage() {
                 </div>
                 <div
                   data-testid="assistant-session-field"
-                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[190px]"
+                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[190px] lg:shrink-0"
                 >
                   <Typography.Text type="secondary" className="shrink-0 text-[11px] uppercase tracking-[0.12em]">
                     会话
@@ -1652,7 +1655,7 @@ export function AssistantPage() {
                 </div>
                 <div
                   data-testid="assistant-agent-field"
-                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[180px]"
+                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[180px] lg:shrink-0"
                 >
                   <Typography.Text type="secondary" className="shrink-0 text-[11px] uppercase tracking-[0.12em]">
                     Agent
@@ -1678,38 +1681,38 @@ export function AssistantPage() {
                 {(activeSession || selectedAgentId) ? (
                   <div
                     data-testid="assistant-session-summary"
-                    className="flex min-w-0 flex-wrap items-center gap-2 rounded-full border border-dashed border-shell-line bg-shell-bg/45 px-3 py-1.5 text-xs lg:flex-1"
+                    className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-full border border-dashed border-shell-line bg-shell-bg/45 px-3 py-1.5 text-xs lg:basis-full xl:basis-auto xl:min-w-[12rem] xl:flex-1"
                   >
                     {activeSession ? (
                       <>
-                        <Typography.Text strong className="min-w-0 max-w-full truncate text-sm">
+                        <Typography.Text strong className="min-w-0 max-w-[10rem] shrink truncate whitespace-nowrap text-sm">
                           {activeSession.title || "新会话"}
                         </Typography.Text>
                         {sessionId ? (
                           <Typography.Text
-                            className="font-mono text-xs"
+                            className="min-w-0 max-w-[14rem] shrink truncate whitespace-nowrap font-mono text-xs"
                             copyable={{ text: sessionId }}
                             ellipsis={{ tooltip: sessionId }}
                           >
                             session_id: {sessionId}
                           </Typography.Text>
                         ) : null}
-                        <Typography.Text type="secondary" className="text-xs">
+                        <Typography.Text type="secondary" className="shrink-0 whitespace-nowrap text-xs">
                           {formatMessageTime(activeSession.created_at)}
                         </Typography.Text>
                         {activeSessionAgent ? (
-                          <Tag icon={<RobotOutlined />} color="blue" className="mr-0">
+                          <Tag icon={<RobotOutlined />} color="blue" className="mr-0 shrink-0">
                             {activeSessionAgent.name}
                           </Tag>
                         ) : null}
                         {activeSessionSourceChannelLabel ? (
-                          <Tag color="geekblue" className="mr-0 max-w-full truncate">
+                          <Tag color="geekblue" className="mr-0 max-w-[12rem] shrink truncate">
                             {activeSessionSourceChannelLabel}
                           </Tag>
                         ) : null}
                       </>
                     ) : selectedAgentId ? (
-                      <Tag icon={<RobotOutlined />} color="blue" className="mr-0">
+                      <Tag icon={<RobotOutlined />} color="blue" className="mr-0 shrink-0">
                         {agents.find((row) => row.id === selectedAgentId)?.name || selectedAgentId}
                       </Tag>
                     ) : null}

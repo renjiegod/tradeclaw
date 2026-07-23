@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -815,5 +815,24 @@ describe("AssistantPage conversation", () => {
         expect.objectContaining({ source: "web", limit: 50 }),
       ),
     );
+  });
+
+  it("keeps the session summary from collapsing into a character column in the toolbar", async () => {
+    // Regression: under lg nowrap the summary's min-w-0 flex-1 was crushed to
+    // ~0 width, so session_id / timestamp wrapped one glyph per line.
+    render(<AssistantPage />);
+
+    const controls = await screen.findByTestId("assistant-toolbar-controls");
+    expect(controls.className).toMatch(/\blg:flex-wrap\b/);
+    expect(controls.className).toMatch(/\bxl:flex-nowrap\b/);
+
+    const summary = await screen.findByTestId("assistant-session-summary");
+    expect(summary.className).toMatch(/\boverflow-hidden\b/);
+    expect(summary.className).toMatch(/\blg:basis-full\b/);
+    expect(summary.className).toMatch(/\bxl:flex-1\b/);
+
+    const sessionIdText = within(summary).getByText(/session_id:/);
+    expect(sessionIdText.className).toMatch(/\bwhitespace-nowrap\b/);
+    expect(sessionIdText.className).toMatch(/\btruncate\b|\boverflow-hidden\b|ellipsis/);
   });
 });
