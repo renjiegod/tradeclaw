@@ -70,7 +70,23 @@ class FakeDataProvider:
         return value != "2026-01-04"
 
     async def get_trading_dates(self, start: str, end: str) -> list[str]:
-        return [start, end]
+        # A realistic-enough calendar: the days this fake actually has bars for
+        # within the window. The coverage-integrity guard in
+        # CachedBarsDataProvider needs the trading calendar to recognise the
+        # days it returned bars for; returning only the endpoints (the legacy
+        # stub) made every fetched bar look like it fell on a non-trading day.
+        # Falls back to the endpoints when the fake holds no bars so pure
+        # delegation tests keep their shape.
+        lo, hi = start[:10], end[:10]
+        days = sorted(
+            {
+                bar.timestamp[:10]
+                for bars in self.bars_by_symbol.values()
+                for bar in bars
+                if lo <= bar.timestamp[:10] <= hi
+            }
+        )
+        return days or [lo, hi]
 
     async def aclose(self) -> None:
         self.closed = True
@@ -337,6 +353,87 @@ class CachedBarsDataProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(provider, CachedBarsDataProvider)
         self.assertEqual([bar.timestamp for bar in got], ["2026-01-10"])
         self.assertEqual(inner.calls, [(symbol, "2026-01-01", "2026-02-22", "1d", "qfq")])
+
+    async def test_partial_fetch_does_not_overclaim_coverage(self) -> None:
+        # A partial upstream result (only the recent tail of the window has
+        # bars, e.g. after an adjust-drift rebuild left ~5 months of sparse
+        # bars) must NOT be recorded as full coverage — otherwise the
+        # uncovered early days become false cache hits that serve nothing and
+        # never re-fetch. Regression for the 000636.SZ backtest that showed
+        # "175 data_insufficient / 67 no_cross" over a 1-year window.
+        symbol = "600000.SH"
+
+        class PartialProvider(FakeDataProvider):
+            def __init__(self) -> None:
+                super().__init__()
+                self._calendar = [
+                    "2026-01-01", "2026-01-02", "2026-01-05",
+                    "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09",
+                ]
+                # Only the tail is available at first (early days "missing").
+                self.bars_by_symbol = {
+                    symbol: [
+                        _bar(symbol, "2026-01-07", 10.0),
+                        _bar(symbol, "2026-01-08", 11.0),
+                        _bar(symbol, "2026-01-09", 12.0),
+                    ]
+                }
+
+            async def get_trading_dates(self, start: str, end: str) -> list[str]:
+                lo, hi = start[:10], end[:10]
+                return [d for d in self._calendar if lo <= d <= hi]
+
+        inner = PartialProvider()
+        provider = CachedBarsDataProvider(inner, scope="backtest", run_id="run-1")
+
+        await provider.preload_bars([symbol], "2026-01-01", "2026-01-09", interval="1d")
+
+        # Coverage is limited to the tail that actually had bars — the early
+        # gap [01-01, 01-06] is deliberately left uncovered.
+        ranges = await provider._store.covered_ranges(
+            provider=provider._provider_name,
+            symbol=symbol,
+            interval="1d",
+            adjust="qfq",
+        )
+        self.assertEqual(ranges, [("2026-01-07", "2026-01-09")])
+
+        # Make the early bars available and read the uncovered gap: it must
+        # re-fetch (a real miss) rather than serve a false hit of nothing.
+        inner.bars_by_symbol[symbol] = [
+            _bar(symbol, "2026-01-01", 8.0),
+            _bar(symbol, "2026-01-02", 9.0),
+        ] + inner.bars_by_symbol[symbol]
+        calls_before = len(inner.calls)
+        got = await provider.get_bars(symbol, "2026-01-01", "2026-01-02", interval="1d")
+
+        self.assertEqual([bar.timestamp for bar in got], ["2026-01-01", "2026-01-02"])
+        self.assertEqual(len(inner.calls), calls_before + 1)
+
+    async def test_complete_fetch_records_full_requested_range(self) -> None:
+        # The healthy path: when every trading day in the window is accounted
+        # for, the full requested [start, end] is recorded (keeps the
+        # empty-range optimisation for leading/trailing non-trading days) and
+        # a subrange read hits without a second inner call.
+        symbol = "600000.SH"
+        inner = FakeDataProvider(
+            {
+                symbol: [
+                    _bar(symbol, "2026-01-01", 10.0),
+                    _bar(symbol, "2026-01-02", 11.0),
+                    _bar(symbol, "2026-01-05", 12.0),
+                ]
+            }
+        )
+        provider = CachedBarsDataProvider(inner, scope="backtest", run_id="run-1")
+
+        await provider.preload_bars([symbol], "2026-01-01", "2026-01-05", interval="1d")
+        got = await provider.get_bars(symbol, "2026-01-02", "2026-01-05", interval="1d")
+
+        self.assertEqual(
+            [bar.timestamp for bar in got], ["2026-01-02", "2026-01-05"]
+        )
+        self.assertEqual(len(inner.calls), 1)
 
     async def test_build_backtest_cached_data_provider_honours_startup_history(self) -> None:
         symbol = "600000.SH"
