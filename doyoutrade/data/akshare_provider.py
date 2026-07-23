@@ -38,16 +38,40 @@ from doyoutrade.core.models import Bar, MarketContext, QuoteSnapshot
 # ─── Interval mapping ────────────────────────────────────────────────────────
 
 # Map generic interval names (used in TradingDataProvider) to akshare parameters.
+# Daily-shaped periods served by the eastmoney *daily* endpoints
+# (stock_zh_a_hist / fund_etf_hist_em) — these accept only daily/weekly/monthly.
 _INTERVAL_PERIOD_MAP: Dict[str, str] = {
     "1d": "daily",
+    "1w": "weekly",
     "weekly": "weekly",
+    "1mo": "monthly",
     "monthly": "monthly",
+}
+
+# Intraday periods served by the eastmoney *minute* endpoints
+# (stock_zh_a_hist_min_em / fund_etf_hist_min_em). The daily endpoints reject
+# these period values (raise KeyError('60') etc.), so intraday intervals MUST be
+# routed here — mapping them into _INTERVAL_PERIOD_MAP silently returned zero
+# bars (declared-but-broken support).
+_INTRADAY_PERIOD_MAP: Dict[str, str] = {
     "1m": "1",
     "5m": "5",
     "15m": "15",
     "30m": "30",
     "60m": "60",
 }
+
+
+def _min_em_bound(value: str, *, is_end: bool) -> str:
+    """Format a bound for the eastmoney minute endpoints (``YYYY-MM-DD HH:MM:SS``).
+
+    Date-only bounds are widened to the full A-share session (09:30 open /
+    15:00 close). Widening never drops bars — the local cache / backtest layers
+    re-filter to the exact requested window — while a too-narrow bound would.
+    """
+    date_part = str(value).strip()[:10]
+    session = "15:00:00" if is_end else "09:30:00"
+    return f"{date_part} {session}"
 
 _ADJUST_MAP: Dict[str, str] = {
     "none": "",
@@ -86,36 +110,59 @@ class AkshareHistoricalProvider:
         interval: str,
         adjust: str,
     ) -> List[Bar]:
-        period = _INTERVAL_PERIOD_MAP.get(interval, "daily")
         # akshare hist endpoints expect the bare 6-digit code without suffix.
         ak_symbol = symbol.replace(".SH", "").replace(".SZ", "").replace(".BJ", "")
 
         # normalize adjust to what akshare accepts
         adjust_param = _ADJUST_MAP.get(adjust, "")
 
-        # ETFs (场内基金) live on a different akshare endpoint: stock_zh_a_hist
-        # returns nothing for them, so route them to fund_etf_hist_em. Both
-        # return the same 日期/开盘/收盘/最高/最低/成交量/成交额 column layout,
+        # ETFs (场内基金) live on a different akshare endpoint: the stock hist
+        # endpoints return nothing for them, so route them to the fund_etf_*
+        # twin. Daily and minute endpoints share the same 开盘/收盘/最高/最低/
+        # 成交量/成交额 columns (daily keys the timestamp as 日期, minute as 时间),
         # so the row-parsing loop below is shared.
         is_etf = is_cn_a_share_etf_symbol(symbol)
-        api_name = "fund_etf_hist_em" if is_etf else "stock_zh_a_hist"
+        intraday_period = _INTRADAY_PERIOD_MAP.get(interval)
 
-        def _call() -> Any:
-            if is_etf:
-                return ak.fund_etf_hist_em(
+        if intraday_period is not None:
+            # Intraday → minute endpoints (period ∈ {1,5,15,30,60}). The daily
+            # endpoints raise KeyError on these period values.
+            # akshare's 1-minute feed rejects a non-empty adjust; force raw.
+            min_adjust = "" if intraday_period == "1" else adjust_param
+            start_arg = _min_em_bound(start_time, is_end=False)
+            end_arg = _min_em_bound(end_time, is_end=True)
+            api_name = "fund_etf_hist_min_em" if is_etf else "stock_zh_a_hist_min_em"
+
+            def _call() -> Any:
+                min_api = ak.fund_etf_hist_min_em if is_etf else ak.stock_zh_a_hist_min_em
+                return min_api(
                     symbol=ak_symbol,
-                    period=period,
+                    start_date=start_arg,
+                    end_date=end_arg,
+                    period=intraday_period,
+                    adjust=min_adjust,
+                )
+
+        else:
+            period = _INTERVAL_PERIOD_MAP.get(interval, "daily")
+            api_name = "fund_etf_hist_em" if is_etf else "stock_zh_a_hist"
+
+            def _call() -> Any:
+                if is_etf:
+                    return ak.fund_etf_hist_em(
+                        symbol=ak_symbol,
+                        period=period,
+                        start_date=start_time.replace("-", ""),
+                        end_date=end_time.replace("-", ""),
+                        adjust=adjust_param,
+                    )
+                return ak.stock_zh_a_hist(
+                    symbol=ak_symbol,
                     start_date=start_time.replace("-", ""),
                     end_date=end_time.replace("-", ""),
+                    period=period,
                     adjust=adjust_param,
                 )
-            return ak.stock_zh_a_hist(
-                symbol=ak_symbol,
-                start_date=start_time.replace("-", ""),
-                end_date=end_time.replace("-", ""),
-                period=period,
-                adjust=adjust_param,
-            )
 
         df = None
         for attempt in range(3):
@@ -595,7 +642,8 @@ class AkshareDataProvider:
 
     capabilities = ProviderCapabilities(
         name=PROVIDER_NAME_AKSHARE,
-        # ``_INTERVAL_PERIOD_MAP`` enumerates what stock_zh_a_hist accepts.
+        # Daily shapes go through ``_INTERVAL_PERIOD_MAP`` (stock_zh_a_hist),
+        # intraday through ``_INTRADAY_PERIOD_MAP`` (stock_zh_a_hist_min_em).
         # ``1w``/``1mo`` aliases are kept in sync with the assistant tool's
         # interval surface so the same string normalizes the same way no
         # matter who calls ``get_bars``.
