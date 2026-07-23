@@ -202,8 +202,8 @@ function MessageBubble({
       <div
         className={`${
           isUser
-            ? "max-w-[72%] break-words [overflow-wrap:anywhere] rounded-bubble bg-chat-bubble px-5 py-4 text-lg text-chat-ink"
-            : "w-full max-w-[860px] break-words [overflow-wrap:anywhere] text-chat-ink"
+            ? "min-w-0 max-w-[72%] break-words rounded-bubble bg-chat-bubble px-5 py-4 text-lg text-chat-ink"
+            : "min-w-0 w-full max-w-[860px] break-words text-chat-ink"
         }`}
       >
         {!isUser ? (
@@ -1790,7 +1790,7 @@ export function AssistantPage() {
               {(streamingContentBlocks.length > 0 || streamingThinking) &&
               (sending || activeSession?.status === "running") ? (
                 <div className="flex w-full justify-start">
-                  <div className="w-full max-w-[860px]">
+                  <div className="min-w-0 w-full max-w-[860px]">
                     <MessageContentRenderer
                       text=""
                       thinking={streamingThinking}
@@ -1828,7 +1828,7 @@ export function AssistantPage() {
               ) : null}
               {livePendingQuestion ? (
                 <div className="flex w-full justify-start">
-                  <div className="w-full max-w-[860px]">
+                  <div className="min-w-0 w-full max-w-[860px]">
                     <MessageContentRenderer
                       text=""
                       contentBlocks={[livePendingQuestion]}

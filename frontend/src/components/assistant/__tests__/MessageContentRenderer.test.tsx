@@ -38,6 +38,16 @@ describe("MessageContentRenderer", () => {
     expect(screen.getByText("Hello")).toBeInTheDocument();
   });
 
+  it("keeps markdown prose full width for long session ids", () => {
+    const { container } = render(
+      <MessageContentRenderer text="- session_id: `asst-91f127490abe1249abcdef`" />,
+    );
+
+    const prose = container.querySelector(".prose");
+    expect(prose).toBeTruthy();
+    expect(prose?.className).toContain("max-w-none");
+  });
+
   it("renders thinking block when provided", () => {
     render(<MessageContentRenderer text="" thinking="thinking content" />);
     expect(screen.getByText("thinking content")).toBeInTheDocument();
