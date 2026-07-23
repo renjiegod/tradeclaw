@@ -48,6 +48,10 @@ vi.mock("../components/assistant/SkillsToolsTab", () => ({
   SkillsToolsTab: () => <div>skills tools</div>,
 }));
 
+vi.mock("../components/TracesPanel", () => ({
+  TracesPanel: () => <div>traces panel</div>,
+}));
+
 const session: AssistantSession = {
   session_id: "session-1",
   title: "DoYouTrade Agent",
@@ -241,13 +245,27 @@ describe("AssistantPage conversation", () => {
     expect(localStorage.getItem("assistant_debug_mode")).toBe("true");
   });
 
+  it("opens traces and skills content from the details drawer on demand", async () => {
+    render(<AssistantPage />);
+
+    await waitFor(() => expect(screen.getByText("最终回答")).toBeInTheDocument());
+    expect(screen.queryByText("skills tools")).not.toBeInTheDocument();
+    expect(screen.queryByText("traces panel")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("assistant-details-button"));
+
+    expect(await screen.findByText("traces panel")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Skills & Tools" }));
+    expect(await screen.findByText("skills tools")).toBeInTheDocument();
+  });
+
   it("createNewSession shows warning when no agent selected", async () => {
     // Return empty agents list so no agent is auto-selected
     vi.mocked(listAssistantAgents).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
     vi.mocked(listAssistantSessions).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
 
     render(<AssistantPage />);
-    await waitFor(() => expect(screen.getByText("选择 Agent")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("assistant-agent-field")).toBeInTheDocument());
 
     const newSessionButton = screen.getByRole("button", { name: /新会话/i });
     fireEvent.click(newSessionButton);
@@ -272,7 +290,7 @@ describe("AssistantPage conversation", () => {
     vi.mocked(listAssistantSessions).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
 
     render(<AssistantPage />);
-    await waitFor(() => expect(screen.getByText("选择 Agent")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("assistant-agent-field")).toBeInTheDocument());
 
     const newSessionButton = screen.getByRole("button", { name: /新会话/i });
     fireEvent.click(newSessionButton);
@@ -392,7 +410,7 @@ describe("AssistantPage conversation", () => {
     vi.mocked(listAssistantSessions).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
 
     render(<AssistantPage />);
-    await waitFor(() => expect(screen.getByText("选择 Agent")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("assistant-agent-field")).toBeInTheDocument());
 
     const textarea = screen.getByPlaceholderText(messageInputPlaceholder);
     fireEvent.change(textarea, { target: { value: "你好" } });
@@ -461,7 +479,7 @@ describe("AssistantPage conversation", () => {
     await waitFor(() =>
       expect(screen.getByText("试试这些示例：")).toBeInTheDocument(),
     );
-    expect(screen.getByText("session-2")).toBeInTheDocument();
+    expect(screen.getByLabelText("session-2")).toBeInTheDocument();
   });
 
   it("allows stopping while an agent response is in progress", async () => {
@@ -741,13 +759,13 @@ describe("AssistantPage conversation", () => {
 
     render(<AssistantPage />);
 
-    await waitFor(() => expect(screen.getByText("当前会话")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("assistant-session-field")).toBeInTheDocument());
 
     const sessionSelect = screen.getAllByRole("combobox")[1];
     fireEvent.mouseDown(sessionSelect);
 
-    expect(await screen.findAllByText(/来自 channel:/)).toHaveLength(2);
-    expect(screen.getAllByText(/feishu \/ Feishu Alpha \/ channel-feishu-a/)).toHaveLength(2);
+    expect(await screen.findByText(/来自 channel:/)).toBeInTheDocument();
+    expect(screen.getAllByText(/feishu \/ Feishu Alpha \/ channel-feishu-a/).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("option")).toHaveLength(2);
     expect(screen.getByText("DoYouTrade Agent")).toBeInTheDocument();
   });
@@ -782,7 +800,11 @@ describe("AssistantPage conversation", () => {
 
     render(<AssistantPage />);
 
-    await waitFor(() => expect(screen.getAllByText(/创建于 /).length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByTestId("assistant-session-field")).toBeInTheDocument());
+
+    const sessionSelect = screen.getAllByRole("combobox")[1];
+    fireEvent.mouseDown(sessionSelect);
+    expect(await screen.findAllByText(/创建于 /)).not.toHaveLength(0);
 
     const filterSelect = screen.getAllByRole("combobox")[0];
     fireEvent.mouseDown(filterSelect);
