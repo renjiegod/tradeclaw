@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from doyoutrade.core.models import Bar, MarketContext, QuoteSnapshot
 from doyoutrade.data.bar_timestamp import normalize_bar_timestamp
 from doyoutrade.data.constants import DEFAULT_BAR_ADJUST
+from doyoutrade.data.instrument_catalog.a_share_equity import is_cn_a_share_index_symbol
 from doyoutrade.data.instrumentation import data_span
 from doyoutrade.data.protocols import PROVIDER_NAME_MOOTDX, ProviderCapabilities
 
@@ -328,18 +329,23 @@ class MootdxDataProvider:
         code = symbol_to_tdx_code(symbol)
         if code is None:
             return []
+        is_index = is_cn_a_share_index_symbol(symbol)
         freq = _freq_for_interval(interval)
         start_d = _to_iso_day(start_time)
         end_d = _to_iso_day(end_time)
 
-        raw_rows = self._fetch_raw_rows(code, freq, start_d)
+        raw_rows = self._fetch_raw_rows(code, freq, start_d, is_index=is_index)
         if not raw_rows:
             return []
 
         # Pull xdxr once and compute 复权 over the *full* fetched window (so the
         # prev-close anchoring the earliest in-range ex-date is present), then
-        # clip to [start, end].
-        if adjust != "none":
+        # clip to [start, end]. Indices have no 除权除息 ledger (指数不复权,
+        # matching akshare_provider's index endpoints) — ``client.xdxr`` infers
+        # its market the same way ``client.bars`` does, so calling it for an
+        # index code would silently apply a coincidentally-numbered stock's
+        # dividend adjustments to the index series.
+        if adjust != "none" and not is_index:
             events = self._fetch_ex_rights(code)
             adjusted = compute_adjusted_ohlc(raw_rows, events, adjust)
         else:
@@ -360,25 +366,40 @@ class MootdxDataProvider:
                     close=float(r["close"]),
                     volume=float(r["volume"]),
                     amount=r.get("amount"),
-                    adjust_type=adjust,
+                    adjust_type="none" if is_index else adjust,
                 )
             )
         return bars
 
-    def _fetch_raw_rows(self, code: str, freq: int, start_d: str) -> List[dict]:
+    def _fetch_raw_rows(
+        self, code: str, freq: int, start_d: str, *, is_index: bool = False
+    ) -> List[dict]:
         """Fetch 不复权 rows covering [start_d - buffer, latest], ascending.
 
         mootdx ``bars`` takes a bar *count* (offset), not a date range, so we
         pull an estimated count, and if the earliest row is still after
         ``start_d`` we grow the count and retry (bounded) rather than silently
         returning a short window that would misplace the qfq anchor.
+
+        ``is_index`` routes to ``client.index_bars`` instead of ``client.bars``.
+        Both take a bare 6-digit code, but they infer the SH/SZ market
+        differently: ``client.bars`` treats any ``00``-prefixed code as a
+        Shenzhen *stock* (so ``000001`` resolves to 平安银行), while
+        ``client.index_bars`` treats a ``00``-prefixed code as the Shanghai
+        *index* series (``000001`` = 上证指数). Calling the stock endpoint for
+        an index code doesn't error — it silently returns a same-numbered
+        stock's bars under the index's symbol.
         """
         client = self._get_client()
         offset = self._estimate_offset(freq, start_d)
         max_offset = 8000
         rows: List[dict] = []
         while True:
-            df = client.bars(symbol=code, frequency=freq, offset=offset)
+            df = (
+                client.index_bars(symbol=code, frequency=freq, offset=offset)
+                if is_index
+                else client.bars(symbol=code, frequency=freq, offset=offset)
+            )
             rows = self._normalize_df(df)
             if not rows:
                 return []

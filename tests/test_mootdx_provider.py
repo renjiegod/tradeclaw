@@ -154,16 +154,24 @@ class NormalizeDfTests(unittest.TestCase):
 
 
 class _FakeClient:
-    def __init__(self, bars_df, xdxr_df):
+    def __init__(self, bars_df, xdxr_df, index_bars_df=None):
         self._bars = bars_df
         self._xdxr = xdxr_df
+        self._index_bars = index_bars_df
         self.bars_calls = []
+        self.index_bars_calls = []
+        self.xdxr_calls = []
 
     def bars(self, symbol, frequency, offset):
         self.bars_calls.append((symbol, frequency, offset))
         return self._bars
 
+    def index_bars(self, symbol, frequency, offset):
+        self.index_bars_calls.append((symbol, frequency, offset))
+        return self._index_bars
+
     def xdxr(self, symbol):
+        self.xdxr_calls.append(symbol)
         return self._xdxr
 
 
@@ -215,6 +223,31 @@ class SyncGetBarsTests(unittest.TestCase):
         p = self._make()
         out = asyncio.run(p.get_trading_dates("2024-01-05", "2024-01-08"))
         self.assertEqual(out, ["2024-01-05", "2024-01-08"])
+
+    def test_index_symbol_routes_to_index_bars_and_skips_xdxr(self):
+        """000001.SH is 上证指数 — must hit ``index_bars``, never the stock ``bars``/``xdxr`` endpoints.
+
+        Regression test: ``client.bars``/``client.xdxr`` infer SH/SZ market from a
+        prefix heuristic that treats any ``00``-prefixed code as a Shenzhen stock,
+        so calling them for ``000001.SH`` used to silently return 平安银行 (a real
+        SZ stock, same bare code) mislabeled as 上证指数.
+        """
+        index_df = pd.DataFrame(
+            [
+                {"open": 3900.0, "high": 3910.0, "low": 3895.0, "close": 3905.0,
+                 "vol": 1e8, "amount": 5e11, "datetime": "2024-01-01 15:00"},
+            ]
+        )
+        client = _FakeClient(bars_df=pd.DataFrame(), xdxr_df=pd.DataFrame(), index_bars_df=index_df)
+        p = MootdxDataProvider(symbols=["000001.SH"], client=client)
+
+        bars = p._sync_get_bars("000001.SH", "2024-01-01", "2024-12-31", "1d", "qfq")
+
+        self.assertEqual(client.bars_calls, [])
+        self.assertEqual(client.xdxr_calls, [])
+        self.assertEqual(len(client.index_bars_calls), 1)
+        self.assertAlmostEqual(bars[0].close, 3905.0)
+        self.assertEqual(bars[0].adjust_type, "none")
 
 
 class FactoryWiringTests(unittest.TestCase):
