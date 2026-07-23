@@ -81,6 +81,59 @@ def _normalized_day(value: str) -> str:
     return normalize_bar_timestamp(value)[:10]
 
 
+def _accounted_coverage_ranges(
+    trading_days: list[str],
+    accounted_days: set[str],
+    start: str,
+    end: str,
+) -> list[tuple[str, str]]:
+    """Coverage ranges the fetched data can *actually* back.
+
+    ``record_fetch`` historically recorded the whole requested ``[start, end]``
+    as covered regardless of how many bars the upstream returned. A partial
+    fetch — or an adjust-drift invalidation that only rebuilt a tail window —
+    then left the store claiming full coverage over sparse bars: every later
+    ``is_range_covered`` check hit the gap-ridden cache and never re-fetched,
+    so a strategy's per-bar history read silently came back short and the
+    uncovered early cycles emitted ``strategy_base_history_insufficient``
+    (observed on 000636.SZ after its 2025-06-11 ex-rights rescale).
+
+    This returns only the coverage that is genuinely justified:
+
+    * No trading days in the window (pure weekend/holiday block) → the whole
+      ``[start, end]`` is legitimately "covered empty" (keeps the empty-range
+      optimisation described on ``CachedBarRangeRecord``).
+    * Every trading day accounted for (has a bar or a recorded suspension) →
+      the fetch is complete → record the full ``[start, end]`` (leading /
+      trailing non-trading days stay covered too).
+    * Otherwise the fetch is INCOMPLETE → record only the maximal contiguous
+      runs of accounted trading days, so unaccounted gaps stay uncovered and
+      the next read misses and re-fetches them. An all-gaps result (e.g. an
+      empty partial fetch) records nothing.
+    """
+    ordered = sorted(
+        {str(day).strip()[:10] for day in trading_days if str(day).strip()}
+    )
+    if not ordered:
+        return [(start, end)]
+    if all(day in accounted_days for day in ordered):
+        return [(start, end)]
+    ranges: list[tuple[str, str]] = []
+    run_start: str | None = None
+    run_end: str | None = None
+    for day in ordered:
+        if day in accounted_days:
+            if run_start is None:
+                run_start = day
+            run_end = day
+        elif run_start is not None:
+            ranges.append((run_start, run_end))  # type: ignore[arg-type]
+            run_start = run_end = None
+    if run_start is not None:
+        ranges.append((run_start, run_end))  # type: ignore[arg-type]
+    return ranges
+
+
 def expanded_backtest_bar_range(
     range_start: date,
     range_end: date,
@@ -478,16 +531,93 @@ class CachedBarsDataProvider:
                         report=report,
                         trigger="history_miss",
                     )
-        await self._store.record_fetch(
-            provider=provider,
-            symbol=symbol,
-            interval=interval,
-            start=start,
-            end=end,
-            bars=fetched,
-            adjust=adjust,
-            suspended_days=suspended_days,
-        )
+        # Coverage-integrity guard: only claim coverage the fetched bars can
+        # actually back. Recording the full requested [start, end] when the
+        # upstream returned a partial result is what let a poisoned cache
+        # (e.g. 000636.SZ after an adjust-drift rebuild left ~5 months of
+        # sparse bars) keep serving gaps forever — is_range_covered stayed
+        # True so no read ever re-fetched the missing days. See
+        # _accounted_coverage_ranges.
+        try:
+            trading_days = list(await self._inner.get_trading_dates(start, end))
+        except Exception as exc:  # calendar unavailable → preserve legacy behaviour
+            logger.warning(
+                "coverage integrity: get_trading_dates failed for %s [%s, %s] "
+                "interval=%s adjust=%s (%s: %s) — recording the full requested "
+                "range as covered (legacy fallback)",
+                symbol, start, end, interval, adjust, type(exc).__name__, exc,
+            )
+            await self._emit_cache_event(
+                "coverage_calendar_unavailable",
+                symbol=symbol,
+                interval=interval,
+                start=start,
+                end=end,
+                returned_count=len(fetched),
+                adjust=adjust,
+                extra={
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "hint": (
+                        "trading calendar unavailable; coverage recorded as the "
+                        "full requested window and may over-claim if the fetch "
+                        "was partial — check inner provider connectivity"
+                    ),
+                },
+            )
+            trusted_ranges: list[tuple[str, str]] = [(start, end)]
+        else:
+            bar_days = {
+                normalize_bar_timestamp(bar.timestamp)[:10] for bar in fetched
+            }
+            bar_days.discard("")
+            accounted_days = bar_days | {
+                str(day or "").strip()[:10] for day in suspended_days
+            }
+            accounted_days.discard("")
+            trusted_ranges = _accounted_coverage_ranges(
+                trading_days, accounted_days, start, end
+            )
+            if trusted_ranges != [(start, end)]:
+                expected = {
+                    str(day).strip()[:10] for day in trading_days if str(day).strip()
+                }
+                missing = sorted(day for day in expected if day not in accounted_days)
+                await self._emit_cache_event(
+                    "coverage_incomplete",
+                    symbol=symbol,
+                    interval=interval,
+                    start=start,
+                    end=end,
+                    returned_count=len(fetched),
+                    adjust=adjust,
+                    extra={
+                        "expected_trading_days": len(expected),
+                        "accounted_trading_days": len(expected & accounted_days),
+                        "missing_trading_days": len(missing),
+                        "first_missing": missing[0] if missing else None,
+                        "last_missing": missing[-1] if missing else None,
+                        "trusted_ranges": len(trusted_ranges),
+                        "hint": (
+                            "upstream returned fewer bars than the window's "
+                            "trading days; only the covered sub-ranges are "
+                            "recorded so the gaps re-fetch on next read instead "
+                            "of the cache over-claiming coverage"
+                        ),
+                    },
+                )
+
+        for idx, (range_start, range_end) in enumerate(trusted_ranges):
+            await self._store.record_fetch(
+                provider=provider,
+                symbol=symbol,
+                interval=interval,
+                start=range_start,
+                end=range_end,
+                bars=fetched if idx == 0 else [],
+                adjust=adjust,
+                suspended_days=suspended_days if idx == 0 else set(),
+            )
         ranges_after = await self._store.covered_ranges(
             provider=provider, symbol=symbol, interval=interval, adjust=adjust
         )
