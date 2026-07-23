@@ -60,6 +60,65 @@ class InstallShWheelTests(unittest.TestCase):
     def test_accepts_version_env(self) -> None:
         self.assertIn("DOYOUTRADE_INSTALL_VERSION", self.sh)
 
+    def test_status_helpers_write_to_stderr(self) -> None:
+        # Regression: info/warn/ok used to print on stdout, so
+        # SOURCE="$(resolve_default_source)" swallowed "==> 未指定版本…" into the
+        # PEP 508 URL and uv failed with "Failed to parse".
+        for name in ("info", "warn", "ok"):
+            self.assertRegex(
+                self.sh,
+                rf"{name}\(\)\s*\{{\s*printf .* >&2;\s*\}}",
+                msg=f"{name}() must redirect status output to stderr",
+            )
+
+    def test_resolve_default_source_stdout_is_clean_url(self) -> None:
+        # Behavioral: stdout of resolve_default_source must be ONLY the wheel URL.
+        import os
+        import subprocess
+        import tempfile
+        import textwrap
+
+        # Extract helpers from install.sh up through resolve_default_source, then
+        # invoke it with a pinned version so we don't hit the network for latest.
+        harness = textwrap.dedent(
+            r"""
+            set -eu
+            # shellcheck disable=SC1091
+            . "$INSTALL_SH_SNIPPET"
+            # Override network helpers — we only care that status lines stay off stdout.
+            preferred_mirror() { printf '%s\n' "github"; }
+            remote_url_exists() { return 0; }
+            latest_release_tag() { printf '%s\n' "v0.1.30"; }
+            DOYOUTRADE_INSTALL_VERSION=0.1.30
+            resolve_default_source
+            """
+        ).strip()
+        # Build a snippet that defines helpers but does not run main / install.
+        stop_at = "if [ -n \"${DOYOUTRADE_INSTALL_SOURCE:-}\" ]; then"
+        snippet = self.sh.split(stop_at, 1)[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            snippet_path = Path(tmp) / "helpers.sh"
+            harness_path = Path(tmp) / "harness.sh"
+            snippet_path.write_text(snippet, encoding="utf-8")
+            harness_path.write_text(harness + "\n", encoding="utf-8")
+            env = {**os.environ, "INSTALL_SH_SNIPPET": str(snippet_path)}
+            proc = subprocess.run(
+                ["sh", str(harness_path)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        self.assertEqual(proc.returncode, 0, msg=f"stderr={proc.stderr!r} stdout={proc.stdout!r}")
+        stdout_lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+        self.assertEqual(
+            stdout_lines,
+            ["https://github.com/renjiegod/doyoutrade/releases/download/v0.1.30/doyoutrade-0.1.30-py3-none-any.whl"],
+            msg=f"stdout polluted: {proc.stdout!r}; stderr={proc.stderr!r}",
+        )
+        self.assertIn("安装源", proc.stderr)
+        self.assertNotIn("==>", proc.stdout)
+
     def test_default_path_does_not_advertise_api_only_without_node(self) -> None:
         self.assertNotIn("将安装为「API + CLI」模式", self.sh)
 

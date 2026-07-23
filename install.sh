@@ -39,9 +39,9 @@ GITHUB_OWNER_REPO="renjiegod/doyoutrade"
 GITEE_OWNER="renjie-god"
 GITEE_REPO="doyoutrade"
 
-info()  { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
-warn()  { printf '\033[1;33m[!]\033[0m %s\n' "$1"; }
-ok()    { printf '\033[1;32m[✓]\033[0m %s\n' "$1"; }
+info()  { printf '\033[1;36m==>\033[0m %s\n' "$1" >&2; }
+warn()  { printf '\033[1;33m[!]\033[0m %s\n' "$1" >&2; }
+ok()    { printf '\033[1;32m[✓]\033[0m %s\n' "$1" >&2; }
 die()   { printf '\033[1;31m[✗]\033[0m %s\n' "$1" >&2; exit 1; }
 
 github_reachable() {
