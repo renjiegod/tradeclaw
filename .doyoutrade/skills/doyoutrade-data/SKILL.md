@@ -15,17 +15,29 @@ style: process
 
 ## When to use
 
-Trigger for ad-hoc data probes outside the strategy runtime — anything
-the user wants to *eyeball* before committing to a strategy. Inside a
-running strategy, prefer `DataProvider.get_data(...)` (see
-`doyoutrade-sdk dp-methods`).
+Ad-hoc market / research probes outside the strategy runtime — OHLCV, indicators,
+`stock screen`, news, brokerage reports (`data reports`), earnings
+(`data earnings`). Inside a running strategy use `DataProvider.get_data(...)`
+(`doyoutrade-sdk dp-methods`). Prefer `doyoutrade-stock` for symbol lookup first.
 
-This skill also covers the **investment-research axis**, not just OHLCV:
-per-symbol news (`data news`), brokerage research reports
-(`data reports` — 券商个股研报 / 评级 / 盈利预测), and earnings
-preannouncements / express reports (`data earnings` — 业绩预告 / 业绩快报).
-Load this skill whenever the user asks about an individual stock's
-analyst coverage, rating, EPS/PE forecasts, or earnings guidance.
+## Quick checklist
+
+Read this before any `data` / `analysis` / `stock screen` call:
+
+1. **`stock lookup` first** — never invent `.SH` / `.SZ` / `.BJ`.
+2. **Symbol args** — exactly one of: positional `<code>`, `--symbols A.SH,B.SZ`,
+   or `--universe-file`. **There is no `--symbol`** (singular) on `data run`.
+3. **Unsure of a flag?** → `doyoutrade-cli schema data.run` (or the subcommand)
+   before guessing. Trust `did_you_mean` / `repair_hints` on failure.
+4. **Intervals** — `--interval 1d|5m|15m|30m|60m` (default `1d`). Index minute
+   bars (e.g. `000001.SH` + `60m`) may need `tushare` / `auto`; some providers
+   return `interval_not_supported_for_instrument_type`.
+5. **「看 / 画 K 线」** → after lookup, call in-process `render_panel` with a
+   `kline` block (`symbol` + optional `interval`/`start`/`end`). Do not dump
+   hundreds of CSV rows as the primary answer.
+6. **Truncated `read_file` / omitted chars** → only report numbers you actually
+   saw; never invent max/min/volume peaks from a truncated artifact. Prefer
+   envelope `symbols[i].latest` / `ohlcv_rows`, or `render_panel`.
 
 ## Commands
 

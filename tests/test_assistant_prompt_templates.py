@@ -111,6 +111,28 @@ class AssistantPromptTemplateTests(unittest.TestCase):
         self.assertIn("ctx.indicators.is_hammer", text)
         self.assertIn("on_bar(self, df, ctx) -> Signal", text)
 
+    def test_main_agent_prompt_forces_load_skill_before_market_data_cli(self) -> None:
+        # 2026-07-24: MiniMax-M2 skipped load_skill for "用 tushare 查上证指数
+        # 60 分钟 K 线", then invented `--symbol` (should be positional /
+        # `--symbols`), skipped render_panel, and summarized from a truncated
+        # CSV. Pin a hard rule: any data / analysis / stock screen probe must
+        # load doyoutrade-data first (stock lookup alone stays skill-free).
+        text = get_prompt_template_text("main-agent")
+
+        self.assertIn("行情 / K 线 / 指标 / 选股探针禁止凭记忆拼 CLI", text)
+        self.assertIn("load_skill doyoutrade-data", text)
+        self.assertIn("doyoutrade-cli data run", text)
+        self.assertIn("stock screen", text)
+        # stock lookup remains the lightweight exception — do not force-load
+        # doyoutrade-data just to resolve a Chinese name.
+        self.assertIn("单独解析代码不强制", text)
+        # Quick-ref table must not still say data probes need no skill.
+        self.assertNotIn(
+            "拉行情 / 指标 / 自定义脚本 | `doyoutrade-cli data run",
+            text,
+        )
+        self.assertIn("先 `load_skill doyoutrade-data`", text)
+
     def test_main_agent_prompt_explains_skill_persistence_across_compaction(self) -> None:
         # 2026-05-28 follow-up to test_main_agent_prompt_forces_load_skill_before_writing_sdk_code:
         # PR-C makes load_skill content survive context compaction by re-injecting

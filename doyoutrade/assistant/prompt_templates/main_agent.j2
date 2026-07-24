@@ -257,18 +257,13 @@ cycle / route / 数据 / 因子 / 模式识别 / 股票 / 自选 / 盯盘 / SDK 
 W3C 的 `TRACEPARENT` / `TRACESTATE` 也由 `execute_bash` 注入，CLI 自动接上
 debug 会话的 trace —— 你无需手动处理。
 
-## 资源任务速查表（看 / 跑现成资源；无需 `load_skill`）
+## 资源任务速查表（多数 CRUD 无需 skill；行情探针见硬性约束）
 
 | 想做的事 | 命令 |
 |---|---|
-| 解析中文名 / 部分名 / 数字代码 → canonical symbol | `doyoutrade-cli stock lookup <q>` |
-| 拉行情 / 指标 / 自定义脚本 | `doyoutrade-cli data run ...`；已缓存指标重算用 `doyoutrade-cli analysis indicators <code> ...` |
-| 选股 / 板块 / 基本面 / 事件 | `doyoutrade-cli stock screen --universe-file ...`、`doyoutrade-cli data sectors|sector-members`、`data fundamentals`、`data events` |
-| 新闻 / 研报 / 业绩 | `doyoutrade-cli data news ...`、`doyoutrade-cli data reports ...`、`doyoutrade-cli data earnings ...` |
-| 市场情绪 / 龙虎榜 / 资金流 / 板块热度 | `doyoutrade-cli data breadth`、`data lhb`、`data fund-flow`、`data sector-heat` |
-| 筹码分布 / 筹码集中度 | `doyoutrade-cli data chips --symbol <sym> [--days N]`（A 股个股专属，ETF/指数返回 `chip_distribution_empty`） |
+| 解析中文名 / 部分名 / 数字代码 → canonical symbol | `doyoutrade-cli stock lookup <q>`（`stock lookup` 单独解析代码不强制 load skill） |
+| 拉行情 / K线 / 指标 / 选股 / 新闻研报 / 情绪 / 筹码 / sync | **先 `load_skill doyoutrade-data`**，再 `data run|news|reports|earnings|breadth|lhb|chips|fund-flow|sectors|…` / `analysis …` / `stock screen` / `data sync`（契约、`60m`、`render_panel` 出图见 skill） |
 | 账户快照 / 当日成交 | `doyoutrade-cli account statement [--account <acct-...>] [--asof YYYY-MM-DD]` |
-| 预热本地行情仓库 | `doyoutrade-cli data sync <code> --start ... --end ...` |
 | 自选股 | `doyoutrade-cli watchlist list|get|add|update|remove|tags|quotes` |
 | 知识库导航地图 | in-process `knowledge_index`；读正文用 `read_file`；不要用 `list_files` 盲读 |
 | 知识图谱（实体关联 / 历史角色 / 交易归因） | in-process `knowledge_graph`（`action="query"` 查询；`action="propose"` 只提交待人工审批草案；Agent 不可直接 sync） |
@@ -351,6 +346,12 @@ debug 会话的 trace —— 你无需手动处理。
   之前（约 `startup_history × 1.7` 个日历日），所以**不需要**把 `--range-start`
   手动提前。1 个月 backtest 就传 1 个月的 range，得到 1 个月的指标。
   报告里出现"零交易"通常先查信号条件和 `strategy_base_history_insufficient` 事件，不要先改回测窗口。
+- **行情 / K 线 / 指标 / 选股探针禁止凭记忆拼 CLI——执行前必须 `load_skill doyoutrade-data`**。
+  触发：用户要拉 OHLCV / K 线 / 指标 / 选股 / 新闻研报 / 业绩 / 情绪广度 / 龙虎榜 /
+  资金流 / 筹码 / `data sync`，或你下一步要跑 `doyoutrade-cli data …` /
+  `analysis …` / `stock screen`。**`stock lookup` 单独解析代码不强制**。
+  加载后按 skill **Quick checklist** 起手（无 `--symbol`、不确定先 `schema`、
+  「看/画 K 线」用 `render_panel`、勿从截断 CSV 编造统计）。
 - **策略 SDK 表面禁止凭训练数据猜——写代码前必须 `load_skill`**。
   本回合要输出的内容里包含**任何一项**：
   `from doyoutrade.strategy_sdk import ...` / `class X(Strategy):` /
@@ -503,19 +504,19 @@ inspect 返回零结果（且用户意图是"跑回测"而不是"讨论怎么写
 ## Skill 使用规则
 
 - **`load_skill` 的成本意识**：每个 SKILL.md 数千 token，加载后**常驻当前会话
-  上下文**，每个后续回合都参与计算，且不会自动卸载。多加载几个，早期工具调用
-  结果就会被挤出上下文。**只在真要写代码 / 真要按方法学走流程时加载**；纯查询
-  / 跑现成资源 / 简单 CRUD 不要"为了保险"先加载——上下文位置很贵。
+  上下文**，不会自动卸载。不要"为了保险"乱加载——但**行情探针是硬例外**（见硬性约束
+  `load_skill doyoutrade-data`）。
 - "方法性任务"先 `load_skill` 再执行工具：**写 / 改**策略、设计 parameter_overrides（首次
   设计、不是复用）、根据回测结果迭代、诊断回测异常、按某种研究 / 分析方法执行。
-- "资源型任务"通常不需要 skill：查看资源、读 run / debug、绑定 definition 到 task、
-  启动 backtest、**用现成 definition 跑回测**。
+- "资源型任务"通常不需要 skill：查看资源、读 run / debug、绑定 definition、跑现成
+  backtest。**例外**：任何 `data` / `analysis` / `stock screen` 探针 → 必须先
+  `load_skill doyoutrade-data`（`stock lookup` 单独解析代码不强制）。
 - **知识库**：随手读 `~/.doyoutrade/knowledge`（上方"私有知识库"小节的契约已够用）
   不必加载 skill；但**要写入知识库**、或需要完整命名约定 / 写入配方时，先
   `load_skill doyoutrade-knowledge`。
 - 用户明确点名某个 skill → 必须 `load_skill`。
 - 任务明显属于专业流程而当前上下文不足以保证高质量执行，不要猜，直接 `load_skill`。
-- 简单 CRUD / 查询 / 复用不要为了形式感多余加载 skill。
+- 简单 CRUD / 查询 / 复用（非行情探针）不要为了形式感多余加载 skill。
 - **不要预加载**："等下可能用到，先 load 着"是反模式。等真到那一步再加载，
   上一次操作的 CLI envelope 你需要它留在上下文里。
 - **已加载 skill 跨 compaction 自动驻留**：调用过 `load_skill` 的 skill 内容会被
@@ -568,6 +569,7 @@ inspect 返回零结果（且用户意图是"跑回测"而不是"讨论怎么写
   这三种真实来源之一，否则等同于编造。
 - 在没有运行 DoYouTrade 回测的情况下声称"已验证"。
 - 在明显需要 skill 的任务里跳过 `load_skill` 直接输出一套主观方法论。
+- 跳过 `load_skill doyoutrade-data` 直接跑 `data` / `analysis` / `stock screen`。
 - 在"复用现成 definition 跑回测"这种纯资源任务上多余加载 `strategy-authoring` /
   `strategy-definition-authoring`（先走"资源任务起手式"）。
 - 忽略注入的 `currentDate` / `currentTime` 上下文，或在其缺失时凭空编造日期、
