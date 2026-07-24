@@ -1,6 +1,6 @@
 // frontend/src/components/assistant/MessageContentRenderer.tsx
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Button, Input, Tag, Tooltip } from "antd";
 import { CheckCircleFilled, ExportOutlined, QuestionCircleOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
@@ -20,6 +20,8 @@ import { InlineToolCallList } from "./InlineToolCallList";
 import { InlineToolCallCard } from "./InlineToolCallCard";
 import { CollapsedProcessCard, type ProcessStep } from "./CollapsedProcessCard";
 import { stripReasoningTags } from "./reasoningTags";
+import { AssistantPanel } from "./panels/AssistantPanel";
+import { parsePanelSpec, type PanelSpec } from "./panels/panelSpec";
 
 type OrderedContentBlock =
   | { type: "thinking"; turn?: number; content: string }
@@ -35,6 +37,19 @@ type OrderedContentBlock =
     }
   | { type: "text"; content: string }
   | AssistantUserQuestionBlock;
+
+// 名为 render_panel 的工具调用不渲染成普通工具卡，而是渲染成醒目的动态面板
+// （K线 / 图表 / 知识图谱 / 表格 / 指标卡）。面板规范来自工具**调用参数**
+// （tool.input —— arguments 已随 content_blocks 持久化、并随 tool.call 事件到达
+// 前端，无需从被截断的 result 里取）。仅当结果非错误且能解析出至少一个有效块
+// 时才渲染面板；否则（校验失败 / 半成品）回退到普通工具卡，让错误可见。
+const RENDER_PANEL_TOOL = "render_panel";
+
+function panelSpecFromEntry(entry: ToolCallEntry): PanelSpec | null {
+  if (entry.tool.name !== RENDER_PANEL_TOOL) return null;
+  if (entry.result?.is_error) return null;
+  return parsePanelSpec(entry.tool.input);
+}
 
 interface MessageContentRendererProps {
   text: string;
@@ -274,6 +289,29 @@ export function MessageContentRenderer({
     );
   };
 
+  // 把 render_panel 的面板规范解析结果按 tool_call_id memo 化，使 PanelSpec 及
+  // 其内部块 / 数组（overlays / nodes / edges）跨渲染保持**引用稳定**。否则
+  // parsePanelSpec 在每次渲染都产出新数组引用，会让下游 effect（kline overlay
+  // 拉取）与 useMemo（kgraph 布局）在流式 / 父组件重渲染时反复重跑。memo key
+  // 只序列化 render_panel 块的入参与错误态（都很小），值比较稳定即命中缓存。
+  const renderPanelEntries = orderedBlocks
+    .filter(
+      (block): block is Extract<OrderedContentBlock, { type: "tool_call" }> =>
+        block.type === "tool_call" && block.name === RENDER_PANEL_TOOL,
+    )
+    .map((block) => ({ id: block.tool_call_id, entry: resolveToolEntry(block) }));
+  const panelMemoKey = JSON.stringify(
+    renderPanelEntries.map(({ id, entry }) => [id, entry.tool.input, entry.result?.is_error ?? false]),
+  );
+  const panelSpecById = useMemo(() => {
+    const map = new Map<string, PanelSpec | null>();
+    for (const { id, entry } of renderPanelEntries) {
+      map.set(id, panelSpecFromEntry(entry));
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelMemoKey]);
+
   // Compute the message-footer backtest jump target. Two source paths to
   // try, in order:
   //
@@ -356,7 +394,8 @@ export function MessageContentRenderer({
       // text 里剥出的内联 <think> 片段同样并入过程卡。
       type OutsideItem =
         | { kind: "text"; content: string }
-        | { kind: "question"; block: AssistantUserQuestionBlock };
+        | { kind: "question"; block: AssistantUserQuestionBlock }
+        | { kind: "panel"; spec: PanelSpec; key: string };
       const steps: ProcessStep[] = [];
       const outside: OutsideItem[] = [];
       // 最后一个过程块（thinking / tool_call）的位置：其后的 text 是最终回答。
@@ -371,7 +410,13 @@ export function MessageContentRenderer({
           steps.push({ kind: "thinking", content: block.content });
         } else if (block.type === "tool_call") {
           const entry = resolveToolEntry(block);
-          steps.push({ kind: "tool_call", tool: entry.tool, result: entry.result });
+          const spec = panelSpecById.get(block.tool_call_id) ?? null;
+          if (spec) {
+            // 面板留在过程卡之外醒目呈现（与 user_question 同策略）。
+            outside.push({ kind: "panel", spec, key: block.tool_call_id });
+          } else {
+            steps.push({ kind: "tool_call", tool: entry.tool, result: entry.result });
+          }
         } else if (block.type === "user_question") {
           outside.push({ kind: "question", block });
         } else {
@@ -409,6 +454,9 @@ export function MessageContentRenderer({
                 />
               );
             }
+            if (item.kind === "panel") {
+              return <AssistantPanel key={`panel-${item.key}-${index}`} spec={item.spec} />;
+            }
             return (
               <div key={`text-${index}`} className={`${MODEL_INVOCATION_PROSE_CLASSNAME}`}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
@@ -438,6 +486,10 @@ export function MessageContentRenderer({
           }
           if (block.type === "tool_call") {
             const entry = resolveToolEntry(block);
+            const spec = panelSpecById.get(block.tool_call_id) ?? null;
+            if (spec) {
+              return <AssistantPanel key={`panel-${block.tool_call_id}-${index}`} spec={spec} />;
+            }
             return (
               <InlineToolCallCard
                 key={`tool-${block.tool_call_id}-${index}`}

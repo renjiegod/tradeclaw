@@ -1130,6 +1130,7 @@ def build_default_tool_registry(
 
     bash_task_manager = BashTaskManager()
     from doyoutrade.tools.ask_user import AskUserQuestionTool as _AskUserQuestionTool
+    from doyoutrade.tools.render_panel import RenderPanelTool as _RenderPanelTool
     from doyoutrade.tools.watch_job import WatchJobTool as _WatchJobTool
     from doyoutrade.tools.decision_signal import (
         RecordDecisionSignalTool as _RecordDecisionSignalTool,
@@ -1145,6 +1146,11 @@ def build_default_tool_registry(
             assistant_repository=assistant_repository,
         ),
         _AskUserQuestionTool(assistant_repository=assistant_repository),
+        # UI 渲染原语：声明式面板（K线/图表/知识图谱/表格/指标卡）。纯校验 +
+        # 回显确认，面板规范经 tool.input 到前端由 AssistantPanel 渲染，引用式
+        # 数据由前端复用既有 /market/bars、/knowledge/graph API 拉取，因此不需
+        # 任何运行时 wiring（与 ask_user_question 同级、但更纯）。
+        _RenderPanelTool(),
         _WatchJobTool(
             watch_repository=job_watch_repository,
             run_repository=run_repository,

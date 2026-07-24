@@ -414,6 +414,15 @@ Don't push the directory to a remote even if `~/.doyoutrade` is symlinked.
 | `old_string_not_found` / `old_string_not_unique` | `edit_file` anchor missing or ambiguous. | Re-`read_file` and copy an exact, unique snippet (add surrounding context). |
 | `io_error` | OS-level failure. | Check the path / permissions and retry. |
 
+## Visualizing the graph in chat
+
+To **draw** a subgraph for the user (not just narrate it), call the in-process
+`render_panel` tool with a `kgraph` block — reference-style
+`{"type":"kgraph","entity":"贵州茅台","hops":2}` (the frontend fetches the same
+`GET /knowledge/graph` neighborhood and renders it as an SVG graph), or inline
+`{"type":"kgraph","nodes":[{id,name,node_type?}],"edges":[{id,src_id,dst_id,relation?}]}`.
+Full `render_panel` contract + `error_code`s live in `doyoutrade-data`.
+
 ## Notes
 
 - The directory ships with a `README.md` describing this same contract — read it
