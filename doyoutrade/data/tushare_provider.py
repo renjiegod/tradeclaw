@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from doyoutrade.data.bar_timestamp import normalize_bar_timestamp
@@ -49,6 +50,16 @@ from doyoutrade.data.protocols import PROVIDER_NAME_TUSHARE, ProviderCapabilitie
 from doyoutrade.core.models import Bar, MarketContext
 
 logger = logging.getLogger(__name__)
+
+# Third-party / proxied Tushare gateways (e.g. jiaoch.site) intermittently
+# surface these messages for a perfectly valid ``idx_mins`` call. Retry a
+# few times before failing the provider so ``data run`` isn't flaky.
+_TRANSIENT_TUSHARE_ERROR_MARKERS: tuple[str, ...] = (
+    "请指定正确的接口名",
+    "所有上游代理均无法访问",
+)
+_IDX_MINS_ATTEMPTS = 3
+_IDX_MINS_RETRY_SLEEP_SECONDS = 0.4
 
 
 # Map our canonical interval names to Tushare ``pro_bar`` ``freq`` values.
@@ -112,6 +123,15 @@ def _try_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _is_transient_tushare_error(exc: BaseException) -> bool:
+    msg = str(exc)
+    return any(marker in msg for marker in _TRANSIENT_TUSHARE_ERROR_MARKERS)
+
+
+def _frame_is_empty(df: Any) -> bool:
+    return df is None or bool(getattr(df, "empty", True))
 
 
 class TushareDataProvider:
@@ -194,20 +214,74 @@ class TushareDataProvider:
     def _fetch_idx_mins(
         self, symbol: str, freq: str, start_d: str, end_d: str
     ) -> Any:
-        """Fetch index minute bars via ``idx_mins`` (not ``pro_bar``/``stk_mins``)."""
-        try:
-            return self._pro_api.query(
-                "idx_mins",
-                ts_code=symbol,
-                freq=freq,
-                start_date=start_d,
-                end_date=end_d,
-            )
-        except Exception as exc:
+        """Fetch index minute bars via ``idx_mins`` (not ``pro_bar``/``stk_mins``).
+
+        Prefer the documented ``pro.idx_mins(...)`` method; fall back to
+        ``pro.query('idx_mins', ...)`` when the handle has no attribute
+        (stubs / older SDKs). Retries transient proxy failures and empty
+        frames — jiaoch.site-class gateways frequently return either.
+        """
+        last_exc: BaseException | None = None
+        df: Any = None
+        for attempt in range(_IDX_MINS_ATTEMPTS):
+            try:
+                idx_mins = getattr(self._pro_api, "idx_mins", None)
+                if callable(idx_mins):
+                    df = idx_mins(
+                        ts_code=symbol,
+                        freq=freq,
+                        start_date=start_d,
+                        end_date=end_d,
+                    )
+                else:
+                    df = self._pro_api.query(
+                        "idx_mins",
+                        ts_code=symbol,
+                        freq=freq,
+                        start_date=start_d,
+                        end_date=end_d,
+                    )
+            except Exception as exc:
+                last_exc = exc
+                if _is_transient_tushare_error(exc) and attempt < _IDX_MINS_ATTEMPTS - 1:
+                    logger.warning(
+                        "tushare idx_mins transient error for %s "
+                        "[%s..%s] attempt=%s/%s: %s",
+                        symbol,
+                        start_d,
+                        end_d,
+                        attempt + 1,
+                        _IDX_MINS_ATTEMPTS,
+                        exc,
+                    )
+                    time.sleep(_IDX_MINS_RETRY_SLEEP_SECONDS * (attempt + 1))
+                    continue
+                raise RuntimeError(
+                    f"tushare idx_mins failed for {symbol} "
+                    f"[{start_d}..{end_d}] freq={freq}: {exc}"
+                ) from exc
+
+            if not _frame_is_empty(df):
+                return df
+            if attempt < _IDX_MINS_ATTEMPTS - 1:
+                logger.warning(
+                    "tushare idx_mins empty for %s [%s..%s] attempt=%s/%s; retrying",
+                    symbol,
+                    start_d,
+                    end_d,
+                    attempt + 1,
+                    _IDX_MINS_ATTEMPTS,
+                )
+                time.sleep(_IDX_MINS_RETRY_SLEEP_SECONDS * (attempt + 1))
+                continue
+            return df
+
+        if last_exc is not None:
             raise RuntimeError(
                 f"tushare idx_mins failed for {symbol} "
-                f"[{start_d}..{end_d}] freq={freq}: {exc}"
-            ) from exc
+                f"[{start_d}..{end_d}] freq={freq}: {last_exc}"
+            ) from last_exc
+        return df
 
     def _fetch_pro_bar(
         self,

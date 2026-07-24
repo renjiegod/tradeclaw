@@ -11,7 +11,7 @@ import sys
 import types
 import unittest
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def _install_stub_tushare(
@@ -30,14 +30,18 @@ def _install_stub_tushare(
     stub = types.ModuleType("tushare")
     stub.set_token = MagicMock()
     pro = MagicMock()
+    empty = _FakeDataFrame([])
+    default_frame = query_return if query_return is not None else empty
     if query_side_effect is not None:
         pro.query = MagicMock(side_effect=query_side_effect)
+        # Prefer the documented ``pro.idx_mins`` method; keep it in sync with
+        # ``query`` so either call path exercises the same stub behaviour.
+        pro.idx_mins = MagicMock(side_effect=query_side_effect)
     else:
         # Default empty frame so accidental query calls don't explode on
         # ``.empty`` / ``iterrows`` — index-minute tests override explicitly.
-        pro.query = MagicMock(
-            return_value=query_return if query_return is not None else _FakeDataFrame([])
-        )
+        pro.query = MagicMock(return_value=default_frame)
+        pro.idx_mins = MagicMock(return_value=default_frame)
     stub.pro_api = MagicMock(return_value=pro)
     if pro_bar_side_effect is not None:
         stub.pro_bar = MagicMock(side_effect=pro_bar_side_effect)
@@ -300,9 +304,7 @@ class TushareDataProviderTests(unittest.TestCase):
         self.assertEqual([b.close for b in bars], [2934.3, 2929.1])
         self.assertEqual(bars[0].adjust_type, "none")
         stub.pro_bar.assert_not_called()
-        kwargs = stub.pro_api.return_value.query.call_args.kwargs
-        # query(api_name, **params) — first positional is the endpoint name.
-        self.assertEqual(stub.pro_api.return_value.query.call_args.args[0], "idx_mins")
+        kwargs = stub.pro_api.return_value.idx_mins.call_args.kwargs
         self.assertEqual(kwargs["ts_code"], "000001.SH")
         self.assertEqual(kwargs["freq"], "60min")
         self.assertEqual(kwargs["start_date"], "2024-01-05 09:00:00")
@@ -319,6 +321,7 @@ class TushareDataProviderTests(unittest.TestCase):
         )
 
         stub.pro_bar.assert_called_once()
+        stub.pro_api.return_value.idx_mins.assert_not_called()
         stub.pro_api.return_value.query.assert_not_called()
 
     def test_get_bars_index_daily_uses_pro_bar_asset_I(self):
@@ -363,6 +366,78 @@ class TushareDataProviderTests(unittest.TestCase):
             )
         self.assertIn("no idx_mins credit", str(ctx.exception))
         self.assertIn("idx_mins failed", str(ctx.exception))
+
+    def test_idx_mins_retries_transient_wrong_api_name_error(self):
+        """jiaoch.site (and similar proxies) intermittently return
+        ``请指定正确的接口名`` even for a valid ``idx_mins`` call — retry."""
+        from doyoutrade.data import tushare_provider as tp
+        from doyoutrade.data.tushare_provider import TushareDataProvider
+
+        rows = [
+            {
+                "trade_time": "2024-01-05 15:00:00",
+                "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+                "vol": 1.0, "amount": 1.0,
+            },
+        ]
+        stub = _install_stub_tushare()
+        stub.pro_api.return_value.idx_mins = MagicMock(
+            side_effect=[
+                Exception("数据获取失败: 请指定正确的接口名!"),
+                _FakeDataFrame(rows),
+            ]
+        )
+        provider = TushareDataProvider(symbols=["000001.SH"], token="t")
+        with patch.object(tp.time, "sleep"):
+            bars = asyncio.run(
+                provider.get_bars("000001.SH", "2024-01-05", "2024-01-05", interval="60m")
+            )
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(stub.pro_api.return_value.idx_mins.call_count, 2)
+
+    def test_idx_mins_retries_empty_frame_once(self):
+        """Same proxy sometimes returns an empty frame instead of raising."""
+        from doyoutrade.data import tushare_provider as tp
+        from doyoutrade.data.tushare_provider import TushareDataProvider
+
+        rows = [
+            {
+                "trade_time": "2024-01-05 14:00:00",
+                "open": 1.0, "high": 1.0, "low": 1.0, "close": 2.0,
+                "vol": 1.0, "amount": 1.0,
+            },
+        ]
+        stub = _install_stub_tushare()
+        stub.pro_api.return_value.idx_mins = MagicMock(
+            side_effect=[_FakeDataFrame([]), _FakeDataFrame(rows)]
+        )
+        provider = TushareDataProvider(symbols=["000001.SH"], token="t")
+        with patch.object(tp.time, "sleep"):
+            bars = asyncio.run(
+                provider.get_bars("000001.SH", "2024-01-05", "2024-01-05", interval="60m")
+            )
+        self.assertEqual([b.close for b in bars], [2.0])
+        self.assertEqual(stub.pro_api.return_value.idx_mins.call_count, 2)
+
+    def test_idx_mins_non_transient_error_does_not_retry(self):
+        from doyoutrade.data import tushare_provider as tp
+        from doyoutrade.data.tushare_provider import TushareDataProvider
+
+        stub = _install_stub_tushare()
+        stub.pro_api.return_value.idx_mins = MagicMock(
+            side_effect=Exception("权限不足: 对不起，您没有 idx_mins 接口的访问权限")
+        )
+        provider = TushareDataProvider(symbols=["000001.SH"], token="t")
+        with patch.object(tp.time, "sleep") as sleep:
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(
+                    provider.get_bars(
+                        "000001.SH", "2024-01-05", "2024-01-05", interval="60m"
+                    )
+                )
+        self.assertIn("权限不足", str(ctx.exception))
+        self.assertEqual(stub.pro_api.return_value.idx_mins.call_count, 1)
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":
