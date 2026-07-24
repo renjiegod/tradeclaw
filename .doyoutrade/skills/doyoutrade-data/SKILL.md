@@ -1257,6 +1257,57 @@ doyoutrade-cli data run --universe-file /tmp/u.txt --period 6m --indicators rsi 
 doyoutrade-cli stock screen --universe-file /tmp/u.txt --patterns hammer,bullish_engulfing --rsi-max 35
 ```
 
+## Rendering charts in chat: the `render_panel` in-process tool
+
+When the user wants to **see** a chart rather than read numbers — "画/看
+K 线"、"用折线图/柱状图/饼图展示"、"把关系画成知识图谱"、回测净值曲线、
+分类占比 — call the in-process `render_panel` tool (not a `doyoutrade-cli`
+command). It renders a declarative panel inline in the web console as a
+graphical card.
+
+Args: `{"title"?: str, "panel_id"?: str, "blocks": [ ... ]}` — `blocks` is a
+top-to-bottom stack (1–12), each discriminated by `type`:
+
+- `kline` (candlesticks, **reference-style**): `{type:"kline","symbol":"600519.SH",
+  interval?:"1d|5m|60m", start?, end?, adjust?:"qfq|hfq|none",
+  main_indicator?:"MA|BOLL|none", sub_indicator?:"MACD|KDJ|RSI|WR|none",
+  overlays?:["backtest_trades"|"task_fills"|"signals"]}`. `symbol` must be a
+  canonical `CODE.EXCHANGE` from `stock lookup` first — the frontend pulls bars
+  from the local 行情库 (`GET /market/bars`); you do **not** inline bars. If the
+  local warehouse has no data for the range, the panel shows empty and the user
+  syncs it from the page.
+- `chart` (line/bar/area/pie, **inline data**): `{type:"chart",
+  chart_type:"line|bar|area|pie", data:[{...}], x_field?, y_fields?:[..],
+  category_field?, value_field?, unit?, stacked?}`. line/bar/area need
+  `x_field`+`y_fields`; pie needs `category_field`+`value_field`. Keep `data`
+  small (dozens of rows).
+- `kgraph` (knowledge graph): reference `{type:"kgraph","entity":"贵州茅台",
+  hops?:1..3, layout?:"radial|force", color_mode?:"type|community"}` (frontend
+  fetches `GET /knowledge/graph`), or inline `{type:"kgraph","nodes":[{id,name,
+  node_type?}],"edges":[{id,src_id,dst_id,relation?}],center_id?}`.
+- `table`: `{type:"table","columns":[{title,data_index,align?}],"rows":[{...}]}`.
+- `statcard`: `{type:"statcard","metrics":[{label,value,unit?,delta?,
+  delta_dir?:"up|down|flat"}]}`.
+- `markdown`: `{type:"markdown","content":"..."}`.
+
+After a panel renders (`{"status":"rendered", ...}`), keep explaining in
+prose — do **not** re-dump the whole spec. Skip the tool when plain
+numbers/text are clearer.
+
+**Minimal valid payload** (the tool's `execute` args):
+`{"blocks":[{"type":"kline","symbol":"600519.SH"}]}`
+
+**Reading tool errors** — `render_panel` `error_code`s:
+
+| `error_code` | Meaning | Fix |
+|---|---|---|
+| `unknown_arguments` | Top-level kwarg outside `v` / `title` / `panel_id` / `blocks`. | Stick to the declared top-level keys; block fields live inside `blocks[]`. |
+| `invalid_blocks_json` | `blocks` was a malformed JSON string. | Pass `blocks` as an actual array, not a stringified one. |
+| `invalid_panel` | `blocks` empty / not a list / >12 items. | Provide 1–12 block objects. |
+| `invalid_block` | A block has an unknown `type` or is missing its required fields (e.g. chart without `x_field`/`y_fields`). | Read the message: it names `blocks[i]` and the missing field. |
+| `invalid_symbol` | A `kline` block's `symbol` is not canonical `CODE.EXCHANGE`. | Run `stock lookup` first; never guess a symbol from a name. |
+| `invalid_kgraph` | A `kgraph` block has neither `entity` nor `nodes`+`edges`, or a bad `hops`/`layout`/`color_mode`. | Provide `entity` (reference) or a non-empty inline `nodes`+`edges`. |
+
 ## What this skill does *not* cover
 
 - Symbol resolution (Chinese name → CODE.EXCHANGE) — use

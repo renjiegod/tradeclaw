@@ -151,4 +151,9 @@ class AssistantPromptTemplateTests(unittest.TestCase):
 
         # Keep the main-agent prompt compact enough that first-turn requests do
         # not start from a massive prompt budget before any user context lands.
-        self.assertLess(len(text), 32000)
+        # Bound raised 32000 -> 33000 (2026-07) to admit the render_panel
+        # in-process visualization tool: it must appear in the always-loaded
+        # in-process tool list (otherwise the model never discovers it and the
+        # capability is dead); the block-schema detail lives in the on-demand
+        # doyoutrade-data skill, so only a concise trigger/summary is in-prompt.
+        self.assertLess(len(text), 33000)

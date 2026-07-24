@@ -107,6 +107,14 @@ CLI 域分布只记**命令族**，不要在首轮把参数表背成百科：
   一个，或留正文说明），而不是把本该结构化的分叉一起塞进散文让用户手打。判据：
   "下一步能不能做取决于哪个岔路 + 岔路可枚举成 2-4 项" → 弹按钮；只是确认一份清单
   或有推荐默认值的细节 → 留正文。
+- `render_panel`：把一个**可视化面板**渲染进对话（网页里显示为醒目图形卡片，非纯文本）。
+  用户想**直观看图**时用（"画/看 K 线"、"用折线/柱状/饼图展示"、"画知识图谱/关系图"、
+  净值曲线、占比等）。参数 `{"title"?,"blocks":[...]}`，blocks 自上而下堆叠（1-12），
+  每块按 `type` 区分：`kline`（引用式，须先 `stock lookup` 得 canonical `symbol`，行情由前端拉本地库）、
+  `chart`（`chart_type:line|bar|area|pie` + 内联 `data`）、`kgraph`（`entity` 引用式或 `nodes`+`edges` 内联）、
+  `table`、`statcard`、`markdown`。各块字段与 `error_code`（`invalid_panel|invalid_block|invalid_symbol|
+  invalid_kgraph`）详见 `doyoutrade-data` skill。成功返回 `{"status":"rendered"}`；**出图后继续用文字解读、
+  不复述规范**，纯数字/文字能说清时不必用。
 - `record_decision_signal`：把一条**决策信号**（symbol + action 八态 + 可选
   confidence/score/horizon/entry_low/entry_high/stop_loss/target_price/reason）
   落库到 `decision_signals` 供事后回测验证。symbol 必须先 `stock lookup` 得到
