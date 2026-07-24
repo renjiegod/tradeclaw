@@ -225,6 +225,22 @@ class BaostockHistoricalProvider:
         bs_code = symbol_to_baostock(symbol)
         if bs_code is None:
             return [], set()
+        # Defense in depth: refuse index + minute before the SDK call. Without
+        # this guard, baostock's minute endpoint historically raised an opaque
+        # ``not enough values to unpack`` that poisoned the auto fallback
+        # chain's last_error when later providers returned empty.
+        from doyoutrade.data.protocols import (
+            ProviderIntervalUnsupportedError,
+            supports_interval_for_symbol,
+        )
+
+        if not supports_interval_for_symbol(
+            BaostockDataProvider.capabilities, interval, symbol
+        ):
+            raise ProviderIntervalUnsupportedError(
+                f"baostock does not support interval={interval!r} for {symbol!r} "
+                f"(index minute bars are unavailable on this provider)"
+            )
         freq = _freq_for_interval(interval)
         fields = _fields_for_interval(interval)
         start_d = _to_baostock_date(start_time)

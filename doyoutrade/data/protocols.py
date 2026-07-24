@@ -123,6 +123,16 @@ class ProviderCapabilities:
     unsupported_index_intervals: frozenset[str] = field(default_factory=frozenset)
 
 
+class ProviderIntervalUnsupportedError(ValueError):
+    """Provider cannot serve this ``(interval, symbol)`` pair.
+
+    Raised by concrete providers (e.g. baostock for 指数 + minute bars) so the
+    ``data_source=auto`` fallback chain can soft-skip without treating the miss
+    as a hard outage. Distinct from opaque upstream parse failures so callers
+    can recognize the constraint by type.
+    """
+
+
 def supports_interval_for_symbol(
     capabilities: "ProviderCapabilities | None", interval: str, symbol: str
 ) -> bool:
@@ -484,6 +494,8 @@ __all__ = [
     "FundFlowProvider",
     "RealtimeQuoteProvider",
     "ProviderCapabilities",
+    "ProviderIntervalUnsupportedError",
+    "supports_interval_for_symbol",
     "PROVIDER_NAME_AKSHARE",
     "PROVIDER_NAME_BAOSTOCK",
     "PROVIDER_NAME_MOCK",

@@ -30,9 +30,10 @@ PROVIDER_MOOTDX = "mootdx"
 # (通达信 socket: minute bars + same-day intraday + self-computed qfq, verified
 # to match baostock within ~0.08% on dividend/split names), then akshare
 # (token-free scrape fallback), then tushare (high-quality, skipped without a
-# token). The chain is filtered per-interval in :func:`_resolve_auto_chain` /
-# ``FallbackHistoricalDataProvider``, so a minute-bar request skips baostock
-# (no 1m) and lands on mootdx's socket feed ahead of akshare's fragile scrape.
+# token). When ``build_trading_data_stack(..., interval=...)`` is used,
+# :func:`_resolve_auto_chain` additionally drops providers that cannot serve
+# that interval for the given symbols (e.g. baostock for 指数 + 60m), so the
+# stack never even constructs an unusable primary.
 _AUTO_PRIORITY: tuple[str, ...] = (
     PROVIDER_QMT,
     PROVIDER_BAOSTOCK,
@@ -127,21 +128,66 @@ def _tushare_configured(data_cfg: DataSettings) -> bool:
     return bool(token and str(token).strip())
 
 
+def _capabilities_for_provider(name: str) -> Any:
+    """Return class-level :class:`ProviderCapabilities` for a built-in provider id.
+
+    Used by :func:`_resolve_auto_chain` to drop providers that cannot serve the
+    requested ``(interval, symbols)`` before the stack is built. Custom
+    registered providers are treated as supporting anything (return ``None``).
+    """
+    if name == PROVIDER_BAOSTOCK:
+        return BaostockDataProvider.capabilities
+    if name == PROVIDER_AKSHARE:
+        return AkshareDataProvider.capabilities
+    if name == PROVIDER_QMT:
+        return QmtLiveDataProvider.capabilities
+    if name == PROVIDER_MOCK:
+        return MockTradingDataProvider.capabilities
+    if name == PROVIDER_MOOTDX:
+        from doyoutrade.data.mootdx_provider import MootdxDataProvider
+
+        return MootdxDataProvider.capabilities
+    if name == PROVIDER_TUSHARE:
+        from doyoutrade.data.tushare_provider import TushareDataProvider
+
+        return TushareDataProvider.capabilities
+    return None
+
+
+def _provider_supports_request(
+    name: str, *, interval: str | None, symbols: list[str] | None
+) -> bool:
+    """True when ``name`` can serve ``interval`` for every symbol in ``symbols``."""
+    if not interval:
+        return True
+    from doyoutrade.data.protocols import supports_interval_for_symbol
+
+    caps = _capabilities_for_provider(name)
+    if caps is None:
+        return True
+    syms = list(symbols or [])
+    if not syms:
+        supported = caps.supported_intervals
+        return not supported or interval in supported
+    return all(supports_interval_for_symbol(caps, interval, sym) for sym in syms)
+
+
 def _resolve_auto_chain(
     data_cfg: DataSettings,
     account: ResolvedAccount | None,
     *,
     source_priority: tuple[str, ...] | None = None,
+    interval: str | None = None,
+    symbols: list[str] | None = None,
 ) -> list[str]:
     """Return the ordered provider ids for ``data_source=auto`` after dropping unconfigured auth providers.
 
-    The chain is *not* filtered by interval here — that decision is
-    deferred to runtime inside
-    :class:`doyoutrade.data.fallback_provider.FallbackHistoricalDataProvider`,
-    which inspects each provider's ``capabilities.supported_intervals``
-    per call and skips with a debug event. That keeps the factory
-    pure (no interval guesses) and lets per-symbol calls degrade
-    gracefully when the requested interval doesn't survive the chain.
+    When ``interval`` (and optionally ``symbols``) is supplied, providers whose
+    capabilities cannot serve that request are dropped from the chain so
+    ``data run --interval 60m`` on an index does not even construct baostock.
+    Runtime :class:`FallbackHistoricalDataProvider` still re-checks per call as
+    defense in depth. If filtering would empty the chain, the unfiltered order
+    is kept so callers still get a provider rather than a hard build failure.
 
     ``source_priority`` (from the task's ``data_cache.source_priority``)
     overrides the default :data:`_AUTO_PRIORITY` order when supplied — already
@@ -165,6 +211,14 @@ def _resolve_auto_chain(
         # mock answers with deterministic in-process bars + empty market
         # context, which is the legacy behaviour for unconfigured envs.
         chain = [PROVIDER_MOCK]
+    if interval:
+        filtered = [
+            name
+            for name in chain
+            if _provider_supports_request(name, interval=interval, symbols=symbols)
+        ]
+        if filtered:
+            chain = filtered
     return chain
 
 
@@ -292,6 +346,7 @@ def build_trading_data_stack(
     account: ResolvedAccount | None = None,
     session_persist=None,
     source_priority: tuple[str, ...] | None = None,
+    interval: str | None = None,
 ) -> tuple[Any, Any, Any]:
     """
     Returns ``(data_provider, universe_provider, account_reader)`` for a worker.
@@ -300,7 +355,9 @@ def build_trading_data_stack(
 
     For ``auto``, the resolved order is :data:`_AUTO_PRIORITY` filtered by
     config (QMT requires ``data.qmt.base_url``; Tushare requires
-    ``data.tushare.token``). When more than one provider survives the
+    ``data.tushare.token``). When ``interval`` is supplied, providers that
+    cannot serve that interval for the given ``symbols`` are dropped before
+    the stack is built. When more than one provider survives the
     filter, the returned ``data_provider`` is a
     :class:`FallbackHistoricalDataProvider` that fires
     ``market_data_provider_skipped`` debug events on each miss so the
@@ -327,7 +384,13 @@ def build_trading_data_stack(
             key, data_cfg, sym, account=account, session_persist=session_persist
         )
 
-    chain = _resolve_auto_chain(data_cfg, account, source_priority=source_priority)
+    chain = _resolve_auto_chain(
+        data_cfg,
+        account,
+        source_priority=source_priority,
+        interval=interval,
+        symbols=sym,
+    )
     primary_dp, universe, account_reader = _build_single_provider_stack(
         chain[0], data_cfg, sym, account=account, session_persist=session_persist
     )
