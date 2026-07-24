@@ -971,6 +971,7 @@ def create_app(
         end: str | None = Query(default=None, max_length=64),
         provider: str | None = Query(default=None, max_length=32),
         adjust: str | None = Query(default=None, max_length=16),
+        backfill: bool = Query(default=True),
     ):
         try:
             return await service.get_local_market_bars(
@@ -980,6 +981,7 @@ def create_app(
                 end=_normalize_optional_string(end, field_name="end"),
                 provider=_normalize_optional_string(provider, field_name="provider"),
                 adjust=_normalize_optional_string(adjust, field_name="adjust"),
+                backfill=backfill,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

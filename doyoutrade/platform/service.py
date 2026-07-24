@@ -195,6 +195,11 @@ BACKTEST_CHART_CYCLE_LIMIT = 450
 BACKTEST_CHART_INDICATOR_WARMUP_TRADING_DAYS = 250
 KLINE_DISPLAY_ADJUST = DEFAULT_BAR_ADJUST
 SUPPORTED_LOCAL_SYNC_MODES = frozenset({"fill_gap", "force_refresh"})
+# How long a GET /market/bars read-through backfill blocks on the inline
+# upstream fetch before escalating to a background job. The read never 500s on
+# timeout — it degrades to returning the (still-empty) local view plus a hint,
+# and the escalated job finishes the fetch out of band.
+_READ_THROUGH_INLINE_TIMEOUT_SECONDS = 25.0
 _DEPRECATED_TASK_SETTINGS_FIELDS = (
     "template_id",
     "signal_mode",
@@ -1103,6 +1108,12 @@ class TradingPlatformService:
         self.backtest_tasks: Dict[str, asyncio.Task] = {}
         self._local_market_sync_jobs: Dict[str, LocalMarketSyncJob] = {}
         self._local_market_sync_tasks: Dict[str, asyncio.Task] = {}
+        # Read-through backfill (GET /market/bars self-heal) coordination:
+        # a per-(provider, adjust, symbol, interval) lock serializes concurrent
+        # first-views of the same empty chart so they don't each fire an upstream
+        # fetch, and an in-flight map dedupes background jobs by the same key.
+        self._local_market_read_through_locks: Dict[tuple[str, str, str, str], asyncio.Lock] = {}
+        self._local_market_read_through_jobs: Dict[tuple[str, str, str, str], str] = {}
         self._closing = False
         self._backtest_pause_pending: Dict[str, bool] = {}
         self._backtest_pause_waiters: Dict[str, asyncio.Event] = {}
@@ -2613,8 +2624,18 @@ class TradingPlatformService:
         end: str | None = None,
         provider: str | None = None,
         adjust: str | None = None,
+        backfill: bool = True,
     ) -> dict[str, Any]:
-        """Read OHLCV bars from the local ``market_bars`` warehouse for UI charts."""
+        """Read OHLCV bars from the local ``market_bars`` warehouse for UI charts.
+
+        When the warehouse has no rows for the requested window and
+        ``backfill`` is set (the default for UI reads), the read self-heals:
+        it fetches the missing bars upstream and upserts them under the *same*
+        (provider, adjust, symbol, interval) key it just read with, then
+        re-reads so this same call returns the freshly warmed bars. Oversized
+        windows are pushed to a background job instead of blocking. Pass
+        ``backfill=False`` for a pure read (used by callers / tests that must
+        observe the un-warmed state)."""
         if self.market_bars_repository is None:
             raise RuntimeError(
                 "local market data is unavailable: configure market_data.database_url"
@@ -2664,6 +2685,20 @@ class TradingPlatformService:
                 f"requested_end must be on or after requested_start, got {effective_start!r}..{effective_end!r}"
             )
 
+        def _shape_bars(source_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [
+                {
+                    "timestamp": row["timestamp"],
+                    "open": row["open"],
+                    "high": row["high"],
+                    "low": row["low"],
+                    "close": row["close"],
+                    "volume": row["volume"],
+                    "amount": row.get("amount"),
+                }
+                for row in source_rows
+            ]
+
         rows = await self.market_bars_repository.bars_in_range(
             provider=effective_provider,
             adjust=effective_adjust,
@@ -2672,23 +2707,40 @@ class TradingPlatformService:
             start=start_bound,
             end=end_bound,
         )
-        bars = [
-            {
-                "timestamp": row["timestamp"],
-                "open": row["open"],
-                "high": row["high"],
-                "low": row["low"],
-                "close": row["close"],
-                "volume": row["volume"],
-                "amount": row.get("amount"),
-            }
-            for row in rows
-        ]
+        bars = _shape_bars(rows)
+
+        backfill_info: dict[str, Any] | None = None
+        if not bars and backfill:
+            # Self-heal: nothing stored for this window. Fetch upstream on
+            # demand and upsert under the same key we just read with, then
+            # re-read so this call returns the freshly warmed bars.
+            backfill_info = await self._read_through_backfill_local_market_bars(
+                symbol=normalized_symbol,
+                interval=normalized_interval,
+                start=effective_start,
+                end=effective_end,
+                start_bound=start_bound,
+                end_bound=end_bound,
+                provider=effective_provider,
+                adjust=effective_adjust,
+            )
+            rows = await self.market_bars_repository.bars_in_range(
+                provider=effective_provider,
+                adjust=effective_adjust,
+                symbol=normalized_symbol,
+                interval=normalized_interval,
+                start=start_bound,
+                end=end_bound,
+            )
+            bars = _shape_bars(rows)
+
         warnings: list[str] = []
         if not bars:
             warnings.append(
                 f"no local bars for {normalized_symbol} in [{effective_start}, {effective_end}]"
             )
+            if backfill_info and backfill_info.get("hint"):
+                warnings.append(str(backfill_info["hint"]))
 
         sync_state = await self.market_bars_repository.get_sync_state(
             provider=effective_provider,
@@ -2722,8 +2774,246 @@ class TradingPlatformService:
                 end=effective_end,
             ),
             "sync_state": sync_state,
+            "backfill": backfill_info,
+            "backfill_job_id": (backfill_info or {}).get("job_id"),
             "warnings": warnings,
         }
+
+    async def _read_through_backfill_local_market_bars(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        start: str,
+        end: str,
+        start_bound: datetime,
+        end_bound: datetime,
+        provider: str,
+        adjust: str,
+    ) -> dict[str, Any]:
+        """Warm an empty ``/market/bars`` window on demand (read-through).
+
+        Fetches upstream and upserts under the *same* (provider, adjust,
+        symbol, interval) key the read used — so key drift can't reintroduce
+        the "rendered but empty" chart bug. Bounded windows fill inline (the
+        caller re-reads and returns them in the same response); oversized
+        windows are pushed to the existing async sync-job machinery so the UI
+        read never blocks on a huge fetch. Best-effort: any failure degrades
+        to a structured warning + debug event, never a 500.
+        """
+        execution_mode = choose_sync_execution_mode(
+            interval=interval, start=start, end=end
+        )
+        base_payload = {
+            "symbol": symbol,
+            "interval": interval,
+            "provider": provider,
+            "adjust": adjust,
+            "requested_start": start,
+            "requested_end": end,
+            "execution_mode": execution_mode,
+        }
+        await emit_debug_event("market_bars_read_through.triggered", dict(base_payload))
+
+        key = (provider, adjust, symbol, interval)
+        lock = self._local_market_read_through_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            # A concurrent read that held the lock first may have already
+            # warmed this window — re-check before spending an upstream fetch.
+            existing = await self.market_bars_repository.bars_in_range(
+                provider=provider,
+                adjust=adjust,
+                symbol=symbol,
+                interval=interval,
+                start=start_bound,
+                end=end_bound,
+            )
+            if existing:
+                await emit_debug_event(
+                    "market_bars_read_through.skipped",
+                    {
+                        **base_payload,
+                        "reason": "already_filled",
+                        "hint": "another read-through already warmed this window",
+                    },
+                )
+                return {
+                    "attempted": True,
+                    "status": "already_filled",
+                    "execution_mode": execution_mode,
+                }
+
+            if execution_mode == "async":
+                job = self._enqueue_read_through_job(
+                    symbol=symbol,
+                    interval=interval,
+                    start=start,
+                    end=end,
+                    provider=provider,
+                    adjust=adjust,
+                )
+                await emit_debug_event(
+                    "market_bars_read_through.job_enqueued",
+                    {
+                        **base_payload,
+                        "job_id": job.job_id,
+                        "hint": "window too large for inline fetch; syncing in the "
+                        "background — poll GET /market/bars/sync-jobs/{job_id} then re-read",
+                    },
+                )
+                return {
+                    "attempted": True,
+                    "status": "job_enqueued",
+                    "execution_mode": execution_mode,
+                    "job_id": job.job_id,
+                    "hint": "syncing in the background; retry shortly",
+                }
+
+            try:
+                result = await asyncio.wait_for(
+                    self._run_local_market_range_sync(
+                        symbol=symbol,
+                        interval=interval,
+                        start=start,
+                        end=end,
+                        provider=provider,
+                        adjust=adjust,
+                        mode="fill_gap",
+                    ),
+                    timeout=_READ_THROUGH_INLINE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                # Don't lose the work: finish it in the background.
+                job = self._enqueue_read_through_job(
+                    symbol=symbol,
+                    interval=interval,
+                    start=start,
+                    end=end,
+                    provider=provider,
+                    adjust=adjust,
+                )
+                logger.warning(
+                    "market bars read-through inline fetch timed out symbol=%s "
+                    "interval=%s provider=%s adjust=%s; escalated to job_id=%s",
+                    symbol,
+                    interval,
+                    provider,
+                    adjust,
+                    job.job_id,
+                )
+                await emit_debug_event(
+                    "market_bars_read_through.timeout",
+                    {
+                        **base_payload,
+                        "job_id": job.job_id,
+                        "timeout_seconds": _READ_THROUGH_INLINE_TIMEOUT_SECONDS,
+                        "hint": "inline fetch exceeded timeout; syncing in the background",
+                    },
+                )
+                return {
+                    "attempted": True,
+                    "status": "timeout_enqueued",
+                    "execution_mode": execution_mode,
+                    "job_id": job.job_id,
+                    "hint": "still syncing in the background; retry shortly",
+                }
+            except Exception as exc:  # noqa: BLE001 — read must degrade, not 500
+                logger.warning(
+                    "market bars read-through inline fetch failed symbol=%s "
+                    "interval=%s provider=%s adjust=%s error_type=%s error=%s",
+                    symbol,
+                    interval,
+                    provider,
+                    adjust,
+                    type(exc).__name__,
+                    exc,
+                )
+                await emit_debug_event(
+                    "market_bars_read_through.failed",
+                    {
+                        **base_payload,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc) or type(exc).__name__,
+                        "hint": "upstream fetch failed; check the symbol, provider "
+                        "availability, and interval support for this instrument",
+                    },
+                )
+                return {
+                    "attempted": True,
+                    "status": "failed",
+                    "execution_mode": execution_mode,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc) or type(exc).__name__,
+                    "hint": "upstream fetch failed; see server logs",
+                }
+
+            upserted = int(result.get("upserted_count", 0))
+            await emit_debug_event(
+                "market_bars_read_through.inline_filled",
+                {
+                    **base_payload,
+                    "upserted_count": upserted,
+                    "fetched_segments": result.get("fetched_segments", []),
+                },
+            )
+            if upserted:
+                return {
+                    "attempted": True,
+                    "status": "inline_filled",
+                    "execution_mode": execution_mode,
+                    "upserted_count": upserted,
+                }
+            return {
+                "attempted": True,
+                "status": "upstream_empty",
+                "execution_mode": execution_mode,
+                "upserted_count": 0,
+                "hint": "upstream returned no bars for this window — the instrument "
+                "may have no data at this interval",
+            }
+
+    def _enqueue_read_through_job(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        start: str,
+        end: str,
+        provider: str,
+        adjust: str,
+    ) -> LocalMarketSyncJob:
+        """Enqueue (or reuse) a background sync job for a read-through miss.
+
+        Dedupes by (provider, adjust, symbol, interval) so repeatedly opening
+        the same not-yet-synced chart reuses one in-flight job instead of
+        piling up duplicate upstream fetches.
+        """
+        key = (provider, adjust, symbol, interval)
+        existing_job_id = self._local_market_read_through_jobs.get(key)
+        if existing_job_id is not None:
+            existing = self._local_market_sync_jobs.get(existing_job_id)
+            if existing is not None and existing.status in {"pending", "running"}:
+                return existing
+
+        job = self._create_local_market_sync_job(
+            symbol=symbol,
+            interval=interval,
+            start=start,
+            end=end,
+            provider=provider,
+            adjust=adjust,
+            mode="fill_gap",
+        )
+        self._local_market_read_through_jobs[key] = job.job_id
+        task = asyncio.create_task(
+            self._run_local_market_range_sync_job(job),
+            name=f"local-market-read-through-{job.job_id}",
+        )
+        self._local_market_sync_tasks[job.job_id] = task
+        task.add_done_callback(
+            lambda _task, job_id=job.job_id: self._local_market_sync_tasks.pop(job_id, None)
+        )
+        return job
 
     async def sync_local_market_bars_range(
         self,

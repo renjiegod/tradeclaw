@@ -1048,6 +1048,189 @@ class PlatformServiceTests(unittest.IsolatedAsyncioTestCase):
                 end="2026-01-02T09:30:00+00:00",
             )
 
+    # ------------------------------------------------------------------
+    # Read-through backfill (3b): an empty /market/bars read self-heals.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _daily_bar_dict() -> dict:
+        return {
+            "timestamp": "2026-06-24T00:00:00+00:00",
+            "open": 4090.1,
+            "high": 4113.1,
+            "low": 4088.9,
+            "close": 4100.1,
+            "volume": 3.0e8,
+            "amount": None,
+        }
+
+    async def test_get_local_market_bars_read_through_fills_empty_window_inline(self):
+        service = self._build_service()
+        repo = _FakeMarketBarsRepository(bars=[], sync_state=None)
+        service.market_bars_repository = repo
+        fill_bar = self._daily_bar_dict()
+
+        class _FillingRunner:
+            def __init__(self):
+                self.calls = []
+
+            async def sync_range(self, **kwargs):
+                self.calls.append(kwargs)
+                # Warm the warehouse: subsequent bars_in_range now returns rows.
+                repo._bars = [fill_bar]
+                return {
+                    "fetched_segments": [
+                        {"start": kwargs["start"], "end": kwargs["end"], "status": "fetched"}
+                    ],
+                    "upserted_count": 1,
+                    "warnings": [],
+                }
+
+        runner = _FillingRunner()
+        service._market_data_sync_runner = runner
+
+        payload = await service.get_local_market_bars(
+            symbol="000001.SH",
+            interval="1d",
+            start="2026-06-24",
+            end="2026-07-24",
+        )
+
+        # The empty read triggered exactly one upstream fetch, keyed IDENTICALLY
+        # to the read (this is the whole point — no provider/adjust drift).
+        self.assertEqual(len(runner.calls), 1)
+        read_key = repo.bars_in_range_calls[0]
+        self.assertEqual(runner.calls[0]["provider"], read_key["provider"])
+        self.assertEqual(runner.calls[0]["adjust"], read_key["adjust"])
+        self.assertEqual(runner.calls[0]["interval"], "1d")
+        self.assertEqual(runner.calls[0]["mode"], "fill_gap")
+        # The same call returns the freshly warmed bars.
+        self.assertEqual(len(payload["bars"]), 1)
+        self.assertEqual(payload["backfill"]["status"], "inline_filled")
+        self.assertEqual(payload["backfill"]["execution_mode"], "sync")
+        self.assertIsNone(payload["backfill_job_id"])
+        self.assertEqual(payload["warnings"], [])
+
+    async def test_get_local_market_bars_read_through_works_for_index_symbol(self):
+        # Indices are excluded from *background* sync, but an on-demand read
+        # must still self-heal them (that was the original bug).
+        service = self._build_service()
+        repo = _FakeMarketBarsRepository(bars=[], sync_state=None)
+        service.market_bars_repository = repo
+        fill_bar = self._daily_bar_dict()
+
+        class _FillingRunner:
+            def __init__(self):
+                self.calls = []
+
+            async def sync_range(self, **kwargs):
+                self.calls.append(kwargs)
+                repo._bars = [fill_bar]
+                return {"fetched_segments": [], "upserted_count": 1, "warnings": []}
+
+        runner = _FillingRunner()
+        service._market_data_sync_runner = runner
+
+        payload = await service.get_local_market_bars(
+            symbol="000001.SH", interval="1d", start="2026-06-24", end="2026-07-24"
+        )
+        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(runner.calls[0]["symbol"], "000001.SH")
+        self.assertEqual(len(payload["bars"]), 1)
+
+    async def test_get_local_market_bars_backfill_disabled_is_pure_read(self):
+        service = self._build_service()
+        repo = _FakeMarketBarsRepository(bars=[], sync_state=None)
+        service.market_bars_repository = repo
+        runner = _FakeRangeSyncRunner(result_count=1)
+        service._market_data_sync_runner = runner
+
+        payload = await service.get_local_market_bars(
+            symbol="000001.SH",
+            interval="1d",
+            start="2026-06-24",
+            end="2026-07-24",
+            backfill=False,
+        )
+        # No self-heal: pure read, warehouse untouched, empty result preserved.
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(payload["bars"], [])
+        self.assertIsNone(payload["backfill"])
+        self.assertTrue(any("no local bars" in w for w in payload["warnings"]))
+
+    async def test_get_local_market_bars_read_through_defers_large_window_to_job(self):
+        service = self._build_service()
+        repo = _FakeMarketBarsRepository(bars=[], sync_state=None)
+        service.market_bars_repository = repo
+        # Immediate (non-filling) runner: the background job completes but does
+        # not populate the fake repo — the GET still returns empty + a job id.
+        runner = _FakeRangeSyncRunner(result_count=0)
+        service._market_data_sync_runner = runner
+
+        # A multi-year 1d window exceeds the inline span threshold → async.
+        payload = await service.get_local_market_bars(
+            symbol="000001.SH",
+            interval="1d",
+            start="2020-01-01",
+            end="2026-07-24",
+        )
+        self.assertEqual(payload["backfill"]["status"], "job_enqueued")
+        self.assertEqual(payload["backfill"]["execution_mode"], "async")
+        job_id = payload["backfill_job_id"]
+        self.assertIsInstance(job_id, str)
+        self.assertIn(job_id, service._local_market_sync_jobs)
+        self.assertEqual(payload["bars"], [])
+        # Let the background job finish so no task dangles into teardown.
+        for _ in range(20):
+            if service._local_market_sync_jobs[job_id].status in {"ok", "failed"}:
+                break
+            await asyncio.sleep(0.01)
+
+    async def test_get_local_market_bars_read_through_failure_degrades(self):
+        service = self._build_service()
+        repo = _FakeMarketBarsRepository(bars=[], sync_state=None)
+        service.market_bars_repository = repo
+        runner = _FakeRangeSyncRunner(exc=RuntimeError("upstream boom"))
+        service._market_data_sync_runner = runner
+
+        payload = await service.get_local_market_bars(
+            symbol="000001.SH", interval="1d", start="2026-06-24", end="2026-07-24"
+        )
+        # Upstream failed → the read degrades (empty + hint), never 500s.
+        self.assertEqual(payload["bars"], [])
+        self.assertEqual(payload["backfill"]["status"], "failed")
+        self.assertEqual(payload["backfill"]["error_type"], "RuntimeError")
+        self.assertTrue(any("upstream fetch failed" in w for w in payload["warnings"]))
+
+    async def test_get_local_market_bars_read_through_timeout_escalates_to_job(self):
+        from unittest.mock import patch as _patch
+
+        service = self._build_service()
+        repo = _FakeMarketBarsRepository(bars=[], sync_state=None)
+        service.market_bars_repository = repo
+        release = asyncio.Event()
+        runner = _FakeRangeSyncRunner(result_count=0, wait_event=release)
+        service._market_data_sync_runner = runner
+
+        with _patch(
+            "doyoutrade.platform.service._READ_THROUGH_INLINE_TIMEOUT_SECONDS", 0.05
+        ):
+            payload = await service.get_local_market_bars(
+                symbol="000001.SH", interval="1d", start="2026-06-24", end="2026-07-24"
+            )
+
+        self.assertEqual(payload["backfill"]["status"], "timeout_enqueued")
+        job_id = payload["backfill_job_id"]
+        self.assertIsInstance(job_id, str)
+        self.assertEqual(payload["bars"], [])
+        # Release the escalated background job and let it settle.
+        release.set()
+        for _ in range(20):
+            job = service._local_market_sync_jobs.get(job_id)
+            if job is not None and job.status in {"ok", "failed"}:
+                break
+            await asyncio.sleep(0.01)
+
     async def test_get_local_market_bars_5m_date_only_bounds_do_not_invent_off_hours_missing(self):
         service = self._build_service()
         service.market_bars_repository = _FakeMarketBarsRepository(

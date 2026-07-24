@@ -104,10 +104,17 @@ class MarketDataFetcher:
     a request on ``_last_used_source``; callers that pass
     ``data_source="auto"`` read this back so the per-symbol envelope can
     report the real source instead of just "auto".
+
+    It also keeps the raw ``list[Bar]`` from the most recent ``_fetch_ohlcv``
+    on ``_last_bars`` (the DataFrame conversion drops the canonical bar
+    timestamps). ``data run`` reads these back to mirror the fetched bars into
+    the local ``market_bars`` warehouse without a second upstream round-trip
+    (see ``DataRunTool._maybe_warm_market_bars``).
     """
 
     def __init__(self) -> None:
         self._last_used_source: str = "unknown"
+        self._last_bars: list[Any] = []
 
     # ------------------------------------------------------------------
     # Window resolution
@@ -335,6 +342,9 @@ class MarketDataFetcher:
                 f"({start_iso}..{end_iso}, interval={interval})"
             )
 
+        # Keep the raw bars (with canonical timestamps the DataFrame index
+        # normalises away) so the caller can warm the local warehouse.
+        self._last_bars = bars
         return self._bars_to_dataframe(bars)
 
     def _bars_to_dataframe(self, bars: list[Any]) -> Any:

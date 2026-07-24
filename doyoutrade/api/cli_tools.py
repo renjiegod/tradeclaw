@@ -125,7 +125,23 @@ def build_cli_tool_registry(
                 None,
             )
         ),
-        DataRunTool(),
+        DataRunTool(
+            # Warm the local ``market_bars`` warehouse from each fetch so the UI
+            # K-line panel (GET /market/bars) renders without a separate sync.
+            # Key on the same (provider, adjust) the read side resolves: provider
+            # mirrors the worker's bootstrap warming provider
+            # (market_data.default_provider), adjust defaults to qfq. ``None``
+            # (minimal setups) → warming skipped, CSV-only behaviour unchanged.
+            market_bars_repository=getattr(service, "market_bars_repository", None),
+            market_bars_provider=(
+                getattr(
+                    getattr(getattr(service, "app_cfg", None), "market_data", None),
+                    "default_provider",
+                    None,
+                )
+                or getattr(service, "default_data_provider", None)
+            ),
+        ),
         DataNewsTool(),
         DataResearchReportsTool(),
         DataMarketBreadthTool(),

@@ -488,7 +488,9 @@ class _FakeService:
         end: str | None = None,
         provider: str | None = None,
         adjust: str | None = None,
+        backfill: bool = True,
     ):
+        self.last_get_local_market_bars_backfill = backfill
         return {
             "symbol": symbol,
             "interval": interval,

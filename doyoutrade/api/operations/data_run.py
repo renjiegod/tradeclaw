@@ -1519,6 +1519,112 @@ class DataRunTool(OperationHandler):
     # Per-symbol pipeline
     # ------------------------------------------------------------------
 
+    def __init__(
+        self,
+        *,
+        market_bars_repository: Any = None,
+        market_bars_provider: str | None = None,
+    ) -> None:
+        # Both default to None so minimal setups (and every existing test that
+        # constructs ``DataRunTool()`` bare) keep the previous CSV-only
+        # behaviour — warehouse warming is a no-op when either is missing.
+        self._market_bars_repository = market_bars_repository
+        self._market_bars_provider = (market_bars_provider or "").strip() or None
+
+    async def _maybe_warm_market_bars(
+        self,
+        *,
+        code: str,
+        bars: list[Any],
+        interval: str,
+    ) -> None:
+        """Mirror freshly fetched bars into the local ``market_bars`` warehouse.
+
+        The UI's K-line panel reads ``GET /market/bars`` → the ``market_bars``
+        warehouse, NOT the artifact CSV this tool writes. Without this the
+        panel shows "暂无本地 K 线" even right after a successful ``data run``.
+        We reuse the raw ``list[Bar]`` (canonical timestamps intact) and the
+        shared ``_bar_dict`` converter so the stored rows match the worker /
+        sync-range / read-through convention exactly, and we key on
+        ``(provider=market_data.default_provider, adjust=qfq)`` to match what
+        the read side resolves.
+
+        Best-effort by contract: warming never fails the ``data run`` (the CSV
+        artifact is already written); failures surface as a structured debug
+        event + warning, not an exception.
+        """
+        repo = self._market_bars_repository
+        provider = self._market_bars_provider
+        if repo is None or not provider:
+            return
+
+        from doyoutrade.data.constants import DEFAULT_BAR_ADJUST
+        from doyoutrade.data.local_market_bars import (
+            SUPPORTED_LOCAL_INTERVALS,
+            _bar_dict,
+        )
+
+        if interval not in SUPPORTED_LOCAL_INTERVALS:
+            await emit_debug_event(
+                "operation_data_run.symbol.market_bars_skipped",
+                {
+                    "code": code,
+                    "interval": interval,
+                    "reason": "interval_not_warehouse_eligible",
+                    "supported": sorted(SUPPORTED_LOCAL_INTERVALS),
+                    "hint": "only 1d/5m/60m are stored in the local market_bars warehouse",
+                },
+            )
+            return
+        if not bars:
+            return
+
+        try:
+            payloads = [_bar_dict(bar, interval=interval) for bar in bars]
+            upserted = await repo.upsert_bars(
+                provider=provider,
+                adjust=DEFAULT_BAR_ADJUST,
+                interval=interval,
+                bars=payloads,
+            )
+        except Exception as exc:  # noqa: BLE001 — warming is best-effort
+            logger.warning(
+                "data_run market_bars warm failed code=%s interval=%s provider=%s "
+                "adjust=%s error_type=%s error=%s",
+                code,
+                interval,
+                provider,
+                DEFAULT_BAR_ADJUST,
+                type(exc).__name__,
+                exc,
+            )
+            await emit_debug_event(
+                "operation_data_run.symbol.market_bars_failed",
+                {
+                    "code": code,
+                    "interval": interval,
+                    "provider": provider,
+                    "adjust": DEFAULT_BAR_ADJUST,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc) or type(exc).__name__,
+                    "hint": "warehouse warming failed; the OHLCV artifact CSV was still "
+                    "written — check repository writes and bar payload shape",
+                },
+            )
+            return
+
+        await emit_debug_event(
+            "operation_data_run.symbol.market_bars_warmed",
+            {
+                "code": code,
+                "interval": interval,
+                "provider": provider,
+                "adjust": DEFAULT_BAR_ADJUST,
+                "upserted_count": int(upserted),
+                "bar_count": len(payloads),
+            },
+        )
+
     async def _run_for_symbol(
         self,
         code: str,
@@ -1636,6 +1742,14 @@ class DataRunTool(OperationHandler):
             indicator_csv = root / f"data_run_indicators_{safe}.csv"
             out.to_csv(indicator_csv, index=True, index_label="date")
             indicator_path = str(indicator_csv)
+
+        # Warm the local market_bars warehouse from the raw fetched bars so the
+        # UI K-line panel (GET /market/bars) renders without a separate sync.
+        await self._maybe_warm_market_bars(
+            code=code,
+            bars=market_tool._last_bars,
+            interval=normalized["interval"],
+        )
 
         return {
             "code": code,
