@@ -29,7 +29,7 @@ from typing import Any
 
 from doyoutrade.core.models import Bar, MarketContext, QuoteSnapshot
 from doyoutrade.data.constants import DEFAULT_BAR_ADJUST
-from doyoutrade.data.protocols import ProviderCapabilities
+from doyoutrade.data.protocols import ProviderCapabilities, supports_interval_for_symbol
 from doyoutrade.debug import emit_debug_event
 
 logger = logging.getLogger(__name__)
@@ -48,20 +48,19 @@ def _provider_name(provider: Any) -> str:
     return getattr(caps, "name", None) or "unknown"
 
 
-def _supports_interval(provider: Any, interval: str) -> bool:
-    """Return ``True`` when ``provider.capabilities`` advertises support for ``interval``.
+def _supports_interval(provider: Any, interval: str, symbol: str) -> bool:
+    """Return ``True`` when ``provider.capabilities`` advertises support for ``interval`` on ``symbol``.
 
     Providers that don't declare capabilities are assumed to support any
     interval — keeps legacy / test providers (mock, hand-rolled
-    in-memory fakes) working without forcing them to add metadata.
+    in-memory fakes) working without forcing them to add metadata. Delegates
+    to :func:`supports_interval_for_symbol` so the per-instrument-type carve-out
+    (e.g. baostock has no minute bars for 指数) is honored here too, not just
+    ``supported_intervals`` — otherwise an index + minute-interval request
+    would sail past this gate and only fail deep inside the upstream SDK.
     """
     caps = getattr(provider, "capabilities", None)
-    if caps is None:
-        return True
-    supported = getattr(caps, "supported_intervals", None)
-    if not supported:
-        return True
-    return interval in supported
+    return supports_interval_for_symbol(caps, interval, symbol)
 
 
 class FallbackHistoricalDataProvider:
@@ -119,7 +118,7 @@ class FallbackHistoricalDataProvider:
         for provider in self.providers:
             name = _provider_name(provider)
             attempts.append(name)
-            if not _supports_interval(provider, interval):
+            if not _supports_interval(provider, interval, symbol):
                 await emit_debug_event(
                     "market_data_provider_skipped",
                     {

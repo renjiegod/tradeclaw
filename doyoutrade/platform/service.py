@@ -44,7 +44,7 @@ from doyoutrade.data.account_resolution import (
     ResolvedAccount,
     resolved_account_from_record,
 )
-from doyoutrade.data.factory import build_trading_data_stack, resolve_effective_provider
+from doyoutrade.data.factory import PROVIDER_MOCK, build_trading_data_stack, resolve_effective_provider
 from doyoutrade.data.instrument_catalog.index_seeds import A_SHARE_INDEX_SEEDS, A_SHARE_INDEX_SYMBOLS
 from doyoutrade.data.instrument_catalog.normalize import canonical_symbol_from_qmt_stock_code
 from doyoutrade.data.instrument_catalog.validation import ensure_symbols_in_catalog
@@ -1777,11 +1777,34 @@ class TradingPlatformService:
             merged = base
         return merge_task_settings(merged)
 
-    async def _ensure_new_task_catalog_symbols(self, stored_settings: dict) -> None:
+    def _mock_catalog_skip_reason(self, data_provider: str | None) -> str | None:
+        """Return a debug-event ``reason`` when ``data_provider`` resolves to mock.
+
+        ``mock`` synthesizes bars in-process (see ``_build_mock_stack`` in
+        ``doyoutrade/data/factory.py``) and never touches the real
+        ``instrument_catalog`` table, so requiring symbols to already be
+        registered there is a false gate for this one provider — it blocks
+        the provider whose entire point is to run without any real
+        market-data registration. Returns ``None`` (no skip) for every other
+        provider so the catalog gate stays exactly as strict as before.
+        """
+        effective = resolve_effective_provider(data_provider, self.default_data_provider)
+        return "mock_data_provider" if effective == PROVIDER_MOCK else None
+
+    async def _ensure_new_task_catalog_symbols(
+        self, stored_settings: dict, *, data_provider: str | None = None
+    ) -> None:
         # @watchlist:<tag> tokens are references resolved at worker assembly, not
         # literal symbols — strip them before catalog validation (their member
         # symbols are catalog-ensured when added via `watchlist add`).
         plain, _tags = split_universe_tokens(list(stored_settings.get("universe") or []))
+        skip_reason = self._mock_catalog_skip_reason(data_provider)
+        if skip_reason is not None:
+            await emit_debug_event(
+                "task_catalog_check_skipped",
+                {"reason": skip_reason, "symbols": plain, "stage": "create_task"},
+            )
+            return
         # tradable_only=True: a task universe feeds order generation, so indices
         # (is_tradable=False) must be rejected — they live in the catalog only
         # for watchlist / charting (生产稳定性: 指数不可下单).
@@ -1794,6 +1817,13 @@ class TradingPlatformService:
     ) -> None:
         eff = self._effective_merged_settings(record, settings_patch)
         plain, _tags = split_universe_tokens(list(eff.get("universe") or []))
+        skip_reason = self._mock_catalog_skip_reason(record.data_provider)
+        if skip_reason is not None:
+            await emit_debug_event(
+                "task_catalog_check_skipped",
+                {"reason": skip_reason, "symbols": plain, "stage": "update_task"},
+            )
+            return
         await ensure_symbols_in_catalog(
             self.instrument_catalog_repository, plain, tradable_only=True
         )
@@ -1816,7 +1846,7 @@ class TradingPlatformService:
         mrn = (stored_settings.get("model_route_name") or "").strip()
         if mrn:
             await self.ensure_model_route_exists(mrn)
-        await self._ensure_new_task_catalog_symbols(stored_settings)
+        await self._ensure_new_task_catalog_symbols(stored_settings, data_provider=data_provider)
         # When an account is bound, it must exist and be enabled. (Whether a
         # *live* cycle has a usable account is enforced at run time in
         # ``_resolve_worker_account`` — a task may be created before its account
@@ -3931,14 +3961,29 @@ class TradingPlatformService:
         # Strip @watchlist:<tag> references before catalog validation; they are
         # resolved to concrete symbols inside _build_worker below.
         _plain_universe, _ = split_universe_tokens(list(merged_cfg.universe))
-        # tradable_only=True: a backtest universe must also exclude indices —
-        # backtesting a non-tradable instrument is meaningless and keeps the
-        # universe contract consistent with live tasks.
-        await ensure_symbols_in_catalog(
-            self.instrument_catalog_repository,
-            _plain_universe,
-            tradable_only=True,
-        )
+        # data_provider=mock never touches the real instrument catalog (see
+        # _mock_catalog_skip_reason) — skip the gate and emit a debug event
+        # instead of silently dropping the check (§错误可见性: legitimate
+        # skip must stay observable). Note: for a --definition auto-created
+        # task this check is largely redundant with the one already done in
+        # create_task's _ensure_new_task_catalog_symbols (same data_provider,
+        # same universe) — kept here too so --task mode (an existing task
+        # whose universe/data_provider changed after creation) is covered.
+        _skip_reason = self._mock_catalog_skip_reason(merged_cfg.data_provider)
+        if _skip_reason is not None:
+            await emit_debug_event(
+                "backtest_catalog_check_skipped",
+                {"task_id": record.task_id, "reason": _skip_reason, "symbols": _plain_universe},
+            )
+        else:
+            # tradable_only=True: a backtest universe must also exclude indices —
+            # backtesting a non-tradable instrument is meaningless and keeps the
+            # universe contract consistent with live tasks.
+            await ensure_symbols_in_catalog(
+                self.instrument_catalog_repository,
+                _plain_universe,
+                tradable_only=True,
+            )
         effective_route = (model_route_name or "").strip()
         probe_ms = await self._resolve_worker_model_settings(
             merged_cfg,

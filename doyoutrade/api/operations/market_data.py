@@ -71,6 +71,18 @@ class _ConflictingRange(ValueError):
     """
 
 
+class _IntervalNotSupportedForSymbol(ValueError):
+    """Raised when ``data_source`` cannot serve ``interval`` for ``code``'s instrument type.
+
+    Historically this case (e.g. baostock + 60m + an index like 000001.SH)
+    was left to the upstream SDK, which doesn't come back with an empty
+    result — it raises an opaque ``not enough values to unpack`` from deep
+    inside its response parser when handed a shape it never expected. This
+    class lets ``_fetch_ohlcv`` reject the request up front, before any
+    network call, with a message that names the actual constraint.
+    """
+
+
 def _get_artifacts_root() -> Path:
     return Path.home() / ".doyoutrade" / "assistant" / "artifacts"
 
@@ -263,6 +275,28 @@ class MarketDataFetcher:
             raise RuntimeError(
                 f"data_source={data_source!r} is not available: {exc}"
             ) from exc
+
+        # Explicit (non-"auto") providers skip FallbackHistoricalDataProvider's
+        # chain, which is the only place that previously checked
+        # supports_interval_for_symbol — so an explicit "baostock" + 60m +
+        # index request sailed straight through to the upstream SDK. Check
+        # here too, before the network round-trip. Skipped for the auto chain
+        # itself (a FallbackHistoricalDataProvider): its ``.capabilities`` is
+        # only the *primary* inner provider's, and the chain's whole purpose
+        # is to fall through to a secondary when the primary can't serve the
+        # request — asserting on the primary alone here would wrongly abort
+        # before that fallback gets a chance to run.
+        if not isinstance(provider, FallbackHistoricalDataProvider):
+            from doyoutrade.data.protocols import supports_interval_for_symbol
+
+            provider_caps = getattr(provider, "capabilities", None)
+            if not supports_interval_for_symbol(provider_caps, interval, code):
+                provider_name = getattr(provider_caps, "name", None) or data_source
+                raise _IntervalNotSupportedForSymbol(
+                    f"data_source={provider_name!r} does not support interval={interval!r} "
+                    f"for {code!r} — this instrument type (likely an index) has no minute-level "
+                    f"history on this provider; use --interval 1d, or a different --data-source"
+                )
 
         try:
             bars: list[Bar] = list(

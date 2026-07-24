@@ -121,6 +121,7 @@ def _register_commands() -> None:
     from doyoutrade.cli.commands import cron as cron_cmd
     from doyoutrade.cli.commands import data as data_cmd
     from doyoutrade.cli.commands import decision_signal as decision_signal_cmd
+    from doyoutrade.cli.commands import instruments as instruments_cmd
     from doyoutrade.cli.commands import knowledge as knowledge_cmd
     from doyoutrade.cli.commands import monitor as monitor_cmd
     from doyoutrade.cli.commands import observability as obs_cmd
@@ -154,6 +155,7 @@ def _register_commands() -> None:
     cli.add_command(watchlist_cmd.watchlist)
     cli.add_command(monitor_cmd.monitor)
     cli.add_command(decision_signal_cmd.decision_signal)
+    cli.add_command(instruments_cmd.instruments)
     cli.add_command(portfolio_cmd.portfolio)
     cli.add_command(knowledge_cmd.knowledge)
     cli.add_command(schema_cmd.schema)

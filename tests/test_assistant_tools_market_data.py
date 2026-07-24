@@ -80,9 +80,15 @@ class MarketDataFetcherTests(unittest.IsolatedAsyncioTestCase):
             for ts in dates
         ]
 
+        from doyoutrade.data.protocols import ProviderCapabilities
+
         stub_provider = MagicMock()
-        stub_provider.capabilities = MagicMock()
-        stub_provider.capabilities.name = "qmt"
+        # A real ProviderCapabilities (not a loose MagicMock) so the
+        # supports_interval_for_symbol pre-flight in _fetch_ohlcv sees
+        # well-formed data — a bare MagicMock's default __contains__
+        # (used by that check) always returns False, which would wrongly
+        # reject every interval regardless of what's actually requested.
+        stub_provider.capabilities = ProviderCapabilities(name="qmt")
         stub_provider.get_bars = AsyncMock(return_value=fake_bars)
         stub_provider.aclose = AsyncMock()
 

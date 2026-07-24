@@ -183,5 +183,43 @@ class BaostockProviderUnitTests(unittest.TestCase):
         self.assertIn("boom", str(ctx.exception))
 
 
+class BaostockIndexMinuteCapabilityTests(unittest.TestCase):
+    """baostock has no minute-bar history for 指数 — capabilities must say so.
+
+    Regression coverage for the "指数 + 60m → not enough values to unpack"
+    failure mode: baostock's minute endpoint only covers 股票/ETF, so an
+    index + minute-interval request must be rejected by
+    ``supports_interval_for_symbol`` before it ever reaches the upstream SDK.
+    """
+
+    def test_index_symbol_rejects_minute_intervals(self) -> None:
+        from doyoutrade.data.protocols import supports_interval_for_symbol
+
+        caps = bp.BaostockDataProvider.capabilities
+        for interval in ("5m", "15m", "30m", "60m"):
+            self.assertFalse(
+                supports_interval_for_symbol(caps, interval, "000001.SH"),
+                f"baostock should reject {interval} for 上证指数 000001.SH",
+            )
+        # 399001.SZ (深证成指) is also an index — same carve-out applies.
+        self.assertFalse(supports_interval_for_symbol(caps, "60m", "399001.SZ"))
+
+    def test_stock_symbol_keeps_minute_support(self) -> None:
+        from doyoutrade.data.protocols import supports_interval_for_symbol
+
+        caps = bp.BaostockDataProvider.capabilities
+        for interval in ("5m", "15m", "30m", "60m"):
+            self.assertTrue(
+                supports_interval_for_symbol(caps, interval, "600519.SH"),
+                f"baostock should still serve {interval} for a real stock",
+            )
+
+    def test_daily_interval_unaffected_for_index(self) -> None:
+        from doyoutrade.data.protocols import supports_interval_for_symbol
+
+        caps = bp.BaostockDataProvider.capabilities
+        self.assertTrue(supports_interval_for_symbol(caps, "1d", "000001.SH"))
+
+
 if __name__ == "__main__":
     unittest.main()

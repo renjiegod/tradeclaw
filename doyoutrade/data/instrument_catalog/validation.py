@@ -20,12 +20,25 @@ class CatalogError(ValueError):
 
 
 class CatalogValidationError(CatalogError):
-    """Raised when one or more symbols are not present in ``instrument_catalog``."""
+    """Raised when one or more symbols are not present in ``instrument_catalog``.
+
+    A missing symbol is ambiguous on its own — it can mean "typo'd the code"
+    or "this deployment's instrument_catalog was never seeded" (a brand-new
+    environment starts with an empty table; see
+    ``doyoutrade-cli instruments catalog sync``). ``hint`` disambiguates so
+    callers don't have to guess which one it is.
+    """
+
+    hint = (
+        "symbol not found, or this environment's instrument_catalog is empty/unseeded — "
+        "run `doyoutrade-cli instruments catalog sync` (or POST /instruments/catalog/sync) "
+        "to populate it, then retry"
+    )
 
     def __init__(self, missing_symbols: list[str]):
         self.missing_symbols = list(missing_symbols)
         super().__init__(
-            f"symbols not in instrument catalog: {sorted(missing_symbols)}",
+            f"symbols not in instrument catalog: {sorted(missing_symbols)}. {self.hint}",
         )
 
 
