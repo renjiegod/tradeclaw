@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
-from doyoutrade.skills.loader import load_skills
+from doyoutrade.skills.loader import default_skills_root, find_project_root, load_skills
 
 
 SKILL_BODY = """---
@@ -52,6 +54,22 @@ class FlatSkillsLoaderTest(unittest.TestCase):
             skills = load_skills(root)
 
             self.assertEqual([s.name for s in skills], ["alpha"])
+
+
+class DefaultSkillsRootEnvOverrideTest(unittest.TestCase):
+    def test_env_override_wins(self):
+        with TemporaryDirectory() as td:
+            with mock.patch.dict(os.environ, {"DOYOUTRADE_SKILLS_PATH": td}):
+                self.assertEqual(default_skills_root(), Path(td))
+
+    def test_env_override_expands_user(self):
+        with mock.patch.dict(os.environ, {"DOYOUTRADE_SKILLS_PATH": "~/some-skills-dir"}):
+            self.assertEqual(default_skills_root(), Path("~/some-skills-dir").expanduser())
+
+    def test_no_env_falls_back_to_project_root(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DOYOUTRADE_SKILLS_PATH", None)
+            self.assertEqual(default_skills_root(), find_project_root() / ".doyoutrade" / "skills")
 
 
 if __name__ == "__main__":

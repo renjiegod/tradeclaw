@@ -31,7 +31,16 @@ def find_project_root(start: Path | None = None) -> Path:
 
 
 def default_skills_root() -> Path:
-    """<project_root>/.doyoutrade/skills (each subdir holds SKILL.md)."""
+    """<project_root>/.doyoutrade/skills (each subdir holds SKILL.md).
+
+    Honours ``DOYOUTRADE_SKILLS_PATH`` (same convention as ``DOYOUTRADE_HOME`` in
+    :func:`doyoutrade.config.default_base_dir`) so deployments that spawn the
+    process against a cwd with no discoverable skills tree (e.g. a per-tenant
+    account home) can point at a shared skills root instead.
+    """
+    override = os.getenv("DOYOUTRADE_SKILLS_PATH")
+    if override:
+        return Path(override).expanduser()
     return find_project_root() / ".doyoutrade" / "skills"
 
 
