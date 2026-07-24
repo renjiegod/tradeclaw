@@ -684,5 +684,149 @@ class BarsToDataFrameAmountTests(unittest.TestCase):
         )
 
 
+class _WarmRepo:
+    """Minimal market_bars repository stub capturing ``upsert_bars`` calls."""
+
+    def __init__(self) -> None:
+        self.upsert_bars_calls: list[dict[str, Any]] = []
+
+    async def upsert_bars(
+        self, *, provider: str, adjust: str, interval: str, bars: list[dict[str, Any]]
+    ) -> int:
+        self.upsert_bars_calls.append(
+            {"provider": provider, "adjust": adjust, "interval": interval, "bars": list(bars)}
+        )
+        return len(bars)
+
+
+class DataRunWarehouseWarmTests(_HomeArtifactsMixin, unittest.IsolatedAsyncioTestCase):
+    """3a: ``data run`` mirrors fetched bars into the local ``market_bars``
+    warehouse so the UI K-line panel (GET /market/bars) renders without a
+    separate sync."""
+
+    def _daily_bars(self) -> list[Bar]:
+        return [
+            Bar(
+                symbol="000001.SH",
+                timestamp="2026-06-24",
+                open=4090.1,
+                high=4113.1,
+                low=4088.9,
+                close=4100.1,
+                volume=3.0e8,
+            ),
+            Bar(
+                symbol="000001.SH",
+                timestamp="2026-06-25",
+                open=4103.4,
+                high=4118.1,
+                low=4093.0,
+                close=4110.5,
+                volume=3.2e8,
+            ),
+        ]
+
+    async def test_warm_uses_read_side_key(self) -> None:
+        repo = _WarmRepo()
+        tool = DataRunTool(market_bars_repository=repo, market_bars_provider="auto")
+        await tool._maybe_warm_market_bars(
+            code="000001.SH", bars=self._daily_bars(), interval="1d"
+        )
+        self.assertEqual(len(repo.upsert_bars_calls), 1)
+        call = repo.upsert_bars_calls[0]
+        # Key MUST match what GET /market/bars reads with (see
+        # PlatformService.get_local_market_bars): provider default, adjust qfq.
+        self.assertEqual(call["provider"], "auto")
+        self.assertEqual(call["adjust"], "qfq")
+        self.assertEqual(call["interval"], "1d")
+        self.assertEqual([b["timestamp"] for b in call["bars"]], ["2026-06-24", "2026-06-25"])
+        self.assertEqual(call["bars"][0]["symbol"], "000001.SH")
+        self.assertEqual(call["bars"][0]["close"], 4100.1)
+
+    async def test_warm_intraday_timestamps_are_tz_aware(self) -> None:
+        repo = _WarmRepo()
+        tool = DataRunTool(market_bars_repository=repo, market_bars_provider="auto")
+        bars = [
+            Bar(
+                symbol="000001.SH",
+                timestamp="2026-06-24 10:30:00",
+                open=1.0,
+                high=1.0,
+                low=1.0,
+                close=1.0,
+                volume=1.0,
+            )
+        ]
+        await tool._maybe_warm_market_bars(code="000001.SH", bars=bars, interval="60m")
+        self.assertEqual(len(repo.upsert_bars_calls), 1)
+        ts = repo.upsert_bars_calls[0]["bars"][0]["timestamp"]
+        # Intraday bars are stored tz-aware (shared _repository_timestamp
+        # convention) — a naive intraday timestamp would fail the upsert.
+        self.assertIn("T", ts)
+        self.assertTrue(ts.endswith("+00:00"), ts)
+
+    async def test_warm_noop_without_repository(self) -> None:
+        # Bare tool (minimal setup): warming is skipped, no error.
+        await DataRunTool()._maybe_warm_market_bars(
+            code="000001.SH", bars=self._daily_bars(), interval="1d"
+        )
+
+    async def test_warm_noop_without_provider(self) -> None:
+        repo = _WarmRepo()
+        tool = DataRunTool(market_bars_repository=repo, market_bars_provider=None)
+        await tool._maybe_warm_market_bars(
+            code="000001.SH", bars=self._daily_bars(), interval="1d"
+        )
+        self.assertEqual(repo.upsert_bars_calls, [])
+
+    async def test_warm_skips_unsupported_interval(self) -> None:
+        repo = _WarmRepo()
+        tool = DataRunTool(market_bars_repository=repo, market_bars_provider="auto")
+        await tool._maybe_warm_market_bars(
+            code="000001.SH", bars=self._daily_bars(), interval="15m"
+        )
+        self.assertEqual(repo.upsert_bars_calls, [])
+
+    async def test_data_run_end_to_end_warms_warehouse(self) -> None:
+        repo = _WarmRepo()
+        bars = self._daily_bars()
+
+        async def _fetch(
+            self,
+            code: str,
+            *,
+            start_dt: date,
+            end_dt: date,
+            period_label: str,
+            interval: str,
+            data_source: str,
+        ) -> pd.DataFrame:
+            # Mirror the real _fetch_ohlcv: stash raw bars, return the frame.
+            self._last_bars = bars
+            return self._bars_to_dataframe(bars)
+
+        with patch(
+            "doyoutrade.api.operations.market_data.MarketDataFetcher._fetch_ohlcv", new=_fetch
+        ):
+            result = await DataRunTool(
+                market_bars_repository=repo, market_bars_provider="auto"
+            ).execute(
+                code="000001.SH",
+                start_date="2026-06-24",
+                end_date="2026-06-25",
+                interval="1d",
+            )
+
+        self.assertFalse(result.is_error, msg=result.text)
+        data = _payload(result)
+        self.assertEqual(data["symbols_succeeded"], 1)
+        # The fetch also warmed the warehouse under the read-side key.
+        self.assertEqual(len(repo.upsert_bars_calls), 1)
+        self.assertEqual(repo.upsert_bars_calls[0]["provider"], "auto")
+        self.assertEqual(repo.upsert_bars_calls[0]["adjust"], "qfq")
+        self.assertEqual(repo.upsert_bars_calls[0]["interval"], "1d")
+        self.assertEqual(len(repo.upsert_bars_calls[0]["bars"]), 2)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

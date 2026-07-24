@@ -909,6 +909,28 @@ export type MarketBarSyncState = {
   status: string;
 };
 
+// Read-through backfill outcome attached to a /market/bars read when the
+// warehouse was empty and the server tried to self-heal (fetch upstream +
+// upsert). ``status`` distinguishes inline fill vs a background job vs an
+// upstream miss/failure; ``job_id`` (when present) can be polled via
+// getLocalMarketSyncJob before re-reading.
+export type LocalMarketBackfillInfo = {
+  attempted: boolean;
+  status:
+    | "inline_filled"
+    | "upstream_empty"
+    | "job_enqueued"
+    | "timeout_enqueued"
+    | "already_filled"
+    | "failed";
+  execution_mode: "sync" | "async";
+  job_id?: string | null;
+  upserted_count?: number;
+  error_type?: string;
+  error?: string;
+  hint?: string;
+};
+
 export type LocalMarketBarsSnapshot = {
   symbol: string;
   interval: string;
@@ -922,6 +944,10 @@ export type LocalMarketBarsSnapshot = {
   coverage: LocalMarketCoverage;
   available_overlays: LocalMarketOverlayCandidates;
   sync_state: MarketBarSyncState | null;
+  // Present only when the read triggered a read-through backfill (empty
+  // warehouse + backfill enabled). ``null`` when no backfill was attempted.
+  backfill?: LocalMarketBackfillInfo | null;
+  backfill_job_id?: string | null;
   warnings: string[];
 };
 
