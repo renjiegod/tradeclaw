@@ -14,16 +14,31 @@ from typing import Any
 from unittest.mock import MagicMock
 
 
-def _install_stub_tushare(pro_bar_return: Any = None, pro_bar_side_effect: Exception | None = None):
+def _install_stub_tushare(
+    pro_bar_return: Any = None,
+    pro_bar_side_effect: Exception | None = None,
+    *,
+    query_return: Any = None,
+    query_side_effect: Exception | None = None,
+):
     """Install a minimal ``tushare`` stub into ``sys.modules``.
 
-    Returns the stub so the test can assert on calls (set_token / pro_bar).
-    The caller is responsible for restoring the previous module via
-    :func:`_restore_tushare` so other tests aren't polluted.
+    Returns the stub so the test can assert on calls (set_token / pro_bar /
+    ``pro_api().query``). The caller is responsible for restoring the previous
+    module via :func:`_restore_tushare` so other tests aren't polluted.
     """
     stub = types.ModuleType("tushare")
     stub.set_token = MagicMock()
-    stub.pro_api = MagicMock(return_value=MagicMock())
+    pro = MagicMock()
+    if query_side_effect is not None:
+        pro.query = MagicMock(side_effect=query_side_effect)
+    else:
+        # Default empty frame so accidental query calls don't explode on
+        # ``.empty`` / ``iterrows`` — index-minute tests override explicitly.
+        pro.query = MagicMock(
+            return_value=query_return if query_return is not None else _FakeDataFrame([])
+        )
+    stub.pro_api = MagicMock(return_value=pro)
     if pro_bar_side_effect is not None:
         stub.pro_bar = MagicMock(side_effect=pro_bar_side_effect)
     else:
@@ -250,6 +265,104 @@ class TushareDataProviderTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             provider._ensure_pro_api()
         self.assertIn("not installed", str(ctx.exception))
+
+    def test_get_bars_index_minute_uses_idx_mins_not_pro_bar(self):
+        """Index minute bars go through ``idx_mins`` — ``pro_bar`` routes to
+        ``stk_mins`` and rejects 指数 codes (and many trial tokens lack
+        ``stk_mins`` entirely)."""
+        from doyoutrade.data.tushare_provider import TushareDataProvider
+
+        rows = [
+            {
+                "trade_time": "2024-01-05 15:00:00",
+                "open": 2934.9, "high": 2940.8, "low": 2916.7, "close": 2929.1,
+                "vol": 7.1e9, "amount": 7.7e10,
+            },
+            {
+                "trade_time": "2024-01-05 14:00:00",
+                "open": 2950.6, "high": 2951.1, "low": 2933.6, "close": 2934.3,
+                "vol": 4.8e9, "amount": 5.4e10,
+            },
+        ]
+        stub = _install_stub_tushare(
+            pro_bar_return=_FakeDataFrame([]),
+            query_return=_FakeDataFrame(rows),
+        )
+        provider = TushareDataProvider(symbols=["000001.SH"], token="t")
+        bars = asyncio.run(
+            provider.get_bars("000001.SH", "2024-01-05", "2024-01-05", interval="60m")
+        )
+
+        self.assertEqual(
+            [b.timestamp for b in bars],
+            ["2024-01-05T14:00:00", "2024-01-05T15:00:00"],
+        )
+        self.assertEqual([b.close for b in bars], [2934.3, 2929.1])
+        self.assertEqual(bars[0].adjust_type, "none")
+        stub.pro_bar.assert_not_called()
+        kwargs = stub.pro_api.return_value.query.call_args.kwargs
+        # query(api_name, **params) — first positional is the endpoint name.
+        self.assertEqual(stub.pro_api.return_value.query.call_args.args[0], "idx_mins")
+        self.assertEqual(kwargs["ts_code"], "000001.SH")
+        self.assertEqual(kwargs["freq"], "60min")
+        self.assertEqual(kwargs["start_date"], "2024-01-05 09:00:00")
+        self.assertEqual(kwargs["end_date"], "2024-01-05 15:00:00")
+
+    def test_get_bars_stock_minute_does_not_call_idx_mins(self):
+        """``000001.SZ`` is 平安银行 (stock), not an index — must stay on pro_bar."""
+        from doyoutrade.data.tushare_provider import TushareDataProvider
+
+        stub = _install_stub_tushare(pro_bar_return=_FakeDataFrame([]))
+        provider = TushareDataProvider(symbols=["000001.SZ"], token="t")
+        asyncio.run(
+            provider.get_bars("000001.SZ", "2024-01-05", "2024-01-05", interval="60m")
+        )
+
+        stub.pro_bar.assert_called_once()
+        stub.pro_api.return_value.query.assert_not_called()
+
+    def test_get_bars_index_daily_uses_pro_bar_asset_I(self):
+        """Daily index bars need ``asset='I'``; default stock path looks up
+        adj_factor and fails on 指数 codes."""
+        from doyoutrade.data.tushare_provider import TushareDataProvider
+
+        rows = [
+            {
+                "trade_date": "20240103",
+                "open": 2970.0, "high": 2980.0, "low": 2960.0, "close": 2975.0,
+                "vol": 1e8, "amount": 1e11,
+            },
+            {
+                "trade_date": "20240102",
+                "open": 2960.0, "high": 2970.0, "low": 2950.0, "close": 2965.0,
+                "vol": 9e7, "amount": 9e10,
+            },
+        ]
+        stub = _install_stub_tushare(pro_bar_return=_FakeDataFrame(rows))
+        provider = TushareDataProvider(symbols=["000001.SH"], token="t")
+        bars = asyncio.run(
+            provider.get_bars("000001.SH", "2024-01-02", "2024-01-03", interval="1d")
+        )
+
+        self.assertEqual([b.timestamp for b in bars], ["2024-01-02", "2024-01-03"])
+        self.assertEqual(bars[0].adjust_type, "none")
+        kwargs = stub.pro_bar.call_args.kwargs
+        self.assertEqual(kwargs["ts_code"], "000001.SH")
+        self.assertEqual(kwargs["asset"], "I")
+        self.assertIsNone(kwargs["adj"])
+        self.assertEqual(kwargs["freq"], "D")
+
+    def test_get_bars_idx_mins_exception_surfaces_as_runtime_error(self):
+        from doyoutrade.data.tushare_provider import TushareDataProvider
+
+        _install_stub_tushare(query_side_effect=RuntimeError("no idx_mins credit"))
+        provider = TushareDataProvider(symbols=["000001.SH"], token="t")
+        with self.assertRaises(RuntimeError) as ctx:
+            asyncio.run(
+                provider.get_bars("000001.SH", "2024-01-02", "2024-01-05", interval="60m")
+            )
+        self.assertIn("no idx_mins credit", str(ctx.exception))
+        self.assertIn("idx_mins failed", str(ctx.exception))
 
 
 if __name__ == "__main__":
