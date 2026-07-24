@@ -29,16 +29,33 @@ from typing import Any
 
 from doyoutrade.core.models import Bar, MarketContext, QuoteSnapshot
 from doyoutrade.data.constants import DEFAULT_BAR_ADJUST
-from doyoutrade.data.protocols import ProviderCapabilities, supports_interval_for_symbol
+from doyoutrade.data.protocols import (
+    ProviderCapabilities,
+    ProviderIntervalUnsupportedError,
+    supports_interval_for_symbol,
+)
 from doyoutrade.debug import emit_debug_event
 
 logger = logging.getLogger(__name__)
 
 
-def _is_terminal_provider_error(exc: Exception) -> bool:
+def _is_soft_unsupported_error(exc: Exception) -> bool:
+    """Return True when ``exc`` means "this provider can't serve this request".
+
+    Soft-unsupported errors are skipped without becoming the chain's
+    ``last_error``. That matters when a later provider returns an empty
+    result: re-raising an opaque primary failure like baostock's
+    ``not enough values to unpack`` (or QMT's realtime-kline client gap)
+    made ``data run --interval 60m`` on an index look like a hard crash
+    instead of rotating to a source that can answer.
+    """
     from doyoutrade.infra.qmt_proxy_client import QmtRealtimeKlineUnsupportedError
 
-    return isinstance(exc, QmtRealtimeKlineUnsupportedError)
+    if isinstance(exc, (ProviderIntervalUnsupportedError, QmtRealtimeKlineUnsupportedError)):
+        return True
+    if isinstance(exc, ValueError) and "not enough values to unpack" in str(exc):
+        return True
+    return False
 
 
 def _provider_name(provider: Any) -> str:
@@ -143,12 +160,12 @@ class FallbackHistoricalDataProvider:
                     )
                 )
             except Exception as exc:
-                if _is_terminal_provider_error(exc):
+                if _is_soft_unsupported_error(exc):
                     await emit_debug_event(
-                        "market_data_provider_failed_terminal",
+                        "market_data_provider_skipped",
                         {
                             "provider": name,
-                            "reason": "terminal_error",
+                            "reason": "soft_unsupported",
                             "interval": interval,
                             "symbol": symbol,
                             "start": start_time,
@@ -156,19 +173,21 @@ class FallbackHistoricalDataProvider:
                             "exc_type": type(exc).__name__,
                             "exc_message": str(exc),
                             "hint": (
-                                "upstream raised a terminal error that would change "
-                                "the data semantics if we fell through to a backup "
-                                "provider; aborting the fallback chain"
+                                "provider cannot serve this interval/symbol "
+                                "(capability gap or opaque unsupported response); "
+                                "trying next provider in the fallback chain"
                             ),
                         },
                     )
                     logger.warning(
-                        "market_data fallback: %s.get_bars raised terminal %s — aborting chain",
+                        "market_data fallback: %s.get_bars soft-unsupported %s — trying next",
                         name,
                         type(exc).__name__,
                         exc_info=True,
                     )
-                    raise
+                    # Do not set last_error: a later empty_result must not
+                    # resurface this as the chain's final exception.
+                    continue
                 last_error = exc
                 await emit_debug_event(
                     "market_data_provider_skipped",

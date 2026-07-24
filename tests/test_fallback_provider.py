@@ -193,8 +193,13 @@ class FallbackHistoricalDataProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(ctx.exception), "ak")
         self.assertIsNone(wrapper.last_used_provider)
 
-    async def test_terminal_error_aborts_fallback_chain(self):
-        """Terminal provider errors must surface immediately instead of silently degrading semantics."""
+    async def test_qmt_realtime_unsupported_falls_through_to_next_provider(self):
+        """QMT realtime-kline unsupported is a soft skip: auto must try the next source.
+
+        data run / auto callers expect interval capability gaps to rotate to a
+        provider that can answer (akshare / mootdx / tushare), not abort the
+        whole chain with an opaque QMT client limitation.
+        """
         primary = _StubProvider(
             "qmt",
             raise_on_get=QmtRealtimeKlineUnsupportedError("full_kline unsupported"),
@@ -210,22 +215,75 @@ class FallbackHistoricalDataProviderTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "doyoutrade.data.fallback_provider.emit_debug_event", new_callable=AsyncMock
         ) as emit:
-            with self.assertRaises(QmtRealtimeKlineUnsupportedError):
-                await wrapper.get_bars(
-                    "600000.SH",
-                    "2026-06-15T09:30:00",
-                    "2026-06-15T10:00:00",
-                    interval="5m",
-                )
+            bars = await wrapper.get_bars(
+                "600000.SH",
+                "2026-06-15T09:30:00",
+                "2026-06-15T10:00:00",
+                interval="5m",
+            )
 
+        self.assertEqual([b.close for b in bars], [13.5])
+        self.assertEqual(wrapper.last_used_provider, "akshare")
         self.assertEqual(len(primary.get_bars_calls), 1)
-        self.assertEqual(secondary.get_bars_calls, [])
+        self.assertEqual(len(secondary.get_bars_calls), 1)
         events = [call.args for call in emit.await_args_list]
         self.assertEqual(len(events), 1)
         name, payload = events[0]
-        self.assertEqual(name, "market_data_provider_failed_terminal")
+        self.assertEqual(name, "market_data_provider_skipped")
         self.assertEqual(payload["provider"], "qmt")
-        self.assertEqual(payload["reason"], "terminal_error")
+        self.assertEqual(payload["reason"], "soft_unsupported")
+
+    async def test_opaque_unpack_then_empty_secondaries_returns_empty_not_unpack(self):
+        """Regression: baostock index+minute raises ``not enough values to unpack``;
+        later providers returning [] must NOT resurface that opaque ValueError as
+        the chain's final error — that was the ``data run 000001.SH --interval 60m``
+        failure mode. Soft-unsupported errors are skipped without becoming
+        ``last_error``.
+        """
+        primary = _StubProvider(
+            "baostock",
+            raise_on_get=ValueError("not enough values to unpack (expected 2, got 0)"),
+            intervals=frozenset({"60m"}),
+        )
+        secondary = _StubProvider("akshare", bars=[], intervals=frozenset({"60m"}))
+        wrapper = FallbackHistoricalDataProvider([primary, secondary])
+
+        with patch(
+            "doyoutrade.data.fallback_provider.emit_debug_event", new_callable=AsyncMock
+        ) as emit:
+            bars = await wrapper.get_bars(
+                "000001.SH", "2026-06-25", "2026-07-25", interval="60m"
+            )
+
+        self.assertEqual(bars, [])
+        self.assertIsNone(wrapper.last_used_provider)
+        reasons = [call.args[1]["reason"] for call in emit.await_args_list]
+        self.assertIn("soft_unsupported", reasons)
+        self.assertIn("empty_result", reasons)
+
+    async def test_opaque_unpack_falls_through_to_bars(self):
+        """Opaque unsupported from the primary must not block a healthy secondary."""
+        primary = _StubProvider(
+            "baostock",
+            raise_on_get=ValueError("not enough values to unpack (expected 2, got 0)"),
+            intervals=frozenset({"60m"}),
+        )
+        secondary = _StubProvider(
+            "tushare",
+            bars=[_bar("2026-07-01T10:30:00", 3200.0)],
+            intervals=frozenset({"60m"}),
+        )
+        wrapper = FallbackHistoricalDataProvider([primary, secondary])
+
+        with patch(
+            "doyoutrade.data.fallback_provider.emit_debug_event", new_callable=AsyncMock
+        ):
+            bars = await wrapper.get_bars(
+                "000001.SH", "2026-06-25", "2026-07-25", interval="60m"
+            )
+
+        self.assertEqual([b.close for b in bars], [3200.0])
+        self.assertEqual(wrapper.last_used_provider, "tushare")
 
     async def test_exhausted_chain_all_empty_returns_empty_list(self):
         """When all providers return [], the wrapper returns [] (no synthetic error)."""

@@ -272,7 +272,11 @@ class MarketDataFetcher:
 
         try:
             provider, _u, _a = build_trading_data_stack(
-                data_source, data_cfg, [code], account=account
+                data_source,
+                data_cfg,
+                [code],
+                account=account,
+                interval=interval,
             )
         except Exception as exc:
             logger.error(
@@ -311,6 +315,12 @@ class MarketDataFetcher:
                     code, start_iso, end_iso, interval=interval
                 )
             )
+        except Exception as exc:
+            from doyoutrade.data.protocols import ProviderIntervalUnsupportedError
+
+            if isinstance(exc, ProviderIntervalUnsupportedError):
+                raise _IntervalNotSupportedForSymbol(str(exc)) from exc
+            raise
         finally:
             close = getattr(provider, "aclose", None)
             if close is not None:

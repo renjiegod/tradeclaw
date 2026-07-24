@@ -220,6 +220,22 @@ class BaostockIndexMinuteCapabilityTests(unittest.TestCase):
         caps = bp.BaostockDataProvider.capabilities
         self.assertTrue(supports_interval_for_symbol(caps, "1d", "000001.SH"))
 
+class BaostockIndexMinuteGetBarsGuardTests(unittest.IsolatedAsyncioTestCase):
+    """get_bars must refuse index + minute before any baostock SDK call."""
+
+    async def test_get_bars_rejects_index_minute_before_sdk_call(self) -> None:
+        from doyoutrade.data.protocols import ProviderIntervalUnsupportedError
+
+        provider = bp.BaostockDataProvider(symbols=["000001.SH"])
+        with patch.object(bp.bs, "query_history_k_data_plus") as mock_q:
+            with self.assertRaises(ProviderIntervalUnsupportedError) as ctx:
+                await provider.get_bars(
+                    "000001.SH", "2026-06-25", "2026-07-25", interval="60m"
+                )
+        mock_q.assert_not_called()
+        self.assertIn("000001.SH", str(ctx.exception))
+        self.assertIn("60m", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
