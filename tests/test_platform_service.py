@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from doyoutrade.core.models import AccountSnapshot, Bar, CycleReport, PositionSnapshot
+from doyoutrade.data.instrument_catalog.validation import CatalogValidationError
 from doyoutrade.observability.debug_span_export import ensure_debug_span_export_processors, register_span_persist_sink
 from doyoutrade.observability.tracing import configure_tracing
 from doyoutrade.persistence.db import create_engine_and_session_factory, dispose_engine
@@ -518,7 +519,7 @@ class PlatformServiceTests(unittest.IsolatedAsyncioTestCase):
         await dispose_engine(self.engine)
         self.tempdir.cleanup()
 
-    def _build_service(self, worker_factory=None):
+    def _build_service(self, worker_factory=None, instrument_catalog_repository=None):
         from doyoutrade.config import get_config
 
         return TradingPlatformService(
@@ -535,6 +536,7 @@ class PlatformServiceTests(unittest.IsolatedAsyncioTestCase):
             tick_session_repository=self.tick_session_repo,
             trade_fill_repository=self.trade_fill_repository,
             model_route_repository=self.model_route_repo,
+            instrument_catalog_repository=instrument_catalog_repository,
         )
 
     async def _wait_for_debug_status(self, service: TradingPlatformService, task_id: str, session_id: str):
@@ -616,6 +618,52 @@ class PlatformServiceTests(unittest.IsolatedAsyncioTestCase):
                 task.task_id,
                 range_start="2024-01-02",
                 range_end="2024-01-31",
+            )
+
+    async def test_create_task_with_mock_data_provider_bypasses_unseeded_catalog(self):
+        # Regression: a brand-new deployment's instrument_catalog table starts
+        # empty (no auto-seed), so `find_missing_symbols` reports every symbol
+        # missing. data_provider="mock" never touches that table (it
+        # synthesizes bars in-process) — creating a mock task must not be
+        # blocked by an unrelated, empty real catalog.
+        class _AllMissingCatalogRepo:
+            async def find_missing_symbols(self, symbols):
+                return list(symbols)
+
+            async def find_non_tradable_symbols(self, symbols):
+                return []
+
+        service = self._build_service(instrument_catalog_repository=_AllMissingCatalogRepo())
+
+        task = await service.create_task(
+            name="mock-bypasses-catalog",
+            template_id="single-agent-trend",
+            mode="backtest",
+            data_provider="mock",
+            settings=self._inst({"universe": ["000001.SH"]}),
+        )
+        self.assertIsNotNone(task.task_id)
+
+    async def test_create_task_with_non_mock_provider_still_enforces_catalog(self):
+        # Sanity check for the above: a non-mock provider must still be
+        # rejected by the same unseeded catalog — the mock bypass must not
+        # accidentally widen to every provider.
+        class _AllMissingCatalogRepo:
+            async def find_missing_symbols(self, symbols):
+                return list(symbols)
+
+            async def find_non_tradable_symbols(self, symbols):
+                return []
+
+        service = self._build_service(instrument_catalog_repository=_AllMissingCatalogRepo())
+
+        with self.assertRaises(CatalogValidationError):
+            await service.create_task(
+                name="auto-still-blocked",
+                template_id="single-agent-trend",
+                mode="backtest",
+                data_provider="auto",
+                settings=self._inst({"universe": ["000001.SH"]}),
             )
 
     async def test_stop_backtest_job_marks_run_and_debug_session_stopped(self):

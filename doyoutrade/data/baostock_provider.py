@@ -355,6 +355,15 @@ class BaostockDataProvider:
         supported_intervals=frozenset(
             {"1d", "1w", "1mo", "weekly", "monthly", "5m", "15m", "30m", "60m"}
         ),
+        # baostock's minute K-line (`frequency in {5,15,30,60}`) only covers
+        # 股票/ETF — 指数 (000001.SH 上证指数 etc.) has no minute-level history
+        # on this source. Requesting it anyway doesn't come back empty; the
+        # SDK's response parser chokes on the shape mismatch and raises a
+        # bare ``ValueError: not enough values to unpack`` with zero context.
+        # Declaring the carve-out here lets callers reject up front (see
+        # ``supports_interval_for_symbol``) instead of surfacing that opaque
+        # error to the user.
+        unsupported_index_intervals=frozenset({"5m", "15m", "30m", "60m"}),
         default_adjust=DEFAULT_BAR_ADJUST,
         requires_auth=False,
         is_realtime_capable=False,

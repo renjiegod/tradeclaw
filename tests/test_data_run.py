@@ -474,6 +474,32 @@ class DataRunMultiSymbolTests(_HomeArtifactsMixin, unittest.IsolatedAsyncioTestC
         self.assertEqual(fail["code"], "BROKEN.SH")
         self.assertEqual(fail["error_code"], "data_fetch_failed")
 
+    async def test_interval_not_supported_for_symbol_gets_dedicated_error_code(self) -> None:
+        # An index + minute-interval rejection (raised by _fetch_ohlcv's
+        # supports_interval_for_symbol pre-flight) is a known, named
+        # constraint — it must not be folded into the generic
+        # data_fetch_failed bucket alongside real upstream failures.
+        from doyoutrade.api.operations.market_data import _IntervalNotSupportedForSymbol
+
+        async def _fetch(self, code: str, **kwargs: Any) -> pd.DataFrame:
+            raise _IntervalNotSupportedForSymbol(
+                f"data_source='baostock' does not support interval='60m' for {code!r}"
+            )
+
+        with patch("doyoutrade.api.operations.market_data.MarketDataFetcher._fetch_ohlcv", new=_fetch):
+            result = await DataRunTool().execute(
+                code="000001.SH",
+                start_date="2026-04-13",
+                end_date="2026-04-20",
+                interval="60m",
+                data_source="baostock",
+            )
+
+        self.assertFalse(result.is_error, msg=result.text)
+        data = _payload(result)
+        self.assertEqual(data["status"], "failed")
+        self.assertEqual(data["symbols"][0]["error_code"], "interval_not_supported_for_instrument_type")
+
 
 # ---------------------------------------------------------------------------
 # CLI smoke tests

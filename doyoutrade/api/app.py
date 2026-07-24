@@ -210,6 +210,7 @@ def _catalog_error_detail(exc: CatalogError) -> dict[str, Any]:
     detail: dict[str, Any] = {"message": str(exc)}
     if isinstance(exc, CatalogValidationError):
         detail["missing_symbols"] = exc.missing_symbols
+        detail["hint"] = exc.hint
     if isinstance(exc, CatalogNotTradableError):
         detail["non_tradable_symbols"] = exc.non_tradable_symbols
     return detail

@@ -41,10 +41,12 @@ class _StubProvider:
         bars=None,
         raise_on_get: Exception | None = None,
         intervals: frozenset[str] | None = None,
+        unsupported_index_intervals: frozenset[str] | None = None,
     ):
         self.capabilities = ProviderCapabilities(
             name=name,
             supported_intervals=intervals or frozenset({"1d", "1w"}),
+            unsupported_index_intervals=unsupported_index_intervals or frozenset(),
         )
         self._bars = list(bars or [])
         self._raise = raise_on_get
@@ -151,6 +153,31 @@ class FallbackHistoricalDataProviderTests(unittest.IsolatedAsyncioTestCase):
         payload = emit.await_args_list[0].args[1]
         self.assertEqual(payload["provider"], "tushare")
         self.assertEqual(payload["reason"], "interval_unsupported")
+
+    async def test_index_symbol_skips_provider_lacking_index_minute_support(self):
+        """A baostock-like provider that declares 60m support only for non-index
+        symbols must be skipped (not called upstream) when the request is for
+        an index — the fallback chain should fall through to a provider that
+        actually serves index minute bars, instead of hitting baostock's SDK
+        and surfacing its opaque parse failure."""
+        baostock_like = _StubProvider(
+            "baostock",
+            intervals=frozenset({"1d", "60m"}),
+            unsupported_index_intervals=frozenset({"60m"}),
+            bars=[_bar("2026-01-02", 9.0)],
+        )
+        akshare_like = _StubProvider(
+            "akshare", intervals=frozenset({"60m"}), bars=[_bar("2026-01-02T10:30:00", 10.0)]
+        )
+        wrapper = FallbackHistoricalDataProvider([baostock_like, akshare_like])
+
+        bars = await wrapper.get_bars(
+            "000001.SH", "2026-01-01", "2026-01-05", interval="60m"
+        )
+
+        self.assertEqual([b.close for b in bars], [10.0])
+        self.assertEqual(baostock_like.get_bars_calls, [])
+        self.assertEqual(len(akshare_like.get_bars_calls), 1)
 
     async def test_exhausted_chain_reraises_last_error(self):
         """When every provider raises, the wrapper surfaces the final exception."""

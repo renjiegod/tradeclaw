@@ -100,6 +100,17 @@ class ProviderCapabilities:
             so the write-time continuity check only runs its authoritative
             calendar comparison when this is True AND the calendar source is
             the same provider that served the bars.
+        unsupported_index_intervals: Intervals in ``supported_intervals``
+            that this provider nonetheless cannot serve for **index**
+            symbols (000001.SH 上证指数 等) — e.g. baostock's minute K-line
+            endpoint only covers 股票/ETF, never 指数. ``supported_intervals``
+            alone can't express this per-instrument-type carve-out; check
+            via :func:`supports_interval_for_symbol` instead of reading
+            ``supported_intervals`` directly so index + minute requests are
+            rejected up front with a clear error instead of reaching the
+            upstream SDK and failing on a malformed/empty response (the
+            historical symptom was a bare ``not enough values to unpack``
+            leaking out of the third-party parser).
     """
 
     name: str
@@ -109,6 +120,35 @@ class ProviderCapabilities:
     is_realtime_capable: bool = False
     max_history_years: int | None = None
     authoritative_calendar: bool = False
+    unsupported_index_intervals: frozenset[str] = field(default_factory=frozenset)
+
+
+def supports_interval_for_symbol(
+    capabilities: "ProviderCapabilities | None", interval: str, symbol: str
+) -> bool:
+    """Return True when ``capabilities`` can serve ``interval`` for ``symbol``.
+
+    Two checks, both must pass: ``interval`` is in ``supported_intervals``
+    (the existing capability gate), and — when ``symbol`` is a 指数 — the
+    interval is not carved out via ``unsupported_index_intervals``. Callers
+    without capabilities metadata (legacy / hand-rolled test providers) are
+    assumed to support anything, matching the pre-existing behavior of the
+    ``supported_intervals``-only check.
+    """
+    if capabilities is None:
+        return True
+    supported = capabilities.supported_intervals
+    if supported and interval not in supported:
+        return False
+    unsupported_for_index = capabilities.unsupported_index_intervals
+    if unsupported_for_index and interval in unsupported_for_index:
+        from doyoutrade.data.instrument_catalog.a_share_equity import (
+            is_cn_a_share_index_symbol,
+        )
+
+        if is_cn_a_share_index_symbol(symbol):
+            return False
+    return True
 
 
 @runtime_checkable

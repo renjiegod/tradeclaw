@@ -278,6 +278,7 @@ debug 会话的 trace —— 你无需手动处理。
 | 看 cycle / debug / 模型调用 | `doyoutrade-cli debug get-run-view <run_id>`、`debug get-trace-view <trace_id>`、`debug model-invocations --trace-id <trace_id>` |
 | 快速回测（不留 trace） | `doyoutrade-cli backtest run ... --no-debug`；这类 run 的 `debug get-run-view` 看不到 spans 是预期 |
 | 建议下一步迭代 | `doyoutrade-cli backtest suggest-iteration <run_id>` |
+| catalog 未注册报错 | `instruments catalog sync --source akshare --mode full` |
 | 定时推策略信号 / 定时跑策略 | 在 task 上加 trigger：`doyoutrade-cli task trigger add <task-...> --cron/--every/--at --intent signal_only|trade --deliver card|prose|none` |
 | **新建策略定义**（写代码） | `load_skill strategy-definition-authoring` → `doyoutrade-cli strategy authoring open --name "..."` → `write_file`/`edit_file`（in-process） → `authoring compile` → `authoring finalize` |
 | **迭代已有策略**（改代码） | `load_skill strategy-iteration` → `doyoutrade-cli strategy authoring open --definition-id <sd-...>` → `read_file`/`edit_file`（in-process） → `authoring compile` → `authoring finalize` |

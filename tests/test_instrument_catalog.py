@@ -336,6 +336,11 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(CatalogValidationError) as ctx:
             await ensure_symbols_in_catalog(self.repo, ["NOPE.SH"])
         self.assertEqual(ctx.exception.missing_symbols, ["NOPE.SH"])
+        # A missing symbol is ambiguous — typo vs unseeded environment — so
+        # the error must carry an actionable hint distinguishing the two,
+        # not just the bare symbol list (see CatalogValidationError.hint).
+        self.assertIn("catalog sync", ctx.exception.hint)
+        self.assertIn("catalog sync", str(ctx.exception))
 
     async def _seed_stock_and_index(self) -> None:
         from datetime import datetime, timezone

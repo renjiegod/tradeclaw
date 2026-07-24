@@ -73,6 +73,7 @@ from doyoutrade.api.operations.indicators_compute import (
 from doyoutrade.api.operations.market_data import (
     MarketDataFetcher,
     _ConflictingRange,
+    _IntervalNotSupportedForSymbol,
     _InvalidDate,
     _InvalidPeriod,
     _get_artifacts_root,
@@ -1566,6 +1567,24 @@ class DataRunTool(OperationHandler):
                 interval=normalized["interval"],
                 data_source=normalized["data_source"],
             )
+        except _IntervalNotSupportedForSymbol as exc:
+            # Rejected before any network call (see market_data.py's
+            # supports_interval_for_symbol pre-flight) — this is a known,
+            # named constraint (e.g. index + minute interval on baostock),
+            # not an upstream failure, so it gets its own error_code instead
+            # of being folded into the generic data_fetch_failed bucket.
+            logger.info(
+                "data_run interval unsupported code=%s data_source=%s interval=%s",
+                code,
+                normalized["data_source"],
+                normalized["interval"],
+            )
+            raise _InvalidDataRunArgument(
+                "interval_not_supported_for_instrument_type",
+                str(exc),
+                "use --interval 1d for indices, or try a different --data-source",
+                error_type=type(exc).__name__,
+            ) from exc
         except Exception as exc:
             logger.warning(
                 "data_run fetch failed code=%s data_source=%s interval=%s err=%s",
