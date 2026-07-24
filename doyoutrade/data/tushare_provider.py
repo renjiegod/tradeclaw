@@ -1,13 +1,21 @@
 """Tushare Pro-API data provider for A-share OHLCV.
 
 Tushare's ``pro_bar`` endpoint covers daily / weekly / monthly bars plus
-1-/5-/15-/30-/60-minute bars, with forward (qfq) / backward (hfq)
-adjustment. Minute frequencies are gated behind a paid credit tier — when
-the configured token lacks the entitlement Tushare raises, which
+1-/5-/15-/30-/60-minute bars for **stocks / ETF**, with forward (qfq) /
+backward (hfq) adjustment. Minute frequencies are gated behind a paid credit
+tier — when the configured token lacks the entitlement Tushare raises, which
 :meth:`_sync_get_bars` surfaces as a ``RuntimeError`` (visible in the CLI
 envelope and recorded as the fallback chain's ``last_error``) rather than a
 silent empty result; the factory's auto-chain then falls through to the
 next provider (baostock / QMT).
+
+**Indices** (``000xxx.SH`` / ``399xxx.SZ``) do not share the stock path:
+
+* Minute bars must go through ``idx_mins`` — ``pro_bar`` routes to
+  ``stk_mins``, which rejects 指数 codes (and many trial / proxy tokens lack
+  ``stk_mins`` entirely even when ``idx_mins`` works).
+* Daily / weekly / monthly bars use ``pro_bar(..., asset='I', adj=None)``.
+  The default stock asset looks up ``adj_factor`` and fails on index codes.
 
 Token / URL resolution lives in :class:`doyoutrade.config.TushareSettings`
 (YAML ``data.tushare.token``/``url`` or ``TUSHARE_TOKEN``/``TUSHARE_URL``
@@ -35,6 +43,7 @@ from typing import Any, Dict, List, Optional
 
 from doyoutrade.data.bar_timestamp import normalize_bar_timestamp
 from doyoutrade.data.constants import DEFAULT_BAR_ADJUST
+from doyoutrade.data.instrument_catalog.a_share_equity import is_cn_a_share_index_symbol
 from doyoutrade.data.instrumentation import data_span
 from doyoutrade.data.protocols import PROVIDER_NAME_TUSHARE, ProviderCapabilities
 from doyoutrade.core.models import Bar, MarketContext
@@ -106,15 +115,15 @@ def _try_float(value: Any) -> Optional[float]:
 
 
 class TushareDataProvider:
-    """``HistoricalDataProvider`` backed by Tushare Pro's ``pro_bar`` endpoint."""
+    """``HistoricalDataProvider`` backed by Tushare Pro OHLCV endpoints."""
 
     capabilities = ProviderCapabilities(
         name=PROVIDER_NAME_TUSHARE,
         # Daily / weekly / monthly plus 1-/5-/15-/30-/60-minute. Minute
         # frequencies require a paid Tushare credit tier; when the token
-        # lacks it ``pro_bar`` raises and ``_sync_get_bars`` surfaces the
-        # error (visible) so the auto-chain falls through to the next
-        # provider. ``weekly`` / ``monthly`` aliases mirror akshare /
+        # lacks it ``pro_bar`` / ``idx_mins`` raises and ``_sync_get_bars``
+        # surfaces the error (visible) so the auto-chain falls through to
+        # the next provider. ``weekly`` / ``monthly`` aliases mirror akshare /
         # baostock.
         supported_intervals=frozenset(
             {"1d", "1w", "1mo", "weekly", "monthly", "1m", "5m", "15m", "30m", "60m"}
@@ -182,6 +191,67 @@ class TushareDataProvider:
                 self._sync_get_bars, symbol, start_time, end_time, interval, adjust
             )
 
+    def _fetch_idx_mins(
+        self, symbol: str, freq: str, start_d: str, end_d: str
+    ) -> Any:
+        """Fetch index minute bars via ``idx_mins`` (not ``pro_bar``/``stk_mins``)."""
+        try:
+            return self._pro_api.query(
+                "idx_mins",
+                ts_code=symbol,
+                freq=freq,
+                start_date=start_d,
+                end_date=end_d,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"tushare idx_mins failed for {symbol} "
+                f"[{start_d}..{end_d}] freq={freq}: {exc}"
+            ) from exc
+
+    def _fetch_pro_bar(
+        self,
+        symbol: str,
+        *,
+        start_d: str,
+        end_d: str,
+        freq: str,
+        adjust: str,
+        is_index: bool,
+    ) -> Any:
+        import tushare as ts  # type: ignore[import-untyped]
+
+        # Indices: asset='I' and never request adj (no adj_factor series).
+        # Stocks / ETF: default asset + caller-selected adjust mode.
+        kwargs: Dict[str, Any] = {
+            "ts_code": symbol,
+            "api": self._pro_api,
+            "start_date": start_d,
+            "end_date": end_d,
+            "freq": freq,
+        }
+        if is_index:
+            kwargs["asset"] = "I"
+            kwargs["adj"] = None
+        else:
+            kwargs["adj"] = _ADJUST_MAP.get(adjust)
+
+        try:
+            # ``api=self._pro_api`` is required, not optional: left as the
+            # default ``None``, ``pro_bar`` builds its own handle pointed at
+            # Tushare's official gateway, silently ignoring any custom
+            # ``data.tushare.url``.
+            return ts.pro_bar(**kwargs)
+        except Exception as exc:
+            # A real failure (bad token, rate limit, missing minute-credit
+            # entitlement). Surface it — the fallback wrapper records it as
+            # ``last_error`` and the next provider takes over. Swallowing it
+            # to ``[]`` would hide the cause behind a fake "no data" result.
+            raise RuntimeError(
+                f"tushare pro_bar failed for {symbol} "
+                f"[{start_d}..{end_d}] freq={freq}: {exc}"
+            ) from exc
+
     def _sync_get_bars(
         self,
         symbol: str,
@@ -195,6 +265,7 @@ class TushareDataProvider:
         # auto-chain the provider only ever receives intervals it advertises.
         freq = _freq_for_interval(interval)
         minute = _is_minute_freq(freq)
+        is_index = is_cn_a_share_index_symbol(symbol)
         if minute:
             start_d = _minute_datetime(start_time, end=False)
             end_d = _minute_datetime(end_time, end=True)
@@ -202,30 +273,18 @@ class TushareDataProvider:
             start_d = _compact_date(start_time)
             end_d = _compact_date(end_time)
         self._ensure_pro_api()
-        import tushare as ts  # type: ignore[import-untyped]
 
-        try:
-            # ``api=self._pro_api`` is required, not optional: left as the
-            # default ``None``, ``pro_bar`` builds its own handle pointed at
-            # Tushare's official gateway, silently ignoring any custom
-            # ``data.tushare.url``.
-            df = ts.pro_bar(
-                ts_code=symbol,
-                api=self._pro_api,
-                start_date=start_d,
-                end_date=end_d,
-                adj=_ADJUST_MAP.get(adjust),
+        if is_index and minute:
+            df = self._fetch_idx_mins(symbol, freq, start_d, end_d)
+        else:
+            df = self._fetch_pro_bar(
+                symbol,
+                start_d=start_d,
+                end_d=end_d,
                 freq=freq,
+                adjust=adjust,
+                is_index=is_index,
             )
-        except Exception as exc:
-            # A real failure (bad token, rate limit, missing minute-credit
-            # entitlement). Surface it — the fallback wrapper records it as
-            # ``last_error`` and the next provider takes over. Swallowing it
-            # to ``[]`` would hide the cause behind a fake "no data" result.
-            raise RuntimeError(
-                f"tushare pro_bar failed for {symbol} "
-                f"[{start_d}..{end_d}] freq={freq}: {exc}"
-            ) from exc
         if df is None or df.empty:
             logger.info(
                 "tushare returned no data for %s [%s, %s] freq=%s",
@@ -233,6 +292,7 @@ class TushareDataProvider:
             )
             return []
 
+        bar_adjust = "none" if is_index else "qfq"
         bars: List[Bar] = []
         for _, row in df.iterrows():
             try:
@@ -249,7 +309,7 @@ class TushareDataProvider:
                         close=float(row["close"]),
                         volume=float(row.get("vol", 0)),
                         amount=_try_float(row.get("amount")),
-                        adjust_type="qfq",
+                        adjust_type=bar_adjust,
                     )
                 )
             except (KeyError, TypeError, ValueError) as exc:
@@ -258,8 +318,9 @@ class TushareDataProvider:
                     symbol, exc,
                 )
                 continue
-        # ``pro_bar`` returns newest-first; the cache merge layer assumes
-        # chronological ascending order — flip once at the boundary.
+        # ``pro_bar`` / ``idx_mins`` return newest-first; the cache merge
+        # layer assumes chronological ascending order — flip once at the
+        # boundary.
         bars.reverse()
         return bars
 
