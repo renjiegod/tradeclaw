@@ -9,11 +9,15 @@ envelope and recorded as the fallback chain's ``last_error``) rather than a
 silent empty result; the factory's auto-chain then falls through to the
 next provider (baostock / QMT).
 
-Token resolution lives in :class:`doyoutrade.config.TushareSettings`
-(YAML ``data.tushare.token`` or ``TUSHARE_TOKEN`` env). The provider
-sets the token on every call (Tushare's SDK keeps it on a module
-global) but skips re-creating the pro_api handle when one already
-exists for the process.
+Token / URL resolution lives in :class:`doyoutrade.config.TushareSettings`
+(YAML ``data.tushare.token``/``url`` or ``TUSHARE_TOKEN``/``TUSHARE_URL``
+env). The provider sets the token on every call (Tushare's SDK keeps it on
+a module global) but skips re-creating the pro_api handle when one already
+exists for the process. When a custom ``url`` is configured, the handle's
+private ``_DataApi__http_url`` is overridden to point at it instead of
+Tushare's official gateway; that handle is then passed explicitly into
+``tushare.pro_bar(api=...)`` since ``pro_bar`` otherwise builds its own
+default-gateway handle internally.
 
 Endpoints not modeled here (financial indicators, money flow, lhb)
 live behind their own ``data tushare ...`` CLI subcommands — see the
@@ -121,7 +125,7 @@ class TushareDataProvider:
         max_history_years=20,
     )
 
-    def __init__(self, symbols: List[str], *, token: str):
+    def __init__(self, symbols: List[str], *, token: str, url: Optional[str] = None):
         if not token or not str(token).strip():
             raise ValueError(
                 "TushareDataProvider requires a non-empty token; "
@@ -129,6 +133,7 @@ class TushareDataProvider:
             )
         self.symbols = list(symbols)
         self._token = str(token)
+        self._url = str(url).strip() or None if url else None
         self._pro_api: Any = None
 
     def _ensure_pro_api(self) -> None:
@@ -144,7 +149,14 @@ class TushareDataProvider:
             ) from exc
 
         ts.set_token(self._token)
-        self._pro_api = ts.pro_api()
+        pro = ts.pro_api()
+        # Mirror Tushare's documented non-official-gateway pattern: set the
+        # private attrs directly on the handle rather than via a public API
+        # (Tushare exposes none for a custom base URL).
+        pro._DataApi__token = self._token
+        if self._url:
+            pro._DataApi__http_url = self._url
+        self._pro_api = pro
 
     async def get_market_context(self) -> MarketContext:
         with data_span("tushare", "get_market_context"):
@@ -193,8 +205,13 @@ class TushareDataProvider:
         import tushare as ts  # type: ignore[import-untyped]
 
         try:
+            # ``api=self._pro_api`` is required, not optional: left as the
+            # default ``None``, ``pro_bar`` builds its own handle pointed at
+            # Tushare's official gateway, silently ignoring any custom
+            # ``data.tushare.url``.
             df = ts.pro_bar(
                 ts_code=symbol,
+                api=self._pro_api,
                 start_date=start_d,
                 end_date=end_d,
                 adj=_ADJUST_MAP.get(adjust),

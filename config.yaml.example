@@ -16,6 +16,13 @@ data:
   symbols:
     - "600000.SH"
     - "601318.SH"
+  # Optional Tushare Pro enhancement — omit entirely to skip it in the
+  # auto fallback chain. `token`/`url` also accept TUSHARE_TOKEN/TUSHARE_URL
+  # env vars; `url` overrides the official gateway for a self-hosted or
+  # third-party-proxied Tushare-compatible endpoint (leave unset for official).
+  # tushare:
+  #   token: "your-tushare-pro-token"
+  #   url: "http://your-proxy.example.com"
 
 # Main DB defaults to local SQLite (./data/doyoutrade.db); uncomment for PostgreSQL.
 # database:

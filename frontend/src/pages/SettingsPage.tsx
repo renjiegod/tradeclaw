@@ -340,6 +340,7 @@ function toSystemFormValues(v: DoyoutradeConfigValues): Record<string, unknown> 
       default_provider: v.data.default_provider,
       tushare: {
         token: v.data.tushare.token_set ? MASK : "",
+        url: v.data.tushare.url,
         timeout_seconds: v.data.tushare.timeout_seconds,
       },
     },
@@ -656,6 +657,18 @@ function SystemConfigTab() {
             }
           >
             {secretInput("data.tushare.token", data?.values.data.tushare.token_set ?? false)}
+          </Form.Item>
+          <Form.Item
+            name={["data", "tushare", "url"]}
+            label={
+              <FieldLabel
+                text="tushare.url"
+                restart={isRestart("data.tushare.url")}
+                help="自定义 TuShare 兼容网关地址，留空则使用官方默认地址（http://api.waditu.com/dataapi）"
+              />
+            }
+          >
+            <Input placeholder="留空使用官方默认地址" />
           </Form.Item>
           <Form.Item
             name={["data", "tushare", "timeout_seconds"]}

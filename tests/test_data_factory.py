@@ -2,7 +2,7 @@ import asyncio
 import unittest
 
 from doyoutrade.account import QmtAccountReader, StoreBackedAccountReader
-from doyoutrade.config import DataSettings
+from doyoutrade.config import DataSettings, TushareSettings
 from doyoutrade.data.account_resolution import QmtMockPositionSettings, ResolvedAccount
 from doyoutrade.data.factory import (
     build_trading_data_stack,
@@ -17,6 +17,7 @@ from doyoutrade.data.fallback_provider import FallbackHistoricalDataProvider
 from doyoutrade.data.mock_provider import MockTradingDataProvider, StaticUniverseProvider
 from doyoutrade.data.mootdx_provider import MootdxDataProvider
 from doyoutrade.data.qmt_proxy import QmtLiveDataProvider
+from doyoutrade.data.tushare_provider import TushareDataProvider
 
 
 def _settings(*, default_provider="auto") -> DataSettings:
@@ -109,6 +110,25 @@ class DataFactoryTests(unittest.TestCase):
         self.assertIsInstance(dp, BaostockDataProvider)
         self.assertIsInstance(up, StaticUniverseProvider)
         self.assertIsInstance(ar, StoreBackedAccountReader)
+
+    def test_tushare_stack_passes_configured_url_to_provider(self):
+        settings = DataSettings(
+            default_provider="tushare",
+            tushare=TushareSettings(token="tok", url="http://proxy.example.com"),
+        )
+        dp, up, ar = build_trading_data_stack("tushare", settings, ["600000.SH"])
+        self.assertIsInstance(dp, TushareDataProvider)
+        self.assertEqual(dp._token, "tok")
+        self.assertEqual(dp._url, "http://proxy.example.com")
+        self.assertIsInstance(up, StaticUniverseProvider)
+
+    def test_tushare_stack_url_none_when_unconfigured(self):
+        settings = DataSettings(
+            default_provider="tushare", tushare=TushareSettings(token="tok")
+        )
+        dp, _, _ = build_trading_data_stack("tushare", settings, ["600000.SH"])
+        self.assertIsInstance(dp, TushareDataProvider)
+        self.assertIsNone(dp._url)
 
     def test_resolve_effective_prefers_instance_override(self):
         self.assertEqual(resolve_effective_provider("mock", "qmt"), "mock")
