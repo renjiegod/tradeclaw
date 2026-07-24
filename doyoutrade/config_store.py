@@ -97,6 +97,7 @@ RESTART_REQUIRED_FIELDS: tuple[str, ...] = (
     # --- downgraded from hot-reload after consumer verification ---
     "data.default_provider",
     "data.tushare.token",
+    "data.tushare.url",
     "data.tushare.timeout_seconds",
     "assistant.tool_result_max_chars",
     "retention.enabled",
@@ -172,6 +173,7 @@ def _masked_values(cfg: config.AppConfig) -> dict[str, Any]:
             "tushare": {
                 "token": MASK,
                 "token_set": _token_set(cfg.data.tushare.token),
+                "url": cfg.data.tushare.url or "",
                 "timeout_seconds": cfg.data.tushare.timeout_seconds,
             },
             # Web-search news API keys are secrets: never echoed. Only a

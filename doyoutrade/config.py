@@ -23,15 +23,21 @@ class ServerSettings:
 
 @dataclass(frozen=True)
 class TushareSettings:
-    """Tushare Pro API credentials and per-call timeout.
+    """Tushare Pro API credentials, optional custom gateway URL, and timeout.
 
     A non-empty :attr:`token` enables Tushare in the ``data_source=auto``
     fallback chain (see :func:`doyoutrade.data.factory._resolve_auto_chain`).
     When the token is None or empty, the factory drops Tushare from the
     chain — no upstream calls are issued, no errors are raised.
+
+    :attr:`url` overrides Tushare's default ``http://api.waditu.com/dataapi``
+    gateway (e.g. a self-hosted or third-party-proxied Tushare-compatible
+    endpoint). When None, :class:`doyoutrade.data.tushare_provider.TushareDataProvider`
+    leaves Tushare's official default in place.
     """
 
     token: Optional[str]
+    url: Optional[str] = None
     timeout_seconds: float = 10.0
 
 
@@ -39,13 +45,14 @@ def _parse_tushare(block: Any) -> TushareSettings:
     """Parse the ``data.tushare`` config block.
 
     Honors a ``TUSHARE_TOKEN`` env var as a fallback so contributors
-    don't have to commit credentials. YAML values win over env when
-    both are set.
+    don't have to commit credentials, and a ``TUSHARE_URL`` env var for
+    an optional custom gateway. YAML values win over env when both are set.
     """
 
     if block in (None, {}):
         env_token = (os.environ.get("TUSHARE_TOKEN") or "").strip()
-        return TushareSettings(token=env_token or None)
+        env_url = (os.environ.get("TUSHARE_URL") or "").strip()
+        return TushareSettings(token=env_token or None, url=env_url or None)
     if not isinstance(block, dict):
         raise ValueError("data.tushare must be a mapping or omitted")
     raw_token = block.get("token")
@@ -53,8 +60,13 @@ def _parse_tushare(block: Any) -> TushareSettings:
     if not token:
         env_token = (os.environ.get("TUSHARE_TOKEN") or "").strip()
         token = env_token or None
+    raw_url = block.get("url")
+    url = _resolve_secret(raw_url) if raw_url is not None else None
+    if not url:
+        env_url = (os.environ.get("TUSHARE_URL") or "").strip()
+        url = env_url or None
     timeout = float(block.get("timeout_seconds", 10.0))
-    return TushareSettings(token=token, timeout_seconds=timeout)
+    return TushareSettings(token=token, url=url, timeout_seconds=timeout)
 
 
 @dataclass(frozen=True)

@@ -39,6 +39,11 @@ def _restore_tushare(previous: types.ModuleType | None):
         sys.modules["tushare"] = previous
 
 
+class _FakeProApi:
+    """A plain object (unlike MagicMock, ``hasattr`` reflects real attribute
+    presence) standing in for the handle ``tushare.pro_api()`` returns."""
+
+
 class _FakeDataFrame:
     """Minimal DataFrame-like object replicating the subset Tushare returns."""
 
@@ -193,6 +198,47 @@ class TushareDataProviderTests(unittest.TestCase):
             )
         self.assertIn("rate limit", str(ctx.exception))
         self.assertIn("pro_bar failed", str(ctx.exception))
+
+    def test_ensure_pro_api_defaults_to_official_gateway_when_url_unset(self):
+        """No custom url configured -> the handle's http_url is left untouched."""
+        from doyoutrade.data.tushare_provider import TushareDataProvider
+
+        stub = _install_stub_tushare()
+        stub.pro_api.return_value = _FakeProApi()
+        provider = TushareDataProvider(symbols=["600000.SH"], token="t")
+        provider._ensure_pro_api()
+
+        pro = stub.pro_api.return_value
+        self.assertFalse(hasattr(pro, "_DataApi__http_url"))
+
+    def test_ensure_pro_api_overrides_http_url_when_configured(self):
+        """A configured ``url`` overrides the Tushare handle's private gateway attr."""
+        from doyoutrade.data.tushare_provider import TushareDataProvider
+
+        stub = _install_stub_tushare()
+        stub.pro_api.return_value = _FakeProApi()
+        provider = TushareDataProvider(
+            symbols=["600000.SH"], token="t", url="http://proxy.example.com"
+        )
+        provider._ensure_pro_api()
+
+        pro = stub.pro_api.return_value
+        self.assertEqual(pro._DataApi__token, "t")
+        self.assertEqual(pro._DataApi__http_url, "http://proxy.example.com")
+
+    def test_get_bars_passes_pro_api_handle_to_pro_bar(self):
+        """``pro_bar`` must receive our configured handle, else it silently
+        builds its own default-gateway handle and a custom url is ignored."""
+        from doyoutrade.data.tushare_provider import TushareDataProvider
+
+        stub = _install_stub_tushare(pro_bar_return=_FakeDataFrame([]))
+        provider = TushareDataProvider(
+            symbols=["600000.SH"], token="t", url="http://proxy.example.com"
+        )
+        asyncio.run(provider.get_bars("600000.SH", "2026-01-01", "2026-01-05"))
+
+        kwargs = stub.pro_bar.call_args.kwargs
+        self.assertIs(kwargs["api"], stub.pro_api.return_value)
 
     def test_ensure_pro_api_raises_when_tushare_missing(self):
         """A missing ``tushare`` install surfaces a clear RuntimeError, not ImportError."""

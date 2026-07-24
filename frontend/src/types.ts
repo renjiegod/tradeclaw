@@ -2992,6 +2992,8 @@ export type DoyoutradeConfigTushare = {
   /** Masked (``"********"``) when set; empty string otherwise. */
   token: string;
   token_set: boolean;
+  /** Custom Tushare-compatible gateway URL; empty string means "use the official default". */
+  url: string;
   timeout_seconds: number;
 };
 

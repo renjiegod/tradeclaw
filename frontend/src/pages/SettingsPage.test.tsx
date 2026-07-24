@@ -39,7 +39,7 @@ const baseConfig: DoyoutradeConfigResponse = {
     server: { host: "0.0.0.0", port: 8000, tick_seconds: 5.0 },
     data: {
       default_provider: "auto",
-      tushare: { token: "********", token_set: true, timeout_seconds: 10.0 },
+      tushare: { token: "********", token_set: true, url: "", timeout_seconds: 10.0 },
     },
     market_data: {
       database_url: "sqlite:///md.db",

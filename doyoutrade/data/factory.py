@@ -246,9 +246,10 @@ def _build_tushare_stack(data_cfg: DataSettings, symbols: list[str]) -> tuple[An
     from doyoutrade.data.tushare_provider import TushareDataProvider
 
     token = data_cfg.tushare.token  # type: ignore[attr-defined]
+    url = data_cfg.tushare.url  # type: ignore[attr-defined]
     mock_pf = MockTradingDataProvider()
     return (
-        TushareDataProvider(symbols=symbols, token=str(token)),
+        TushareDataProvider(symbols=symbols, token=str(token), url=url),
         StaticUniverseProvider(symbols),
         StoreBackedAccountReader(mock_pf),
     )

@@ -524,6 +524,71 @@ market_data:
                 os.environ["MARKET_DATA_DATABASE_URL"] = old_value
             path.unlink(missing_ok=True)
 
+    def test_tushare_url_defaults_to_none(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write("data:\n  tushare:\n    token: abc123\n")
+            path = Path(handle.name)
+        try:
+            cfg = load_config(path)
+            self.assertEqual(cfg.data.tushare.token, "abc123")
+            self.assertIsNone(cfg.data.tushare.url)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_tushare_url_from_yaml(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write(
+                "data:\n  tushare:\n    token: abc123\n    url: http://proxy.example.com\n"
+            )
+            path = Path(handle.name)
+        try:
+            cfg = load_config(path)
+            self.assertEqual(cfg.data.tushare.url, "http://proxy.example.com")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_tushare_url_env_fallback(self):
+        old_value = os.environ.get("TUSHARE_URL")
+        os.environ["TUSHARE_URL"] = "http://env-proxy.example.com"
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write("data:\n  tushare:\n    token: abc123\n")
+            path = Path(handle.name)
+        try:
+            cfg = load_config(path)
+            self.assertEqual(cfg.data.tushare.url, "http://env-proxy.example.com")
+        finally:
+            if old_value is None:
+                os.environ.pop("TUSHARE_URL", None)
+            else:
+                os.environ["TUSHARE_URL"] = old_value
+            path.unlink(missing_ok=True)
+
+    def test_tushare_url_yaml_wins_over_env(self):
+        old_value = os.environ.get("TUSHARE_URL")
+        os.environ["TUSHARE_URL"] = "http://env-proxy.example.com"
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write(
+                "data:\n  tushare:\n    token: abc123\n    url: http://yaml-proxy.example.com\n"
+            )
+            path = Path(handle.name)
+        try:
+            cfg = load_config(path)
+            self.assertEqual(cfg.data.tushare.url, "http://yaml-proxy.example.com")
+        finally:
+            if old_value is None:
+                os.environ.pop("TUSHARE_URL", None)
+            else:
+                os.environ["TUSHARE_URL"] = old_value
+            path.unlink(missing_ok=True)
+
     def test_market_data_database_url_malformed_raises_field_error(self):
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".yaml", delete=False, encoding="utf-8"
