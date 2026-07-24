@@ -3,6 +3,7 @@ import {
   CopyOutlined,
   DownOutlined,
   FormOutlined,
+  InfoCircleOutlined,
   PaperClipOutlined,
   PlusOutlined,
   RobotOutlined,
@@ -11,7 +12,7 @@ import {
   ToolOutlined,
   UpOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Card, Drawer, Empty, Grid, Input, List, Modal, Select, Space, Spin, Switch, Tabs, Tag, Tooltip, Typography, message } from "antd";
+import { Alert, Button, Card, Drawer, Empty, Grid, Input, List, Modal, Popover, Select, Space, Spin, Switch, Tabs, Tag, Tooltip, Typography, message } from "antd";
 import type { TextAreaRef } from "antd/es/input/TextArea";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -545,6 +546,20 @@ export function AssistantPage() {
     }
     return params;
   }, [sessionChannelFilter]);
+
+  // 会话下拉内嵌的「来源」筛选 chips（全部 / Web / 各 channel），替代此前
+  // 工具栏里独立的来源 Select，收敛头部占位。
+  const sessionChannelFilterOptions = useMemo(
+    () => [
+      { value: "all", label: "全部" },
+      { value: "web", label: "Web" },
+      ...assistantChannels.map((channel) => ({
+        value: channel.id,
+        label: channel.name?.trim() ? channel.name : channel.id,
+      })),
+    ],
+    [assistantChannels],
+  );
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.session_id === sessionId) ?? null,
@@ -1575,8 +1590,17 @@ export function AssistantPage() {
           wrapperClassName="flex min-h-0 flex-1 flex-col [&_.ant-spin-container]:flex [&_.ant-spin-container]:min-h-0 [&_.ant-spin-container]:flex-1 [&_.ant-spin-container]:flex-col"
         >
           <div className="mb-2 border-b border-shell-line/80 pb-2">
-            <div className="flex flex-col gap-2 lg:flex-row lg:flex-nowrap lg:items-center">
-              <div className="flex min-w-0 shrink-0 items-center gap-2.5 lg:max-w-[240px]">
+            {/*
+             * 头部工具栏。布局契约（回归背景：旧版三个固定宽度 pill + 摘要
+             * pill + 按钮区在 lg~xl 区间会互相重叠遮挡）：
+             * - <xl 两行：品牌 + 操作按钮一行，选择器独占一行（选择器行是
+             *   flex-1 basis-0，与按钮同行时永远“放得下”不换行、只会被压到
+             *   重叠，所以必须在宽度充裕的 xl 才允许合并成单行）；
+             * - 会话元信息（session_id / 创建时间 / 模型等）收进 ⓘ Popover，
+             *   「来源」筛选收进会话下拉的 popupRender，不再占工具栏位置。
+             */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="order-1 flex min-w-0 flex-1 items-center gap-2.5 lg:max-w-[240px] xl:flex-none">
                 <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl border border-shell-line bg-white/90 text-sm text-shell-ink shadow-[0_6px_16px_rgba(15,23,42,0.04)]">
                   <RobotOutlined />
                 </div>
@@ -1584,147 +1608,10 @@ export function AssistantPage() {
                   <Typography.Text strong className="truncate text-[18px] leading-none text-shell-ink lg:text-[19px]">
                     DoYouTrade Agent
                   </Typography.Text>
-                  {activeSession ? <Tag className="mr-0">{activeSession.status}</Tag> : null}
+                  {activeSession ? <Tag className="mr-0 shrink-0">{activeSession.status}</Tag> : null}
                 </div>
               </div>
-              <div
-                data-testid="assistant-toolbar-controls"
-                className="flex min-w-0 flex-1 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center xl:flex-nowrap"
-              >
-                <div
-                  data-testid="assistant-channel-field"
-                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[150px] lg:shrink-0"
-                >
-                  <Typography.Text type="secondary" className="shrink-0 text-[11px] uppercase tracking-[0.12em]">
-                    来源
-                  </Typography.Text>
-                  <Select
-                    variant="borderless"
-                    className="min-w-0 flex-1 [&_.ant-select-selection-item]:truncate"
-                    value={sessionChannelFilter}
-                    options={[
-                      { value: "all", label: "全部会话" },
-                      { value: "web", label: "Web 会话" },
-                      ...assistantChannels.map((channel) => ({
-                        value: channel.id,
-                        label: channel.name?.trim() ? `${channel.name} (${channel.type})` : `${channel.id} (${channel.type})`,
-                      })),
-                    ]}
-                    onChange={(value) => setSessionChannelFilter(value)}
-                  />
-                </div>
-                <div
-                  data-testid="assistant-session-field"
-                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[190px] lg:shrink-0"
-                >
-                  <Typography.Text type="secondary" className="shrink-0 text-[11px] uppercase tracking-[0.12em]">
-                    会话
-                  </Typography.Text>
-                  <Select
-                    variant="borderless"
-                    className="min-w-0 flex-1 [&_.ant-select-selection-item]:truncate"
-                    value={sessionId ?? undefined}
-                    optionLabelProp="label"
-                    options={sessions.map((session) => ({
-                      value: session.session_id,
-                      label: session.title || "新会话",
-                    }))}
-                    optionRender={(option) => {
-                      const session = sessions.find((row) => row.session_id === option.value);
-                      if (!session) {
-                        return <span>{option.label}</span>;
-                      }
-                      const agent = session.agent_id ? agents.find((row) => row.id === session.agent_id) : null;
-                      const sourceChannelLabel = formatSessionSourceChannelLabel(session, channelsById);
-                      return (
-                        <div className="flex min-w-0 flex-col gap-1 py-0.5">
-                          <span className="truncate">{formatSessionOptionTitle(session, agent?.name)}</span>
-                          <Typography.Text type="secondary" className="text-xs">
-                            创建于 {formatMessageTime(session.created_at)}
-                          </Typography.Text>
-                          {sourceChannelLabel ? (
-                            <Tag color="geekblue" className="mr-0 w-fit max-w-full truncate">
-                              来自 channel: {sourceChannelLabel}
-                            </Tag>
-                          ) : null}
-                        </div>
-                      );
-                    }}
-                    onChange={(value) => void switchSession(value)}
-                  />
-                </div>
-                <div
-                  data-testid="assistant-agent-field"
-                  className="flex min-w-0 items-center gap-2 rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:w-[180px] lg:shrink-0"
-                >
-                  <Typography.Text type="secondary" className="shrink-0 text-[11px] uppercase tracking-[0.12em]">
-                    Agent
-                  </Typography.Text>
-                  <Select
-                    variant="borderless"
-                    className="min-w-0 flex-1"
-                    placeholder="选择一个 Agent"
-                    value={selectedAgentId ?? undefined}
-                    options={agents.map((agent) => ({
-                      value: agent.id,
-                      label: (
-                        <Space>
-                          <span>{agent.name}</span>
-                          {agent.status === "inactive" && <Tag color="default">inactive</Tag>}
-                        </Space>
-                      ),
-                    }))}
-                    onChange={(value) => setSelectedAgentId(value)}
-                    notFoundContent="暂无 Agent，请先在「Agent 管理」中创建"
-                  />
-                </div>
-                {(activeSession || selectedAgentId) ? (
-                  <div
-                    data-testid="assistant-session-summary"
-                    className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-full border border-dashed border-shell-line bg-shell-bg/45 px-3 py-1.5 text-xs lg:basis-full xl:basis-auto xl:min-w-[12rem] xl:flex-1"
-                  >
-                    {activeSession ? (
-                      <>
-                        <Typography.Text strong className="min-w-0 max-w-[10rem] shrink truncate whitespace-nowrap text-sm">
-                          {activeSession.title || "新会话"}
-                        </Typography.Text>
-                        {sessionId ? (
-                          <Typography.Text
-                            className="min-w-0 max-w-[14rem] shrink truncate whitespace-nowrap font-mono text-xs"
-                            copyable={{ text: sessionId }}
-                            ellipsis={{ tooltip: sessionId }}
-                          >
-                            session_id: {sessionId}
-                          </Typography.Text>
-                        ) : null}
-                        <Typography.Text type="secondary" className="shrink-0 whitespace-nowrap text-xs">
-                          {formatMessageTime(activeSession.created_at)}
-                        </Typography.Text>
-                        {activeSessionAgent ? (
-                          <Tag icon={<RobotOutlined />} color="blue" className="mr-0 shrink-0">
-                            {activeSessionAgent.name}
-                          </Tag>
-                        ) : null}
-                        {activeSessionSourceChannelLabel ? (
-                          <Tag color="geekblue" className="mr-0 max-w-[12rem] shrink truncate">
-                            {activeSessionSourceChannelLabel}
-                          </Tag>
-                        ) : null}
-                      </>
-                    ) : selectedAgentId ? (
-                      <Tag icon={<RobotOutlined />} color="blue" className="mr-0 shrink-0">
-                        {agents.find((row) => row.id === selectedAgentId)?.name || selectedAgentId}
-                      </Tag>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-              <Space wrap size={4} className="shrink-0 justify-end">
-                {activeModelRoute ? (
-                  <Tag color="blue" className="!hidden md:!inline-block">
-                    使用的模型: {activeModelRoute}
-                  </Tag>
-                ) : null}
+              <Space size={4} className="order-2 ml-auto shrink-0 xl:order-3">
                 <ToolbarButton
                   icon={<ToolOutlined />}
                   onClick={() => openDetailsDrawer("traces")}
@@ -1758,6 +1645,158 @@ export function AssistantPage() {
                   label="新会话"
                 />
               </Space>
+              <div
+                data-testid="assistant-toolbar-controls"
+                className="order-3 flex w-full min-w-0 items-center gap-2 xl:order-2 xl:w-auto xl:flex-1"
+              >
+                <div
+                  data-testid="assistant-session-field"
+                  className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:max-w-[260px]"
+                >
+                  <Typography.Text type="secondary" className="shrink-0 text-[11px] uppercase tracking-[0.12em]">
+                    会话
+                  </Typography.Text>
+                  <Select
+                    variant="borderless"
+                    className="min-w-0 flex-1 [&_.ant-select-selection-item]:truncate"
+                    value={sessionId ?? undefined}
+                    optionLabelProp="label"
+                    popupMatchSelectWidth={320}
+                    options={sessions.map((session) => ({
+                      value: session.session_id,
+                      label: session.title || "新会话",
+                    }))}
+                    popupRender={(menu) => (
+                      <>
+                        <div
+                          data-testid="assistant-channel-filter"
+                          className="flex flex-wrap items-center gap-1 border-b border-shell-line/60 px-3 py-2"
+                          // 阻止下拉在点击筛选 chips 时因失焦而关闭
+                          onMouseDown={(event) => event.preventDefault()}
+                        >
+                          <Typography.Text type="secondary" className="mr-1 shrink-0 text-[11px] uppercase tracking-[0.12em]">
+                            来源
+                          </Typography.Text>
+                          {sessionChannelFilterOptions.map((option) => (
+                            <Tag.CheckableTag
+                              key={option.value}
+                              checked={sessionChannelFilter === option.value}
+                              onChange={() => setSessionChannelFilter(option.value)}
+                            >
+                              {option.label}
+                            </Tag.CheckableTag>
+                          ))}
+                        </div>
+                        {menu}
+                      </>
+                    )}
+                    optionRender={(option) => {
+                      const session = sessions.find((row) => row.session_id === option.value);
+                      if (!session) {
+                        return <span>{option.label}</span>;
+                      }
+                      const agent = session.agent_id ? agents.find((row) => row.id === session.agent_id) : null;
+                      const sourceChannelLabel = formatSessionSourceChannelLabel(session, channelsById);
+                      return (
+                        <div className="flex min-w-0 flex-col gap-1 py-0.5">
+                          <span className="truncate">{formatSessionOptionTitle(session, agent?.name)}</span>
+                          <Typography.Text type="secondary" className="text-xs">
+                            创建于 {formatMessageTime(session.created_at)}
+                          </Typography.Text>
+                          {sourceChannelLabel ? (
+                            <Tag color="geekblue" className="mr-0 w-fit max-w-full truncate">
+                              来自 channel: {sourceChannelLabel}
+                            </Tag>
+                          ) : null}
+                        </div>
+                      );
+                    }}
+                    onChange={(value) => void switchSession(value)}
+                  />
+                </div>
+                <div
+                  data-testid="assistant-agent-field"
+                  className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-full border border-shell-line bg-white/90 px-3 py-1.5 shadow-[0_6px_16px_rgba(15,23,42,0.04)] lg:max-w-[260px]"
+                >
+                  <Typography.Text type="secondary" className="shrink-0 text-[11px] uppercase tracking-[0.12em]">
+                    Agent
+                  </Typography.Text>
+                  <Select
+                    variant="borderless"
+                    className="min-w-0 flex-1"
+                    placeholder="选择一个 Agent"
+                    value={selectedAgentId ?? undefined}
+                    options={agents.map((agent) => ({
+                      value: agent.id,
+                      label: (
+                        <Space>
+                          <span>{agent.name}</span>
+                          {agent.status === "inactive" && <Tag color="default">inactive</Tag>}
+                        </Space>
+                      ),
+                    }))}
+                    onChange={(value) => setSelectedAgentId(value)}
+                    notFoundContent="暂无 Agent，请先在「Agent 管理」中创建"
+                  />
+                </div>
+                {activeSession || activeModelRoute ? (
+                  <Popover
+                    trigger="click"
+                    placement="bottomLeft"
+                    content={
+                      <div data-testid="assistant-session-summary" className="flex min-w-[200px] max-w-[280px] flex-col gap-2">
+                        {activeSession ? (
+                          <>
+                            <Typography.Text strong className="truncate text-sm">
+                              {activeSession.title || "新会话"}
+                            </Typography.Text>
+                            {sessionId ? (
+                              <Typography.Text
+                                className="font-mono text-xs"
+                                copyable={{ text: sessionId }}
+                                ellipsis={{ tooltip: sessionId }}
+                              >
+                                {sessionId}
+                              </Typography.Text>
+                            ) : null}
+                            <Typography.Text type="secondary" className="text-xs">
+                              创建于 {formatMessageTime(activeSession.created_at)}
+                            </Typography.Text>
+                          </>
+                        ) : null}
+                        <div className="flex flex-wrap gap-1">
+                          {activeSessionAgent ? (
+                            <Tag icon={<RobotOutlined />} color="blue" className="mr-0">
+                              {activeSessionAgent.name}
+                            </Tag>
+                          ) : null}
+                          {activeSessionSourceChannelLabel ? (
+                            <Tag color="geekblue" className="mr-0 max-w-full truncate">
+                              {activeSessionSourceChannelLabel}
+                            </Tag>
+                          ) : null}
+                          {activeModelRoute ? (
+                            <Tag color="blue" className="mr-0 max-w-full truncate">
+                              模型: {activeModelRoute}
+                            </Tag>
+                          ) : null}
+                        </div>
+                      </div>
+                    }
+                  >
+                    <Button
+                      type="text"
+                      size="small"
+                      shape="circle"
+                      icon={<InfoCircleOutlined />}
+                      title="会话信息（session_id / 创建时间 / 模型）"
+                      aria-label="会话信息"
+                      className="shrink-0 text-gray-500"
+                      data-testid="assistant-session-meta-button"
+                    />
+                  </Popover>
+                ) : null}
+              </div>
             </div>
           </div>
           <div className="relative flex min-h-0 flex-1 flex-col">

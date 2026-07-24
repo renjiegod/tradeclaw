@@ -479,7 +479,10 @@ describe("AssistantPage conversation", () => {
     await waitFor(() =>
       expect(screen.getByText("试试这些示例：")).toBeInTheDocument(),
     );
-    expect(screen.getByLabelText("session-2")).toBeInTheDocument();
+    // 会话元信息收在 ⓘ popover 里，打开后应显示新会话的 session_id
+    fireEvent.click(screen.getByTestId("assistant-session-meta-button"));
+    const summary = await screen.findByTestId("assistant-session-summary");
+    expect(within(summary).getByText("session-2")).toBeInTheDocument();
   });
 
   it("allows stopping while an agent response is in progress", async () => {
@@ -761,7 +764,7 @@ describe("AssistantPage conversation", () => {
 
     await waitFor(() => expect(screen.getByTestId("assistant-session-field")).toBeInTheDocument());
 
-    const sessionSelect = screen.getAllByRole("combobox")[1];
+    const sessionSelect = screen.getAllByRole("combobox")[0];
     fireEvent.mouseDown(sessionSelect);
 
     expect(await screen.findByText(/来自 channel:/)).toBeInTheDocument();
@@ -802,13 +805,13 @@ describe("AssistantPage conversation", () => {
 
     await waitFor(() => expect(screen.getByTestId("assistant-session-field")).toBeInTheDocument());
 
-    const sessionSelect = screen.getAllByRole("combobox")[1];
+    const sessionSelect = screen.getAllByRole("combobox")[0];
     fireEvent.mouseDown(sessionSelect);
     expect(await screen.findAllByText(/创建于 /)).not.toHaveLength(0);
 
-    const filterSelect = screen.getAllByRole("combobox")[0];
-    fireEvent.mouseDown(filterSelect);
-    fireEvent.click(await screen.findByText("Web 会话"));
+    // 「来源」筛选内嵌在会话下拉顶部的 chips 行里
+    const filterRow = await screen.findByTestId("assistant-channel-filter");
+    fireEvent.click(within(filterRow).getByText("Web"));
 
     await waitFor(() =>
       expect(listAssistantSessions).toHaveBeenCalledWith(
@@ -817,22 +820,25 @@ describe("AssistantPage conversation", () => {
     );
   });
 
-  it("keeps the session summary from collapsing into a character column in the toolbar", async () => {
-    // Regression: under lg nowrap the summary's min-w-0 flex-1 was crushed to
-    // ~0 width, so session_id / timestamp wrapped one glyph per line.
+  it("collapses session meta into a popover instead of an inline summary pill", async () => {
+    // Regression: the old inline summary pill (title + session_id + time +
+    // tags) shared one nowrap row with fixed-width pills and the action
+    // buttons, and overlapped them at lg~xl widths. Meta now lives behind an
+    // info-icon popover, so the toolbar row itself never renders session_id.
     render(<AssistantPage />);
 
-    const controls = await screen.findByTestId("assistant-toolbar-controls");
-    expect(controls.className).toMatch(/\blg:flex-wrap\b/);
-    expect(controls.className).toMatch(/\bxl:flex-nowrap\b/);
+    const metaButton = await screen.findByTestId("assistant-session-meta-button");
+    // 工具栏行内不再直接渲染 session_id / 摘要 pill
+    expect(screen.queryByTestId("assistant-session-summary")).not.toBeInTheDocument();
 
+    // 根容器允许换行（宽度不足时换行而不是重叠）
+    const controls = screen.getByTestId("assistant-toolbar-controls");
+    expect(controls.parentElement?.className).toMatch(/\bflex-wrap\b/);
+
+    fireEvent.click(metaButton);
     const summary = await screen.findByTestId("assistant-session-summary");
-    expect(summary.className).toMatch(/\boverflow-hidden\b/);
-    expect(summary.className).toMatch(/\blg:basis-full\b/);
-    expect(summary.className).toMatch(/\bxl:flex-1\b/);
-
-    const sessionIdText = within(summary).getByText(/session_id:/);
-    expect(sessionIdText.className).toMatch(/\bwhitespace-nowrap\b/);
-    expect(sessionIdText.className).toMatch(/\btruncate\b|\boverflow-hidden\b|ellipsis/);
+    expect(within(summary).getByText("session-1")).toBeInTheDocument();
+    expect(within(summary).getByText(/创建于 /)).toBeInTheDocument();
+    expect(within(summary).getByText(/模型: route-default/)).toBeInTheDocument();
   });
 });
